@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""ramstein — verb CLI over the ramsteind control socket.
+
+Read-only in M0. Talks to the daemon's socket; falls back to reading
+status.json so `ramstein status` still answers even mid-daemon-restart —
+and must keep answering from a bare TTY at 100% memory pressure.
+"""
+
+import json
+import os
+import socket
+import sys
+import time
+
+RUNTIME_DIR = os.environ.get("RAMSTEIN_RUNTIME_DIR", "/run/ramstein")
+
+PLANNED = {
+    "top": "M2 — live per-process RSS + swap, a memory-aware top",
+    "blame": "M2 — what grew in RSS since a point in time",
+    "oom": "M2 — risk + ETA, ranked by the kernel's own oom_score",
+    "swap": "M2 — who's parked in swap, VmSwap across /proc",
+    "zombies": "M2 — defunct processes and the parent not reaping them",
+    "calm": "M3 — memory.high nudge or renice; --kill is confirmation-gated",
+    "advise": "M3 — nudges: leaks, runaway growth, a renderer swarm",
+}
+
+
+def fetch():
+    sock_path = os.path.join(RUNTIME_DIR, "control.sock")
+    try:
+        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        conn.settimeout(3)
+        conn.connect(sock_path)
+        conn.sendall(b'{"cmd":"status"}\n')
+        buf = b""
+        while b"\n" not in buf:
+            chunk = conn.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+        conn.close()
+        doc = json.loads(buf.decode())
+        if isinstance(doc, dict) and "memory" in doc:
+            return doc
+    except (OSError, ValueError):
+        pass
+    try:
+        with open(os.path.join(RUNTIME_DIR, "status.json")) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        sys.exit("ramstein: no daemon and no status.json — is ramsteind "
+                 "running?")
+
+
+def human_bytes(n):
+    for unit in ("B", "K", "M", "G", "T"):
+        if abs(n) < 1024 or unit == "T":
+            return f"{n:.0f}{unit}" if unit == "B" else f"{n / 1.0:.1f}{unit}"
+        n /= 1024
+    return f"{n:.1f}T"
+
+
+def human_burn(bps):
+    if abs(bps) < 1024 * 1024:  # under 1 MiB/s: churn, not a fire
+        return "quiet"
+    return f"{human_bytes(bps)}/s"
+
+
+def human_psi(psi):
+    some, full = psi.get("some_avg10"), psi.get("full_avg10")
+    if some is None and full is None:
+        return "—"
+    def fmt(v):
+        return "?" if v is None else f"{v:.1f}"
+    return f"some {fmt(some)}/full {fmt(full)}"
+
+
+def human_eta(seconds):
+    if seconds is None:
+        return "—"
+    if seconds >= 2 * 86400:
+        return f"~{seconds // 86400}d"
+    if seconds >= 2 * 3600:
+        return f"~{seconds // 3600}h"
+    if seconds >= 120:
+        return f"~{seconds // 60}m"
+    return f"~{seconds}s"
+
+
+FLAGS = {"ok": " ", "warn": "!", "hot": "‼"}
+
+
+def cmd_status(argv):
+    doc = fetch()
+    if "--json" in argv:
+        print(json.dumps(doc, indent=2))
+        return
+    age = int(time.time() - doc["ts"])
+    m = doc["memory"]
+    flag = FLAGS.get(m["state"], "?")
+    print(f"ramstein v{doc['daemon']['version']}   (status {age}s old)")
+    print(f" {flag} mem {human_bytes(m['available'])} available "
+          f"of {human_bytes(m['total'])}   "
+          f"swap {human_bytes(m['swap_free'])} free "
+          f"of {human_bytes(m['swap_total'])}   "
+          f"pressure {human_psi(m['psi'])}   "
+          f"burn {human_burn(m['burn_bps'])}   "
+          f"OOM {human_eta(m['eta_oom_seconds'])}")
+
+
+def main():
+    argv = sys.argv[1:]
+    verb = argv[0] if argv and not argv[0].startswith("-") else "status"
+    rest = argv[1:] if argv and not argv[0].startswith("-") else argv
+    if verb == "status":
+        cmd_status(rest)
+    elif verb in PLANNED:
+        sys.exit(f"ramstein {verb}: not yet — {PLANNED[verb]}")
+    else:
+        verbs = ", ".join(["status"] + list(PLANNED))
+        sys.exit(f"ramstein: unknown verb '{verb}' (verbs: {verbs})")
+
+
+if __name__ == "__main__":
+    main()

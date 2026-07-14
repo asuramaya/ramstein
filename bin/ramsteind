@@ -1,0 +1,284 @@
+#!/usr/bin/env python3
+"""ramsteind — the memory demon: owns the truth about bytes alive.
+
+Polls /proc/meminfo and /proc/pressure/memory every tick, computes an
+EWMA burn rate of available-memory consumption and an ETA-to-OOM under
+current pressure, and publishes status.json for the CLI and the GNOME
+pill. The daemon is the only privileged actor; the CLI and pill only
+read status and poke the control socket.
+
+stdlib only, by constitution.
+"""
+
+import argparse
+import json
+import math
+import os
+import signal
+import socket
+import struct
+import threading
+import time
+
+VERSION = "0.2.0"
+
+RUNTIME_DIR = os.environ.get("RAMSTEIN_RUNTIME_DIR", "/run/ramstein")
+STATUS_PATH = os.path.join(RUNTIME_DIR, "status.json")
+SOCKET_PATH = os.path.join(RUNTIME_DIR, "control.sock")
+
+# Config is the seed, never the master: it can tune numbers within clamps,
+# but it cannot grant anything the daemon doesn't already do. Unknown keys
+# are ignored, bad types fall back to defaults.
+DEFAULTS = {
+    "poll_interval": 10,       # memory moves faster than disk
+    "burn_tau": 120,           # EWMA time constant for burn rate (s)
+    "eta_cap_hours": 24.0,     # ETAs beyond this are noise -> omitted
+    "warn_psi_some": 10.0,     # PSI some avg10 above this -> warn
+    "warn_avail_pct": 15.0,
+    "warn_eta_hours": 4.0,
+    "hot_psi_full": 5.0,       # PSI full avg10 above this -> hot
+    "hot_avail_pct": 5.0,
+    "hot_eta_minutes": 30.0,
+    "owner_uid": 1000,         # status/socket are chowned here when root
+}
+
+CLAMPS = {
+    "poll_interval": (1, 3600),
+    "burn_tau": (5, 86400),
+    "eta_cap_hours": (0.1, 8760),
+    "warn_psi_some": (0.0, 100.0),
+    "warn_avail_pct": (0.0, 100.0),
+    "warn_eta_hours": (0.01, 8760),
+    "hot_psi_full": (0.0, 100.0),
+    "hot_avail_pct": (0.0, 100.0),
+    "hot_eta_minutes": (0.1, 525600),
+    "owner_uid": (0, 2 ** 31),
+}
+
+
+def load_config(path):
+    cfg = dict(DEFAULTS)
+    try:
+        with open(path) as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        return cfg
+    if not isinstance(raw, dict):
+        return cfg
+    for key, default in DEFAULTS.items():
+        if key not in raw:
+            continue
+        val = raw[key]
+        if isinstance(default, (int, float)) and isinstance(val, (int, float)):
+            lo, hi = CLAMPS[key]
+            cfg[key] = type(default)(min(hi, max(lo, val)))
+    return cfg
+
+
+# --- polling ----------------------------------------------------------------
+
+MEMINFO_KEYS = ("MemTotal", "MemAvailable", "SwapTotal", "SwapFree")
+PSI_KEYS = ("some_avg10", "some_avg60", "some_avg300",
+            "full_avg10", "full_avg60", "full_avg300")
+
+
+def read_meminfo():
+    vals = {}
+    with open("/proc/meminfo") as f:
+        for line in f:
+            key, _, rest = line.partition(":")
+            if key in MEMINFO_KEYS:
+                vals[key] = int(rest.split()[0]) * 1024  # kB -> bytes
+    return vals
+
+
+def read_psi():
+    psi = {k: None for k in PSI_KEYS}
+    try:
+        with open("/proc/pressure/memory") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return psi  # no CONFIG_PSI — classify on meminfo alone
+    for line in lines:
+        parts = line.split()
+        if not parts or parts[0] not in ("some", "full"):
+            continue
+        fields = dict(p.split("=", 1) for p in parts[1:] if "=" in p)
+        for avg in ("avg10", "avg60", "avg300"):
+            if avg in fields:
+                try:
+                    psi[f"{parts[0]}_{avg}"] = float(fields[avg])
+                except ValueError:
+                    pass
+    return psi
+
+
+def poll_memory(state, cfg, now):
+    mi = read_meminfo()
+    total = mi.get("MemTotal", 0)
+    avail = mi.get("MemAvailable", 0)
+    swap_total = mi.get("SwapTotal", 0)
+    swap_free = mi.get("SwapFree", 0)
+    psi = read_psi()
+
+    prev = state.get("mem")
+    ewma = 0.0
+    if prev is not None:
+        dt = max(1e-3, now - prev["t"])
+        rate = (prev["avail"] - avail) / dt  # bytes/s, positive = being eaten
+        alpha = 1.0 - math.exp(-dt / cfg["burn_tau"])
+        ewma = alpha * rate + (1.0 - alpha) * prev["ewma"]
+    state["mem"] = {"t": now, "avail": avail, "ewma": ewma}
+
+    eta = None
+    if ewma > 1024.0:  # below 1 KiB/s the ETA is astrology
+        eta = (avail + swap_free) / ewma
+        if eta > cfg["eta_cap_hours"] * 3600:
+            eta = None
+
+    return {
+        "total": total,
+        "available": avail,
+        "swap_total": swap_total,
+        "swap_free": swap_free,
+        "psi": psi,
+        "burn_bps": round(ewma, 1),
+        "eta_oom_seconds": None if eta is None else int(eta),
+        "state": classify(total, avail, psi, eta, cfg),
+    }
+
+
+def classify(total, avail, psi, eta, cfg):
+    pct = 100.0 * avail / total if total else 0.0
+    full10, some10 = psi["full_avg10"], psi["some_avg10"]
+    if (full10 is not None and full10 > cfg["hot_psi_full"]) \
+            or pct < cfg["hot_avail_pct"] \
+            or (eta is not None and eta < cfg["hot_eta_minutes"] * 60):
+        return "hot"
+    if (some10 is not None and some10 > cfg["warn_psi_some"]) \
+            or pct < cfg["warn_avail_pct"] \
+            or (eta is not None and eta < cfg["warn_eta_hours"] * 3600):
+        return "warn"
+    return "ok"
+
+
+def write_status(doc, cfg):
+    tmp = STATUS_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(doc, f, separators=(",", ":"))
+        f.write("\n")
+    os.chmod(tmp, 0o640)
+    if os.getuid() == 0:
+        os.chown(tmp, cfg["owner_uid"], -1)
+    os.replace(tmp, STATUS_PATH)
+
+
+# --- control socket ---------------------------------------------------------
+# Input is hostile by default: SO_PEERCRED-gated (root or the owner, on top
+# of the 0660 file mode — family ruling 2026-07-14), bounded reads, JSON
+# only, two commands, anything else answers {"error": ...} and the
+# connection dies.
+
+class Control(threading.Thread):
+    MAX_LINE = 4096
+
+    def __init__(self, cfg, get_status):
+        super().__init__(daemon=True)
+        self.get_status = get_status
+        self._allowed = {0, os.getuid(), cfg["owner_uid"]}
+        try:
+            os.unlink(SOCKET_PATH)
+        except FileNotFoundError:
+            pass
+        self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.srv.bind(SOCKET_PATH)
+        os.chmod(SOCKET_PATH, 0o660)
+        if os.getuid() == 0:
+            os.chown(SOCKET_PATH, cfg["owner_uid"], -1)
+        self.srv.listen(4)
+
+    def run(self):
+        while True:
+            try:
+                conn, _ = self.srv.accept()
+            except OSError:
+                return
+            threading.Thread(target=self.handle, args=(conn,),
+                             daemon=True).start()
+
+    def handle(self, conn):
+        try:
+            creds = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                                    struct.calcsize("3i"))
+            _pid, peer_uid, _gid = struct.unpack("3i", creds)
+            if peer_uid not in self._allowed:
+                raise PermissionError("peer not allowed")
+            conn.settimeout(5)
+            data = b""
+            while b"\n" not in data:
+                chunk = conn.recv(1024)
+                if not chunk:
+                    break
+                data += chunk
+                if len(data) > self.MAX_LINE:
+                    raise ValueError("line too long")
+            req = json.loads(data.decode("utf-8").splitlines()[0] or "{}")
+            if not isinstance(req, dict):
+                raise ValueError("not an object")
+            cmd = req.get("cmd")
+            if cmd == "ping":
+                resp = {"ok": True, "version": VERSION}
+            elif cmd == "status":
+                resp = self.get_status()
+            else:
+                resp = {"error": "unknown command"}
+        except Exception as exc:  # noqa: BLE001 — hostile input, never crash
+            resp = {"error": type(exc).__name__}
+        try:
+            conn.sendall((json.dumps(resp, separators=(",", ":")) + "\n")
+                         .encode())
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+
+# --- main -------------------------------------------------------------------
+
+def main():
+    ap = argparse.ArgumentParser(prog="ramsteind")
+    ap.add_argument("--config", default="/etc/ramstein/config.json")
+    ap.add_argument("--once", action="store_true",
+                    help="single poll, write status, exit")
+    args = ap.parse_args()
+
+    cfg = load_config(args.config)
+    os.makedirs(RUNTIME_DIR, exist_ok=True)
+
+    stop = threading.Event()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda *_: stop.set())
+
+    state = {}
+    latest = {"doc": {"error": "no status yet"}}
+    ctl = Control(cfg, lambda: latest["doc"])
+    ctl.start()
+
+    while not stop.is_set():
+        now = time.time()
+        doc = {
+            "v": 1,
+            "ts": now,
+            "daemon": {"version": VERSION, "pid": os.getpid(),
+                       "poll_interval": cfg["poll_interval"]},
+            "memory": poll_memory(state, cfg, now),
+        }
+        latest["doc"] = doc
+        write_status(doc, cfg)
+        if args.once:
+            break
+        stop.wait(cfg["poll_interval"])
+
+
+if __name__ == "__main__":
+    main()

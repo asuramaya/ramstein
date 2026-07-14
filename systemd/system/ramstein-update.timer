@@ -1,0 +1,14 @@
+[Unit]
+Description=ramstein daily update check
+
+# NOT enabled by default: even a notify-only check that phones GitHub is
+# opt-in, family-wide. It triggers ramstein-update.service, which runs
+# --check only — it never installs anything. Enable deliberately with:
+#   sudo systemctl enable --now ramstein-update.timer
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1d
+Persistent=true
+
+[Install]
+WantedBy=timers.target

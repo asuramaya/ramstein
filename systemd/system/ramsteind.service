@@ -1,0 +1,21 @@
+[Unit]
+Description=ramstein memory daemon — owns the truth about bytes alive
+Documentation=https://github.com/asuramaya/ramstein
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ramsteind
+Restart=on-failure
+RestartSec=5
+
+RuntimeDirectory=ramstein
+RuntimeDirectoryMode=0755
+StateDirectory=ramstein
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/run/ramstein /var/lib/ramstein
+# Everything M0 reads lives under /proc — nothing in $HOME matters here.
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

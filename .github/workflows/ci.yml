@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  static-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Python compiles
+        run: python3 -m py_compile bin/ramsteind bin/ramstein bin/ramstein-healthcheck bin/ramstein-update
+
+      - name: Shell scripts parse
+        run: bash -n install.sh uninstall.sh tests/smoke.sh
+
+      - name: Shellcheck
+        run: shellcheck install.sh uninstall.sh tests/smoke.sh
+
+      - name: Smoke (real daemon, real /proc, hostile socket input)
+        run: make smoke

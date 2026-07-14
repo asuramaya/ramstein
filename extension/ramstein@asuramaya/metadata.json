@@ -1,0 +1,8 @@
+{
+  "uuid": "ramstein@asuramaya",
+  "name": "RAMstein",
+  "description": "Memory as a deadline — a Quick Settings pill showing available RAM, PSI pressure, burn rate, and an ETA-to-OOM under current pressure. Requires the ramsteind daemon (https://github.com/asuramaya/RAMstein).",
+  "shell-version": ["46", "47", "48", "49", "50"],
+  "url": "https://github.com/asuramaya/RAMstein",
+  "version": 1
+}

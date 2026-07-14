@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 asuramaya and RAMstein contributors
+"""ramstein-healthcheck — one-line verdict on the daemon's vitals.
+
+Healthy means BOTH: status.json parses and is fresh (younger than 3x the
+poll_interval the daemon itself declared inside it — i.e. the poller isn't
+wedged), AND the control socket answers {"cmd":"ping"} with ok:true (the
+daemon is actually alive, not just its last snapshot). Exit 0 with a
+one-line "healthy: ..." or nonzero with a one-line reason — scripts and
+timers gate on the exit code.
+
+Read-only and unprivileged: it needs only the 0640 status file and the 0660
+socket the daemon already hands its owner. Honors RAMSTEIN_RUNTIME_DIR,
+same as the daemon and CLI.
+"""
+import json
+import os
+import socket
+import sys
+import time
+
+RUNTIME_DIR = os.environ.get("RAMSTEIN_RUNTIME_DIR", "/run/ramstein")
+STATUS_PATH = os.path.join(RUNTIME_DIR, "status.json")
+SOCKET_PATH = os.path.join(RUNTIME_DIR, "control.sock")
+MAX_REPLY = 65536
+FRESH_FACTOR = 3  # status older than FRESH_FACTOR x poll_interval = wedged
+
+
+def fail(reason):
+    print(f"unhealthy: {reason}")
+    sys.exit(1)
+
+
+def read_status():
+    try:
+        with open(STATUS_PATH) as f:
+            return json.load(f)
+    except OSError:
+        fail(f"no readable status.json at {STATUS_PATH} — is ramsteind running?")
+    except ValueError:
+        fail("status.json is not valid JSON")
+
+
+def ping():
+    buf = b""
+    try:
+        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        conn.settimeout(5)
+        conn.connect(SOCKET_PATH)
+        conn.sendall(b'{"cmd":"ping"}\n')
+        while b"\n" not in buf:
+            chunk = conn.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+            if len(buf) > MAX_REPLY:
+                fail("control socket reply unreasonably large")
+        conn.close()
+    except OSError as exc:
+        fail(f"control socket unreachable at {SOCKET_PATH} ({exc})")
+    try:
+        return json.loads(buf.decode() or "{}")
+    except ValueError:
+        fail("control socket answered non-JSON")
+
+
+def main():
+    doc = read_status()
+    try:
+        ts = float(doc["ts"])
+        poll = float(doc["daemon"]["poll_interval"])
+    except (KeyError, TypeError, ValueError):
+        fail("status.json missing ts / daemon.poll_interval")
+    if poll <= 0:
+        fail(f"status.json declares a nonsense poll_interval ({poll})")
+    age = time.time() - ts
+    limit = FRESH_FACTOR * poll
+    if age >= limit:
+        fail(f"status.json stale ({age:.0f}s old, limit {limit:.0f}s) — poller wedged?")
+    resp = ping()
+    if resp.get("ok") is not True:
+        fail(f"socket ping not ok: {json.dumps(resp)}")
+    print(f"healthy: status {age:.0f}s old (limit {limit:.0f}s), "
+          f"socket ping ok, daemon v{resp.get('version', '?')}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

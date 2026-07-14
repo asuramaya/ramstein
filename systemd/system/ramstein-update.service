@@ -1,0 +1,15 @@
+[Unit]
+Description=ramstein update check (GitHub releases, notify-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# --check makes this notify-only: it CHECKS and logs, it never installs
+# unattended (family doctrine: updates are click-to-install). ramsteind
+# itself never touches the network; this short-lived oneshot is the only
+# RAMstein component that reaches the internet — and a version check needs
+# no root, so it runs as a throwaway dynamic user, not as the daemon's uid.
+DynamicUser=yes
+PrivateTmp=yes
+ExecStart=/usr/local/bin/ramstein-update --check
