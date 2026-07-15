@@ -16,11 +16,12 @@ import math
 import os
 import signal
 import socket
+import sqlite3
 import struct
 import threading
 import time
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 RUNTIME_DIR = os.environ.get("RAMSTEIN_RUNTIME_DIR", "/run/ramstein")
 STATUS_PATH = os.path.join(RUNTIME_DIR, "status.json")
@@ -40,6 +41,10 @@ DEFAULTS = {
     "hot_avail_pct": 5.0,
     "hot_eta_minutes": 30.0,
     "owner_uid": 1000,         # status/socket are chowned here when root
+    "sample_every": 3,         # sampler runs every Nth poll (M2 index)
+    "proc_min_bytes": 16 * 1024 * 1024,  # rss+swap floor to earn an index row
+    "recent_ring": 120,        # fine-grained samples kept (~1h at defaults)
+    "hourly_ring": 168,        # promoted samples kept (~7d)
 }
 
 CLAMPS = {
@@ -53,6 +58,10 @@ CLAMPS = {
     "hot_avail_pct": (0.0, 100.0),
     "hot_eta_minutes": (0.1, 525600),
     "owner_uid": (0, 2 ** 31),
+    "sample_every": (1, 360),
+    "proc_min_bytes": (1 << 20, 1 << 40),
+    "recent_ring": (2, 100000),
+    "hourly_ring": (2, 100000),
 }
 
 
@@ -173,10 +182,283 @@ def write_status(doc, cfg):
     os.replace(tmp, STATUS_PATH)
 
 
+# --- index: the persistent truth about who's holding memory hostage --------
+# One tick is one sample: pid/comm/VmRSS/VmSwap/state/ppid for every process
+# at or above proc_min_bytes, keyed by (pid, starttime) — starttime (stat
+# field 22) disambiguates pid reuse, the swap analogue of byebyte's path
+# interning. Two rings share one promoted flag: recent_ring keeps every
+# sample (~1h fine-grained), hourly_ring keeps one promoted sample per hour
+# (~7d coarse) — `top`/`swap` read the latest sample, `blame` diffs two.
+# The sampler runs synchronously in the poll loop (a /proc pass is cheap,
+# unlike byebyte's disk walk, so it never needs its own thread); every query
+# opens its own short-lived read connection, so a `top` never blocks a tick.
+
+STATE_DIR = os.environ.get("RAMSTEIN_STATE_DIR", "/var/lib/ramstein")
+DB_PATH = os.path.join(STATE_DIR, "index.db")
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS samples(
+    id INTEGER PRIMARY KEY,
+    ts REAL NOT NULL,
+    promoted INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS proc_stats(
+    sample_id INTEGER NOT NULL,
+    pid INTEGER NOT NULL,
+    starttime INTEGER NOT NULL,
+    comm TEXT NOT NULL,
+    rss INTEGER NOT NULL,
+    swap INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    ppid INTEGER NOT NULL,
+    PRIMARY KEY(sample_id, pid, starttime)) WITHOUT ROWID;
+"""
+
+
+def _connect_index():
+    os.makedirs(STATE_DIR, exist_ok=True)
+    con = sqlite3.connect(DB_PATH, timeout=30)
+    con.execute("PRAGMA journal_mode=WAL")
+    return con
+
+
+def _read_procs():
+    """One pass over /proc: pid/comm/rss/swap/state/ppid/starttime for every
+    process with a VmRSS line. Kernel threads (no VmRSS — no memory mappings)
+    and unreadable pids (other users, or a pid that exited mid-scan) are
+    skipped silently; as root this sees all."""
+    for entry in os.scandir("/proc"):
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        try:
+            with open(f"/proc/{pid}/status") as f:
+                status = f.read()
+        except OSError:
+            continue
+        if "VmRSS" not in status:
+            continue  # kernel thread
+        comm = state = None
+        ppid = rss = swap = 0
+        for line in status.splitlines():
+            key, _, rest = line.partition(":")
+            if key == "Name":
+                comm = rest.strip()
+            elif key == "State":
+                state = rest.strip().split()[0]
+            elif key == "PPid":
+                ppid = int(rest.strip())
+            elif key == "VmRSS":
+                rss = int(rest.split()[0]) * 1024
+            elif key == "VmSwap":
+                swap = int(rest.split()[0]) * 1024
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                stat = f.read()
+        except OSError:
+            continue
+        # comm is parenthesized and may itself contain ')' or spaces; split
+        # on the LAST ')' so the fixed-format fields after it stay aligned.
+        # what follows is field 3 (state) onward, so field 22 (starttime,
+        # 1-indexed) sits at offset 22-3=19 in the split remainder.
+        rest_fields = stat[stat.rfind(")") + 2:].split()
+        try:
+            starttime = int(rest_fields[19])
+        except (IndexError, ValueError):
+            continue
+        yield {"pid": pid, "comm": comm or "?", "rss": rss, "swap": swap,
+               "state": state or "?", "ppid": ppid, "starttime": starttime}
+
+
+class Sampler:
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self._tick = 0
+        self._last_promoted_ts = None
+        self.last_sample_ts = None
+        con = _connect_index()
+        try:
+            con.executescript(_SCHEMA)
+            con.commit()
+        finally:
+            con.close()
+
+    def maybe_sample(self, now):
+        self._tick += 1
+        if self._tick % self.cfg["sample_every"]:
+            return
+        self._sample(now)
+
+    def _sample(self, now):
+        floor = self.cfg["proc_min_bytes"]
+        procs = [p for p in _read_procs() if p["rss"] + p["swap"] >= floor]
+        promote = (self._last_promoted_ts is None
+                   or now - self._last_promoted_ts >= 3600)
+        con = _connect_index()
+        try:
+            cur = con.execute(
+                "INSERT INTO samples(ts, promoted) VALUES(?,?)",
+                (now, int(promote)))
+            sid = cur.lastrowid
+            con.executemany(
+                "INSERT INTO proc_stats VALUES(?,?,?,?,?,?,?,?)",
+                [(sid, p["pid"], p["starttime"], p["comm"], p["rss"],
+                  p["swap"], p["state"], p["ppid"]) for p in procs])
+            self._prune(con)
+            con.commit()
+        finally:
+            con.close()
+        if promote:
+            self._last_promoted_ts = now
+        self.last_sample_ts = now
+
+    def _prune(self, con):
+        keep = {r[0] for r in con.execute(
+            "SELECT id FROM samples ORDER BY ts DESC LIMIT ?",
+            (self.cfg["recent_ring"],))}
+        keep |= {r[0] for r in con.execute(
+            "SELECT id FROM samples WHERE promoted=1 ORDER BY ts DESC LIMIT ?",
+            (self.cfg["hourly_ring"],))}
+        stale = [r[0] for r in con.execute("SELECT id FROM samples")
+                 if r[0] not in keep]
+        if stale:
+            marks = ",".join("?" * len(stale))
+            con.execute(f"DELETE FROM proc_stats WHERE sample_id IN ({marks})",
+                        stale)
+            con.execute(f"DELETE FROM samples WHERE id IN ({marks})", stale)
+
+
+def _latest_sample(con):
+    return con.execute(
+        "SELECT id, ts FROM samples ORDER BY ts DESC LIMIT 1").fetchone()
+
+
+def query_top(by_swap, limit):
+    con = _connect_index()
+    try:
+        latest = _latest_sample(con)
+        if latest is None:
+            return {"error": "no sample yet — wait for the sampler"}
+        sid, ts = latest
+        col = "swap" if by_swap else "rss"  # by_swap is a validated bool
+        rows = con.execute(
+            f"SELECT pid, comm, rss, swap, state FROM proc_stats"
+            f" WHERE sample_id=? ORDER BY {col} DESC LIMIT ?", (sid, limit)
+        ).fetchall()
+        return {"ts": ts, "rows": [
+            {"pid": r[0], "comm": r[1], "rss": r[2], "swap": r[3],
+             "state": r[4]} for r in rows]}
+    finally:
+        con.close()
+
+
+def query_swap(limit):
+    con = _connect_index()
+    try:
+        latest = _latest_sample(con)
+        if latest is None:
+            return {"error": "no sample yet — wait for the sampler"}
+        sid, ts = latest
+        rows = con.execute(
+            "SELECT pid, comm, rss, swap, state FROM proc_stats"
+            " WHERE sample_id=? AND swap > 0 ORDER BY swap DESC LIMIT ?",
+            (sid, limit)).fetchall()
+        return {"ts": ts, "rows": [
+            {"pid": r[0], "comm": r[1], "rss": r[2], "swap": r[3],
+             "state": r[4]} for r in rows]}
+    finally:
+        con.close()
+
+
+def query_blame(since, limit):
+    con = _connect_index()
+    try:
+        head = _latest_sample(con)
+        if head is None:
+            return {"error": "no sample yet — wait for the sampler"}
+        head_id, head_ts = head
+        base = con.execute(
+            "SELECT id, ts FROM samples WHERE ts <= ? ORDER BY ts DESC LIMIT 1",
+            (since,)).fetchone()
+        if base is None:
+            # every sample is newer than --since: diff from the oldest one we
+            # have and report the honest span, rather than refusing
+            base = con.execute(
+                "SELECT id, ts FROM samples ORDER BY ts ASC LIMIT 1").fetchone()
+        if base is None or base[0] == head_id:
+            return {"error": "no earlier sample to diff against"
+                             " — need two samples spanning --since"}
+        base_id, base_ts = base
+        rows = con.execute(
+            "SELECT h.pid, h.starttime, h.comm,"
+            "       h.rss - COALESCE(b.rss, 0) AS delta, h.rss, h.swap,"
+            "       CASE WHEN b.rss IS NULL THEN 1 ELSE 0 END, 0"
+            " FROM proc_stats h LEFT JOIN proc_stats b"
+            "   ON b.sample_id=? AND b.pid=h.pid AND b.starttime=h.starttime"
+            " WHERE h.sample_id=?"
+            " UNION ALL "
+            "SELECT b.pid, b.starttime, b.comm, -b.rss, 0, 0, 0, 1"
+            " FROM proc_stats b WHERE b.sample_id=? AND NOT EXISTS ("
+            "   SELECT 1 FROM proc_stats h WHERE h.sample_id=?"
+            "     AND h.pid=b.pid AND h.starttime=b.starttime)",
+            (base_id, head_id, base_id, head_id)).fetchall()
+        rows.sort(key=lambda r: (-abs(r[3]), 0 if r[3] >= 0 else 1))
+        rows = rows[:limit]
+        return {"base_ts": base_ts, "head_ts": head_ts, "rows": [
+            {"pid": r[0], "starttime": r[1], "comm": r[2], "delta": r[3],
+             "rss": r[4], "swap": r[5], "new": bool(r[6]), "gone": bool(r[7])}
+            for r in rows]}
+    finally:
+        con.close()
+
+
+def query_zombies():
+    rows = []
+    for entry in os.scandir("/proc"):
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        try:
+            with open(f"/proc/{pid}/status") as f:
+                status = f.read()
+        except OSError:
+            continue
+        comm = state = None
+        ppid = 0
+        for line in status.splitlines():
+            key, _, rest = line.partition(":")
+            if key == "Name":
+                comm = rest.strip()
+            elif key == "State":
+                state = rest.strip().split()[0]
+            elif key == "PPid":
+                ppid = int(rest.strip())
+        if state != "Z":
+            continue
+        parent_comm = "?"
+        try:
+            with open(f"/proc/{ppid}/status") as f:
+                for line in f:
+                    if line.startswith("Name:"):
+                        parent_comm = line.partition(":")[2].strip()
+                        break
+        except OSError:
+            pass
+        rows.append({"pid": pid, "comm": comm or "?", "ppid": ppid,
+                     "parent_comm": parent_comm})
+    return {"rows": rows}
+
+
+def _limit(req):
+    lim = req.get("limit", 20)
+    if not isinstance(lim, int) or not 1 <= lim <= 1000:
+        raise ValueError("limit must be an int in 1..1000")
+    return lim
+
+
 # --- control socket ---------------------------------------------------------
 # Input is hostile by default: SO_PEERCRED-gated (root or the owner, on top
 # of the 0660 file mode — family ruling 2026-07-14), bounded reads, JSON
-# only, two commands, anything else answers {"error": ...} and the
+# only, a fixed command set, anything else answers {"error": ...} and the
 # connection dies.
 
 class Control(threading.Thread):
@@ -230,6 +512,20 @@ class Control(threading.Thread):
                 resp = {"ok": True, "version": VERSION}
             elif cmd == "status":
                 resp = self.get_status()
+            elif cmd == "top":
+                by_swap = req.get("swap", False)
+                if not isinstance(by_swap, bool):
+                    raise ValueError("swap must be a bool")
+                resp = query_top(by_swap, _limit(req))
+            elif cmd == "swap":
+                resp = query_swap(_limit(req))
+            elif cmd == "blame":
+                since = req.get("since")
+                if not isinstance(since, (int, float)) or since <= 0:
+                    raise ValueError("since must be a positive epoch timestamp")
+                resp = query_blame(float(since), _limit(req))
+            elif cmd == "zombies":
+                resp = query_zombies()
             else:
                 resp = {"error": "unknown command"}
         except Exception as exc:  # noqa: BLE001 — hostile input, never crash
@@ -261,6 +557,7 @@ def main():
 
     state = {}
     latest = {"doc": {"error": "no status yet"}}
+    sampler = Sampler(cfg)
     ctl = Control(cfg, lambda: latest["doc"])
     ctl.start()
 
@@ -275,6 +572,7 @@ def main():
         }
         latest["doc"] = doc
         write_status(doc, cfg)
+        sampler.maybe_sample(now)
         if args.once:
             break
         stop.wait(cfg["poll_interval"])

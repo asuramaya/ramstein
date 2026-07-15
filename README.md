@@ -13,15 +13,20 @@ the pill shows how much is left and how long until the kernel starts
 shooting.
 
 ```
-ramstein status    # available memory, PSI, burn rate, ETA-to-OOM
+ramstein status              # available memory, PSI, burn rate, ETA-to-OOM
+ramstein top [--swap]        # live per-process RSS + swap, ranked
+ramstein blame [--since 10m] # what grew in RSS
+ramstein swap                # who's parked in swap
+ramstein zombies             # defunct processes and their parent
 ```
 
-Status: **M1** — the pill (GNOME Quick Settings: available memory +
-ETA-to-OOM on the tile, PSI/swap/burn breakdown expanded; `make pill`,
-then `gnome-extensions enable ramstein@asuramaya`), atop the M0 truth
-engine (/proc/meminfo + /proc/pressure/memory polling, EWMA burn,
-ETA-to-OOM, status.json, control socket). See [PLAN.md](PLAN.md) for the
-road: `top` · `blame` · `oom` · `swap` · `zombies` · `calm` · `advise`.
+Status: **M2** — the per-process index (sqlite ring over `/proc`, `top` ·
+`blame` · `swap` · `zombies` live), atop M1's pill (GNOME Quick Settings:
+available memory + ETA-to-OOM on the tile, PSI/swap/burn breakdown
+expanded; `make pill`, then `gnome-extensions enable ramstein@asuramaya`)
+and the M0 truth engine (/proc/meminfo + /proc/pressure/memory polling,
+EWMA burn, ETA-to-OOM, status.json, control socket). See
+[PLAN.md](PLAN.md) for the road: `oom` · `calm` · `advise`.
 
 ## Install
 

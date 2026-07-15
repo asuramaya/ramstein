@@ -15,23 +15,20 @@ import time
 RUNTIME_DIR = os.environ.get("RAMSTEIN_RUNTIME_DIR", "/run/ramstein")
 
 PLANNED = {
-    "top": "M2 — live per-process RSS + swap, a memory-aware top",
-    "blame": "M2 — what grew in RSS since a point in time",
     "oom": "M2 — risk + ETA, ranked by the kernel's own oom_score",
-    "swap": "M2 — who's parked in swap, VmSwap across /proc",
-    "zombies": "M2 — defunct processes and the parent not reaping them",
     "calm": "M3 — memory.high nudge or renice; --kill is confirmation-gated",
     "advise": "M3 — nudges: leaks, runaway growth, a renderer swarm",
 }
 
 
-def fetch():
+def request(payload):
+    """One JSON command to the daemon; None if the socket is unreachable."""
     sock_path = os.path.join(RUNTIME_DIR, "control.sock")
     try:
         conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        conn.settimeout(3)
+        conn.settimeout(10)
         conn.connect(sock_path)
-        conn.sendall(b'{"cmd":"status"}\n')
+        conn.sendall(json.dumps(payload).encode() + b"\n")
         buf = b""
         while b"\n" not in buf:
             chunk = conn.recv(65536)
@@ -39,17 +36,53 @@ def fetch():
                 break
             buf += chunk
         conn.close()
-        doc = json.loads(buf.decode())
-        if isinstance(doc, dict) and "memory" in doc:
-            return doc
+        return json.loads(buf.decode())
     except (OSError, ValueError):
-        pass
+        return None
+
+
+def request_or_die(payload):
+    doc = request(payload)
+    if doc is None:
+        sys.exit("ramstein: daemon unreachable — is ramsteind running?")
+    if isinstance(doc, dict) and "error" in doc:
+        sys.exit(f"ramstein: {doc['error']}")
+    return doc
+
+
+def fetch():
+    doc = request({"cmd": "status"})
+    if isinstance(doc, dict) and "memory" in doc:
+        return doc
     try:
         with open(os.path.join(RUNTIME_DIR, "status.json")) as f:
             return json.load(f)
     except (OSError, ValueError):
         sys.exit("ramstein: no daemon and no status.json — is ramsteind "
                  "running?")
+
+
+def _flag_val(argv, name, default):
+    if name in argv:
+        i = argv.index(name)
+        if i + 1 < len(argv):
+            return argv[i + 1]
+    return default
+
+
+def parse_since(text, now):
+    """'30s' / '10m' / '2h' / '1d' or 'YYYY-MM-DD' -> epoch seconds."""
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    if text and text[-1] in units:
+        try:
+            return now - float(text[:-1]) * units[text[-1]]
+        except ValueError:
+            pass
+    try:
+        return time.mktime(time.strptime(text, "%Y-%m-%d"))
+    except ValueError:
+        sys.exit(f"ramstein: bad --since '{text}' (want 30s / 10m / 2h / 1d"
+                 " or YYYY-MM-DD)")
 
 
 def human_bytes(n):
@@ -108,17 +141,87 @@ def cmd_status(argv):
           f"OOM {human_eta(m['eta_oom_seconds'])}")
 
 
+def cmd_top(argv):
+    by_swap = "--swap" in argv
+    limit = int(_flag_val(argv, "--limit", "20"))
+    doc = request_or_die({"cmd": "top", "swap": by_swap, "limit": limit})
+    if "--json" in argv:
+        print(json.dumps(doc, indent=2))
+        return
+    age = human_eta(int(time.time() - doc["ts"])).lstrip("~") or "0s"
+    print(f"top by {'swap' if by_swap else 'rss'}   (sample {age} ago)")
+    print(f"{'RSS':>8} {'SWAP':>8}   {'PID':>7}  PROC")
+    for r in doc["rows"]:
+        flag = "Z " if r["state"] == "Z" else "  "
+        print(f"{human_bytes(r['rss']):>8} {human_bytes(r['swap']):>8}"
+              f"   {r['pid']:>7}  {flag}{r['comm']}")
+    if not doc["rows"]:
+        print("  (nothing above the index threshold yet)")
+
+
+def cmd_swap(argv):
+    limit = int(_flag_val(argv, "--limit", "20"))
+    doc = request_or_die({"cmd": "swap", "limit": limit})
+    if "--json" in argv:
+        print(json.dumps(doc, indent=2))
+        return
+    age = human_eta(int(time.time() - doc["ts"])).lstrip("~") or "0s"
+    print(f"parked in swap   (sample {age} ago)")
+    print(f"{'SWAP':>8} {'RSS':>8}   {'PID':>7}  PROC")
+    for r in doc["rows"]:
+        print(f"{human_bytes(r['swap']):>8} {human_bytes(r['rss']):>8}"
+              f"   {r['pid']:>7}  {r['comm']}")
+    if not doc["rows"]:
+        print("  nothing parked in swap")
+
+
+def cmd_blame(argv):
+    now = time.time()
+    since = parse_since(_flag_val(argv, "--since", "10m"), now)
+    limit = int(_flag_val(argv, "--limit", "20"))
+    doc = request_or_die({"cmd": "blame", "since": since, "limit": limit})
+    if "--json" in argv:
+        print(json.dumps(doc, indent=2))
+        return
+    span = human_eta(int(doc["head_ts"] - doc["base_ts"])).lstrip("~") or "0s"
+    print(f"RSS movers over the last {span}:")
+    for r in doc["rows"]:
+        sign = "+" if r["delta"] >= 0 else ""
+        tag = " new" if r["new"] else (" gone" if r["gone"] else "")
+        print(f"  {sign}{human_bytes(r['delta']):>8}  {r['comm']:<16}"
+              f" pid {r['pid']:<7} (now {human_bytes(r['rss'])}){tag}")
+    if not doc["rows"]:
+        print("  nothing moved above the index threshold")
+
+
+def cmd_zombies(argv):
+    doc = request_or_die({"cmd": "zombies"})
+    if "--json" in argv:
+        print(json.dumps(doc, indent=2))
+        return
+    rows = doc["rows"]
+    if not rows:
+        print("no zombies")
+        return
+    print(f"{'PID':>7}  PROC              PPID  PARENT")
+    for r in rows:
+        print(f"{r['pid']:>7}  {r['comm']:<16}  {r['ppid']:>5}"
+              f"  {r['parent_comm']}")
+
+
 def main():
     argv = sys.argv[1:]
     verb = argv[0] if argv and not argv[0].startswith("-") else "status"
     rest = argv[1:] if argv and not argv[0].startswith("-") else argv
-    if verb == "status":
-        cmd_status(rest)
+    verbs = {"status": cmd_status, "top": cmd_top, "blame": cmd_blame,
+             "swap": cmd_swap, "zombies": cmd_zombies}
+    if verb in verbs:
+        verbs[verb](rest)
     elif verb in PLANNED:
         sys.exit(f"ramstein {verb}: not yet — {PLANNED[verb]}")
     else:
-        verbs = ", ".join(["status"] + list(PLANNED))
-        sys.exit(f"ramstein: unknown verb '{verb}' (verbs: {verbs})")
+        known = ", ".join(list(verbs) + list(PLANNED))
+        sys.exit(f"ramstein: unknown verb '{verb}' (verbs: {known})")
 
 
 if __name__ == "__main__":
