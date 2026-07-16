@@ -22,7 +22,7 @@ import subprocess
 import threading
 import time
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 
 RUNTIME_DIR = os.environ.get("RAMSTEIN_RUNTIME_DIR", "/run/ramstein")
 STATUS_PATH = os.path.join(RUNTIME_DIR, "status.json")
@@ -288,8 +288,9 @@ class Sampler:
     def maybe_sample(self, now):
         self._tick += 1
         if self._tick % self.cfg["sample_every"]:
-            return
+            return False
         self._sample(now)
+        return True
 
     def _sample(self, now):
         floor = self.cfg["proc_min_bytes"]
@@ -681,6 +682,37 @@ def query_advise(cfg, get_status):
     return {"lines": lines}
 
 
+def build_pill_summary(cfg, get_status):
+    """A compact M2/M3 digest embedded into status.json so the pill stays a
+    one-file reader (GFileMonitor on status.json, no socket client in GJS)
+    instead of growing its own daemon-protocol client. Computed on the
+    sampler's own cadence (maybe_sample's return value), not every poll
+    tick — advise's coexistence check spawns systemctl, and there is no
+    reason to pay that cost 3x more often than the index itself refreshes."""
+    con = _connect_index()
+    try:
+        top_process = None
+        latest = _latest_sample(con)
+        if latest is not None:
+            sid, _ts = latest
+            row = con.execute(
+                "SELECT pid, comm, rss FROM proc_stats WHERE sample_id=?"
+                " ORDER BY rss DESC LIMIT 1", (sid,)).fetchone()
+            if row:
+                top_process = {"pid": row[0], "comm": row[1], "rss": row[2]}
+    finally:
+        con.close()
+    zombie_count = len(query_zombies()["rows"])
+    advise = query_advise(cfg, get_status)
+    lines = advise["lines"]
+    return {
+        "top_process": top_process,
+        "zombie_count": zombie_count,
+        "advise_headline": lines[0]["text"] if lines else None,
+        "advise_count": len(lines),
+    }
+
+
 def do_calm(pid, starttime, action, size=None, nice=None):
     proc = _find_proc(pid)
     if proc is None:
@@ -908,6 +940,7 @@ def main():
 
     state = {}
     latest = {"doc": {"error": "no status yet"}}
+    pill_cache = {"summary": None}
     sampler = Sampler(cfg)
     ctl = Control(cfg, lambda: latest["doc"])
     ctl.start()
@@ -922,8 +955,13 @@ def main():
             "memory": poll_memory(state, cfg, now),
         }
         latest["doc"] = doc
+        # pill summary refreshes on the sampler's own cadence (not every
+        # tick — see build_pill_summary), reusing the last one otherwise
+        if sampler.maybe_sample(now):
+            pill_cache["summary"] = build_pill_summary(cfg, lambda: latest["doc"])
+        doc["pill"] = pill_cache["summary"]
+        latest["doc"] = doc
         write_status(doc, cfg)
-        sampler.maybe_sample(now)
         if args.once:
             break
         stop.wait(cfg["poll_interval"])

@@ -473,4 +473,24 @@ RAMSTEIN_RUNTIME_DIR=$RD python3 bin/ramstein advise --json | python3 -c \
     "import json,sys; json.load(sys.stdin)" \
     || { echo "SMOKE FAIL: CLI advise json invalid"; exit 1; }
 
+# pill digest shape — by now the sampler has run many times, so it must be
+# populated (not the null-until-first-sample case, already exercised at
+# daemon startup implicitly by every check above tolerating a slow start)
+python3 - "$RD/status.json" <<'PY'
+import json, sys
+
+doc = json.load(open(sys.argv[1]))
+pill = doc.get("pill")
+assert pill is not None, "pill digest never populated"
+for key in ("top_process", "zombie_count", "advise_headline", "advise_count"):
+    assert key in pill, f"pill missing {key}"
+assert isinstance(pill["zombie_count"], int), pill["zombie_count"]
+assert isinstance(pill["advise_count"], int), pill["advise_count"]
+if pill["top_process"] is not None:
+    for key in ("pid", "comm", "rss"):
+        assert key in pill["top_process"], f"pill.top_process missing {key}"
+print(f"pill digest ok: top={pill['top_process'] and pill['top_process']['comm']}"
+      f" zombies={pill['zombie_count']} advise={pill['advise_count']}")
+PY
+
 echo "SMOKE OK"

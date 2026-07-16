@@ -2,8 +2,11 @@
 // Copyright (C) 2026 asuramaya and RAMstein contributors
 //
 // RAMstein — memory as a deadline, not a percentage, in a GNOME Quick
-// Settings pill. Reads the daemon's status snapshot; M1 is read-only
-// (the calm/kill levers arrive with M3 and will talk to the socket).
+// Settings pill. Read-only by design: one file (status.json), one
+// GFileMonitor, no daemon-protocol client in GJS. M2/M3 (top process,
+// zombie count, an advise headline) ride along as a small digest the
+// daemon computes into status.json — calm/kill stay CLI-only, on purpose;
+// a system-tray toggle is the wrong place for a kill confirmation.
 
 import GObject from 'gi://GObject';
 import Gio from 'gi://Gio';
@@ -89,9 +92,15 @@ class RAMsteinToggle extends QuickMenuToggle {
         this._alertSection = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(this._alertSection);
 
-        // memory / swap / pressure / burn rows, rebuilt on refresh
+        // memory / swap / top process / zombies / pressure / burn rows,
+        // rebuilt on refresh
         this._rowSection = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(this._rowSection);
+
+        // advise headline — hidden unless the daemon's advise rules have
+        // something to say (M2/M3 digest, see bin/ramsteind's "pill" field)
+        this._adviseSection = new PopupMenu.PopupMenuSection();
+        this.menu.addMenuItem(this._adviseSection);
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this._versionItem = new PopupMenu.PopupMenuItem('', {reactive: false});
@@ -110,6 +119,7 @@ class RAMsteinToggle extends QuickMenuToggle {
             this.checked = false;
             this._alertSection.removeAll();
             this._rowSection.removeAll();
+            this._adviseSection.removeAll();
             const it = new PopupMenu.PopupMenuItem(
                 stale ? 'ramsteind stopped updating' : 'ramsteind not running',
                 {reactive: false});
@@ -122,6 +132,7 @@ class RAMsteinToggle extends QuickMenuToggle {
 
     _apply(st) {
         const mem = st.memory;
+        const pill = st.pill ?? null;
         const state = mem.state ?? 'ok';
 
         // tile: the hero readout — how much is left, how long until the
@@ -162,13 +173,39 @@ class RAMsteinToggle extends QuickMenuToggle {
         this._rowSection.addMenuItem(memIt);
 
         const swapIt = new PopupMenu.PopupMenuItem('', {reactive: false});
+        // "X free of Y", matching the CLI — not "X of Y free", which reads
+        // like X is USED (the classic "3 of 10" idiom) when X is what's
+        // LEFT. Backwards at the worst possible moment: misread that way
+        // right when swap is nearly full, it says the opposite of true.
         const swap = (num(mem.swap_total) ?? 0) > 0
             ? `<span foreground="${ACCENT}">${fmtBytes(mem.swap_free)}</span>` +
-              `<span foreground="${DIM}"> of ${fmtBytes(mem.swap_total)} free</span>`
+              `<span foreground="${DIM}"> free of ${fmtBytes(mem.swap_total)}</span>`
             : `<span foreground="${DIM}">none</span>`;
         swapIt.label.clutter_text.set_markup(
             `<span foreground="${DIM}" font_weight="bold">●</span> swap  ${swap}`);
         this._rowSection.addMenuItem(swapIt);
+
+        // top process + zombie count come from the M2/M3 digest the daemon
+        // computes on the sampler's own cadence — null until the first
+        // sample lands (daemon just (re)started), so both are optional
+        if (pill?.top_process) {
+            const tp = pill.top_process;
+            const topIt = new PopupMenu.PopupMenuItem('', {reactive: false});
+            topIt.label.clutter_text.set_markup(
+                `<span foreground="${DIM}" font_weight="bold">●</span> top   ` +
+                `<span foreground="${ACCENT}">${fmtBytes(tp.rss)}</span>` +
+                `<span foreground="${DIM}"> ${esc(tp.comm)} (pid ${tp.pid})</span>`);
+            this._rowSection.addMenuItem(topIt);
+        }
+
+        if (pill?.zombie_count > 0) {
+            const zIt = new PopupMenu.PopupMenuItem('', {reactive: false});
+            zIt.label.clutter_text.set_markup(
+                `<span foreground="${WARN}" font_weight="bold">●</span> zombies  ` +
+                `<span foreground="${WARN}">${pill.zombie_count}</span>` +
+                `<span foreground="${DIM}"> unreaped</span>`);
+            this._rowSection.addMenuItem(zIt);
+        }
 
         const psiIt = new PopupMenu.PopupMenuItem('', {reactive: false});
         const some10 = num(mem.psi?.some_avg10);
@@ -183,6 +220,20 @@ class RAMsteinToggle extends QuickMenuToggle {
         burnIt.label.clutter_text.set_markup(
             `<span foreground="${DIM}">burn  ${esc(fmtBurn(mem.burn_bps))}</span>`);
         this._rowSection.addMenuItem(burnIt);
+
+        // advise headline: the single most-urgent nudge, with a "+N more"
+        // count when there's more than one — full detail stays a CLI-only
+        // thing (`ramstein advise`), the pill just says something's worth a
+        // look
+        this._adviseSection.removeAll();
+        if (pill?.advise_headline) {
+            const extra = pill.advise_count > 1
+                ? ` (+${pill.advise_count - 1} more)` : '';
+            const advIt = new PopupMenu.PopupMenuItem('', {reactive: false});
+            advIt.label.clutter_text.set_markup(
+                `<span foreground="${WARN}">▸ ${esc(pill.advise_headline + extra)}</span>`);
+            this._adviseSection.addMenuItem(advIt);
+        }
 
         this.menu.setHeader(ICON, 'RAMstein', this.subtitle);
         this._setVersion(st.daemon?.version);

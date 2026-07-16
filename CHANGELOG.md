@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1 — pill catches up
+- extension/ramstein@asuramaya: fixed a swap-row mislabel — "X of Y free" reads like X is *used* (the "3 of 10" idiom), backwards for X being what's *left*; now "X free of Y", matching the CLI
+- the pill was still M0-era: memory/swap/pressure/burn only, blind to everything M2/M3 unlocked. ramsteind now computes a small digest (top RSS process, zombie count, the single most-urgent advise line) on the sampler's own cadence and rides it along in status.json's new `pill` field — no socket client added to the pill, still one file + one GFileMonitor. New rows: top process (when available), zombies (only when >0), and an advise headline (only when there's something to say, with a "+N more" count)
+
 ## 0.4.0 — M3 the hands
 - invariant gates land first, per house doctrine: coexistence check (systemd-oomd/earlyoom, read-only `systemctl is-active`) prepended as a warning to every action verb's output; kill gate — the CLI requires a fresh interactive TTY confirmation typing the target's exact pid back (no `--yes`, no env bypass, non-TTY stdin refuses outright), the daemon independently re-validates `(pid, starttime)` so a stale/reused pid can't slip through even if the CLI layer were bypassed; pid 1, kernel threads, and the daemon itself are never valid targets
 - `calm <pid|comm> [--high SIZE|--release|--nice N|--kill]`: target resolution by pid or exact comm (ambiguous comm matches refuse with the candidate list); `--high` writes cgroup v2 `memory.high` with a floor computed from the target's own RSS (PLAN.md Invariant #2 — a size can never be set low enough to instant-thrash-OOM the thing it's meant to calm) and clamped to `[64M, MemTotal]`; `--release` clears to max; `--nice` reniced 0..19 (calm only ever lowers priority); `--kill` sends SIGTERM then an optional SIGKILL after a 5s live-check, TTY-confirmed each time. Every action ledgered to `RAMSTEIN_STATE_DIR/ledger.jsonl`
