@@ -18,10 +18,11 @@ import signal
 import socket
 import sqlite3
 import struct
+import subprocess
 import threading
 import time
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 RUNTIME_DIR = os.environ.get("RAMSTEIN_RUNTIME_DIR", "/run/ramstein")
 STATUS_PATH = os.path.join(RUNTIME_DIR, "status.json")
@@ -45,6 +46,7 @@ DEFAULTS = {
     "proc_min_bytes": 16 * 1024 * 1024,  # rss+swap floor to earn an index row
     "recent_ring": 120,        # fine-grained samples kept (~1h at defaults)
     "hourly_ring": 168,        # promoted samples kept (~7d)
+    "advise_growth_mib_per_hour": 500.0,  # advise rule 2's leak-ish threshold
 }
 
 CLAMPS = {
@@ -62,6 +64,7 @@ CLAMPS = {
     "proc_min_bytes": (1 << 20, 1 << 40),
     "recent_ring": (2, 100000),
     "hourly_ring": (2, 100000),
+    "advise_growth_mib_per_hour": (1.0, 1000000.0),
 }
 
 
@@ -455,6 +458,312 @@ def _limit(req):
     return lim
 
 
+# --- hands: calm / oom / advise (M3) ----------------------------------------
+# The invariant gates come first, on purpose (M3-SPEC.md): coexistence with
+# systemd-oomd/earlyoom, and the kill gate. The CLI gates the HUMAN (fresh
+# per-invocation TTY confirmation); the daemon gates the SYSCALL (re-resolves
+# pid+starttime itself — never trusts that what the CLI resolved earlier is
+# still true by the time the command arrives). Ledgered to
+# STATE_DIR/ledger.jsonl, the family ledger, memory dialect.
+
+CALM_HIGH_FLOOR_BYTES = 64 * 1024 * 1024  # PLAN.md Invariant #2's floor
+NICE_MIN, NICE_MAX = 0, 19                # calm only ever LOWERS priority
+LEDGER_PATH = os.path.join(STATE_DIR, "ledger.jsonl")
+
+
+def _coexisting_oom_fighter():
+    """Read-only: is systemd-oomd or earlyoom already fighting OOM here?"""
+    for unit in ("systemd-oomd", "earlyoom"):
+        try:
+            r = subprocess.run(["systemctl", "is-active", unit],
+                               capture_output=True, text=True, timeout=2)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if r.stdout.strip() == "active":
+            return unit
+    return None
+
+
+def _ledger_write(entry):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    with open(LEDGER_PATH, "a") as f:
+        f.write(json.dumps(entry, separators=(",", ":")) + "\n")
+
+
+def _cgroup_root():
+    # An env override is honored ONLY when running unprivileged — a root
+    # daemon must never let an environment variable redirect where it writes
+    # real cgroup files (config-can't-weaken-safety doctrine, applied to
+    # env). Tests run as an unprivileged user and use this to point at a
+    # fake, writable cgroup tree instead of the real, unwritable one.
+    root = os.environ.get("RAMSTEIN_CGROUP_ROOT")
+    if root and os.getuid() != 0:
+        return root
+    return "/sys/fs/cgroup"
+
+
+def _cgroup_path(pid):
+    try:
+        with open(f"/proc/{pid}/cgroup") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        parts = line.split(":", 2)
+        if len(parts) == 3 and parts[0] == "0":  # cgroup v2 unified line
+            return os.path.join(_cgroup_root(), parts[2].lstrip("/"))
+    return None
+
+
+def _mem_total_bytes():
+    with open("/proc/meminfo") as f:
+        for line in f:
+            if line.startswith("MemTotal"):
+                return int(line.split()[1]) * 1024
+    return 0
+
+
+def _parse_size(text):
+    """'500M' / '2G' / 'max' -> bytes (None for 'max'). Raises on garbage
+    or a non-positive size — hostile input, never silently clamped up."""
+    if text == "max":
+        return None
+    units = {"K": 1024, "M": 1024 ** 2, "G": 1024 ** 3}
+    unit = text[-1].upper() if text else ""
+    try:
+        n = float(text[:-1]) if unit in units else float(text)
+    except ValueError:
+        raise ValueError("bad size")
+    value = n * units.get(unit, 1)
+    if value <= 0:
+        raise ValueError("size must be positive")
+    return int(value)
+
+
+def _find_proc(pid):
+    return next((p for p in _read_procs() if p["pid"] == pid), None)
+
+
+def query_resolve(target):
+    """pid (as int or digit-string) matches by pid; anything else matches by
+    exact comm — which, same as `ps`, is routinely NOT unique (multiple
+    chrome/postgres/python processes), hence the caller must handle >1."""
+    if isinstance(target, int) or (isinstance(target, str) and target.isdigit()):
+        pid = int(target)
+        matches = [p for p in _read_procs() if p["pid"] == pid]
+    else:
+        matches = [p for p in _read_procs() if p["comm"] == target]
+    return {"matches": [
+        {"pid": p["pid"], "comm": p["comm"], "rss": p["rss"], "swap": p["swap"],
+         "starttime": p["starttime"]} for p in matches]}
+
+
+def query_oom(get_status):
+    doc = get_status()
+    mem = doc.get("memory") if isinstance(doc, dict) else None
+    candidates = []
+    for entry in os.scandir("/proc"):
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        try:
+            with open(f"/proc/{pid}/oom_score") as f:
+                score = int(f.read().strip())
+        except (OSError, ValueError):
+            continue
+        try:
+            with open(f"/proc/{pid}/status") as f:
+                status = f.read()
+        except OSError:
+            continue
+        if "VmRSS" not in status:
+            continue
+        comm, rss = None, 0
+        for line in status.splitlines():
+            key, _, rest = line.partition(":")
+            if key == "Name":
+                comm = rest.strip()
+            elif key == "VmRSS":
+                rss = int(rest.split()[0]) * 1024
+        candidates.append({"pid": pid, "comm": comm or "?", "rss": rss,
+                           "oom_score": score})
+    candidates.sort(key=lambda c: c["oom_score"], reverse=True)
+    return {"memory": mem, "candidates": candidates[:5]}
+
+
+def query_advise(cfg, get_status):
+    lines = []
+    doc = get_status()
+    mem = doc.get("memory") if isinstance(doc, dict) else None
+
+    # rule 1: sustained pressure (avg60, not the twitchier avg10)
+    if mem:
+        some60 = mem["psi"].get("some_avg60")
+        if some60 is not None and some60 > cfg["warn_psi_some"]:
+            lines.append({"rule": "psi", "text":
+                f"sustained pressure: PSI some avg60 {some60:.1f}%"
+                f" > {cfg['warn_psi_some']:.1f}%"})
+
+    # rule 2: top RSS grower over the recent ring (~1h), MiB/h rate
+    con = _connect_index()
+    try:
+        head = _latest_sample(con)
+        if head is not None:
+            head_id, head_ts = head
+            base = con.execute(
+                "SELECT id, ts FROM samples WHERE ts <= ?"
+                " ORDER BY ts DESC LIMIT 1", (head_ts - 3600,)).fetchone()
+            if base is None:
+                base = con.execute(
+                    "SELECT id, ts FROM samples ORDER BY ts ASC LIMIT 1"
+                ).fetchone()
+            if base and base[0] != head_id:
+                base_id, base_ts = base
+                row = con.execute(
+                    "SELECT h.pid, h.comm, h.rss - COALESCE(b.rss, 0)"
+                    " FROM proc_stats h LEFT JOIN proc_stats b"
+                    "   ON b.sample_id=? AND b.pid=h.pid"
+                    "     AND b.starttime=h.starttime"
+                    " WHERE h.sample_id=? ORDER BY 3 DESC LIMIT 1",
+                    (base_id, head_id)).fetchone()
+                span_s = (head_ts - base_ts) if row else 0
+                # a short span extrapolated to an hourly rate is noise, not
+                # signal — require at least 5 minutes of real history before
+                # this rule speaks (freshly started daemon, thin ring, etc.)
+                if row and span_s >= 300:
+                    pid, comm, delta = row
+                    rate = delta / (span_s / 3600.0)
+                    threshold = cfg["advise_growth_mib_per_hour"] * 1024 ** 2
+                    if rate > threshold:
+                        lines.append({"rule": "growth", "text":
+                            f"{comm} (pid {pid}) growing"
+                            f" ~{rate / 1024 / 1024:.0f} MiB/h"})
+    finally:
+        con.close()
+
+    # rule 3: swap occupancy > 50%, name the top tenant
+    if mem and mem.get("swap_total", 0) > 0:
+        used_pct = (100.0 * (mem["swap_total"] - mem["swap_free"])
+                    / mem["swap_total"])
+        if used_pct > 50.0:
+            top = query_swap(1)
+            tenant = (top.get("rows") or [None])[0]
+            if tenant:
+                lines.append({"rule": "swap", "text":
+                    f"swap {used_pct:.0f}% full — top tenant {tenant['comm']}"
+                    f" (pid {tenant['pid']}, {tenant['swap']}B)"})
+
+    # rule 4: zombies, name the parent not reaping them
+    zs = query_zombies()["rows"]
+    if zs:
+        tally = {}
+        for z in zs:
+            tally[z["parent_comm"]] = tally.get(z["parent_comm"], 0) + 1
+        parent, count = max(tally.items(), key=lambda kv: kv[1])
+        lines.append({"rule": "zombies", "text":
+            f"{len(zs)} zombie(s) unreaped — {parent} isn't reaping"
+            f" ({count} of them)"})
+
+    # rule 5: another OOM-fighter active — stand-down language
+    fighter = _coexisting_oom_fighter()
+    if fighter:
+        lines.append({"rule": "coexist", "text":
+            f"{fighter} is active — RAMstein's kill prompts stay"
+            " advisory-only, standing down"})
+
+    # rule 6: ETA under an hour — point at `oom`
+    if mem:
+        eta = mem.get("eta_oom_seconds")
+        if eta is not None and eta < 3600:
+            lines.append({"rule": "eta", "text":
+                f"OOM ETA {eta}s — see `ramstein oom` for kill candidates"})
+
+    return {"lines": lines}
+
+
+def do_calm(pid, starttime, action, size=None, nice=None):
+    proc = _find_proc(pid)
+    if proc is None:
+        return {"error": "target process not found"}
+    if proc["starttime"] != starttime:
+        return {"error": "stale pid — starttime mismatch, refusing"}
+
+    result = {"pid": pid, "comm": proc["comm"]}
+    fighter = _coexisting_oom_fighter()
+    if fighter:
+        result["coexist_warning"] = fighter
+
+    if action == "nice":
+        try:
+            os.setpriority(os.PRIO_PROCESS, pid, nice)
+        except OSError as exc:
+            return {"error": f"renice failed: {exc.strerror}"}
+        result.update(ok=True, nice=nice)
+        _ledger_write({"ts": time.time(), "verb": "calm", "pid": pid,
+                       "comm": proc["comm"], "arg": f"nice={nice}",
+                       "result": "ok"})
+        return result
+
+    # high / release both write memory.high
+    cpath = _cgroup_path(pid)
+    high_file = os.path.join(cpath, "memory.high") if cpath else None
+    if not high_file or not os.access(high_file, os.W_OK):
+        return {"error": "cgroup memory.high not writable — try --nice"}
+    if action == "release":
+        write_val, value_bytes = "max", None
+    else:
+        requested = _parse_size(size)
+        if requested is None:
+            write_val, value_bytes = "max", None
+        else:
+            # PLAN.md Invariant #2: the floor is computed from the target's
+            # OWN rss, so a tampered/fat-fingered SIZE can never be set low
+            # enough to instant-thrash-OOM the thing calm is meant to help.
+            floor = max(CALM_HIGH_FLOOR_BYTES, int(proc["rss"] * 1.1))
+            clamped = max(floor, min(requested, _mem_total_bytes()))
+            write_val, value_bytes = str(clamped), clamped
+    try:
+        with open(high_file, "w") as f:
+            f.write(write_val)
+    except OSError as exc:
+        return {"error": f"write failed: {exc.strerror}"}
+    result.update(ok=True, cgroup=cpath, memory_high=value_bytes)
+    _ledger_write({"ts": time.time(), "verb": "calm", "pid": pid,
+                   "comm": proc["comm"],
+                   "arg": "release" if action == "release" else size,
+                   "result": "ok"})
+    return result
+
+
+def do_kill(pid, starttime, confirm, sig):
+    # invariant gates: confirm must echo pid (defense in depth against a
+    # caller that sends pid without ever having gone through a real confirm
+    # step), and pid 1 / the daemon's own pid are never valid — kernel
+    # threads are already structurally excluded, _find_proc can't see them
+    # (no VmRSS -> _read_procs skips them).
+    if confirm != pid:
+        return {"error": "confirm must equal pid"}
+    if pid in (1, os.getpid()):
+        return {"error": "refused: protected pid"}
+    proc = _find_proc(pid)
+    if proc is None:
+        return {"error": "target process not found"}
+    if proc["starttime"] != starttime:
+        return {"error": "stale pid — starttime mismatch, refusing"}
+    fighter = _coexisting_oom_fighter()
+    real_sig = signal.SIGKILL if sig == "KILL" else signal.SIGTERM
+    try:
+        os.kill(pid, real_sig)
+    except OSError as exc:
+        return {"error": f"kill failed: {exc.strerror}"}
+    result = {"ok": True, "pid": pid, "comm": proc["comm"], "signal": sig}
+    if fighter:
+        result["coexist_warning"] = fighter
+    _ledger_write({"ts": time.time(), "verb": "kill", "pid": pid,
+                   "comm": proc["comm"], "arg": sig, "result": "ok"})
+    return result
+
+
 # --- control socket ---------------------------------------------------------
 # Input is hostile by default: SO_PEERCRED-gated (root or the owner, on top
 # of the 0660 file mode — family ruling 2026-07-14), bounded reads, JSON
@@ -466,6 +775,7 @@ class Control(threading.Thread):
 
     def __init__(self, cfg, get_status):
         super().__init__(daemon=True)
+        self.cfg = cfg
         self.get_status = get_status
         self._allowed = {0, os.getuid(), cfg["owner_uid"]}
         try:
@@ -526,6 +836,47 @@ class Control(threading.Thread):
                 resp = query_blame(float(since), _limit(req))
             elif cmd == "zombies":
                 resp = query_zombies()
+            elif cmd == "resolve":
+                target = req.get("target")
+                if not isinstance(target, str) or not target:
+                    raise ValueError("target must be a non-empty string")
+                resp = query_resolve(target)
+            elif cmd == "oom":
+                resp = query_oom(self.get_status)
+            elif cmd == "advise":
+                resp = query_advise(self.cfg, self.get_status)
+            elif cmd == "calm":
+                pid = req.get("pid")
+                starttime = req.get("starttime")
+                action = req.get("action")
+                if not isinstance(pid, int) or not isinstance(starttime, int):
+                    raise ValueError("pid/starttime must be ints")
+                if action == "high":
+                    size = req.get("size")
+                    if not isinstance(size, str) or not size:
+                        raise ValueError("size must be a non-empty string")
+                    resp = do_calm(pid, starttime, "high", size=size)
+                elif action == "release":
+                    resp = do_calm(pid, starttime, "release")
+                elif action == "nice":
+                    nice = req.get("nice")
+                    if not isinstance(nice, int) or not NICE_MIN <= nice <= NICE_MAX:
+                        raise ValueError(
+                            f"nice must be an int in {NICE_MIN}..{NICE_MAX}")
+                    resp = do_calm(pid, starttime, "nice", nice=nice)
+                else:
+                    raise ValueError("unknown calm action")
+            elif cmd == "kill":
+                pid = req.get("pid")
+                starttime = req.get("starttime")
+                confirm = req.get("confirm")
+                sig = req.get("sig", "TERM")
+                if not isinstance(pid, int) or not isinstance(starttime, int) \
+                        or not isinstance(confirm, int):
+                    raise ValueError("pid/starttime/confirm must be ints")
+                if sig not in ("TERM", "KILL"):
+                    raise ValueError("sig must be TERM or KILL")
+                resp = do_kill(pid, starttime, confirm, sig)
             else:
                 resp = {"error": "unknown command"}
         except Exception as exc:  # noqa: BLE001 — hostile input, never crash

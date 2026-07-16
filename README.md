@@ -18,15 +18,21 @@ ramstein top [--swap]        # live per-process RSS + swap, ranked
 ramstein blame [--since 10m] # what grew in RSS
 ramstein swap                # who's parked in swap
 ramstein zombies             # defunct processes and their parent
+ramstein oom                 # risk snapshot + who the kernel would kill first
+ramstein advise              # nudges: leaks, swap pressure, zombies, ETA
+ramstein calm <pid|comm> [--high SIZE|--release|--nice N|--kill]
 ```
 
-Status: **M2** — the per-process index (sqlite ring over `/proc`, `top` ·
-`blame` · `swap` · `zombies` live), atop M1's pill (GNOME Quick Settings:
-available memory + ETA-to-OOM on the tile, PSI/swap/burn breakdown
-expanded; `make pill`, then `gnome-extensions enable ramstein@asuramaya`)
-and the M0 truth engine (/proc/meminfo + /proc/pressure/memory polling,
-EWMA burn, ETA-to-OOM, status.json, control socket). See
-[PLAN.md](PLAN.md) for the road: `oom` · `calm` · `advise`.
+Status: **M3** — the hands (`calm` / `oom` / `advise` live: memory.high /
+renice / TTY-confirmed kill, gated by a coexistence check against systemd-
+oomd/earlyoom and a daemon-side pid+starttime kill gate), atop M2's per-
+process index (sqlite ring over `/proc`, `top` · `blame` · `swap` ·
+`zombies`), M1's pill (GNOME Quick Settings: available memory + ETA-to-OOM
+on the tile, PSI/swap/burn breakdown expanded; `make pill`, then
+`gnome-extensions enable ramstein@asuramaya`), and the M0 truth engine
+(/proc/meminfo + /proc/pressure/memory polling, EWMA burn, ETA-to-OOM,
+status.json, control socket). See [PLAN.md](PLAN.md) for the road: the
+still-unnamed active mode, `.deb`, man pages.
 
 ## Install
 

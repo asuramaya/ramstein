@@ -14,11 +14,7 @@ import time
 
 RUNTIME_DIR = os.environ.get("RAMSTEIN_RUNTIME_DIR", "/run/ramstein")
 
-PLANNED = {
-    "oom": "M2 — risk + ETA, ranked by the kernel's own oom_score",
-    "calm": "M3 — memory.high nudge or renice; --kill is confirmation-gated",
-    "advise": "M3 — nudges: leaks, runaway growth, a renderer swarm",
-}
+PLANNED = {}
 
 
 def request(payload):
@@ -209,12 +205,137 @@ def cmd_zombies(argv):
               f"  {r['parent_comm']}")
 
 
+def cmd_oom(argv):
+    doc = request_or_die({"cmd": "oom"})
+    if "--json" in argv:
+        print(json.dumps(doc, indent=2))
+        return
+    mem = doc.get("memory") or {}
+    if mem:
+        print(f"available {human_bytes(mem.get('available', 0))} of "
+              f"{human_bytes(mem.get('total', 0))}   "
+              f"pressure {human_psi(mem.get('psi', {}))}   "
+              f"burn {human_burn(mem.get('burn_bps', 0))}   "
+              f"OOM {human_eta(mem.get('eta_oom_seconds'))}")
+    print("who dies first (by oom_score):")
+    for c in doc.get("candidates", []):
+        print(f"  {c['oom_score']:>5}  {human_bytes(c['rss']):>8}"
+              f"   {c['pid']:>7}  {c['comm']}")
+    if not doc.get("candidates"):
+        print("  (no candidates)")
+
+
+def cmd_advise(argv):
+    doc = request_or_die({"cmd": "advise"})
+    if "--json" in argv:
+        print(json.dumps(doc, indent=2))
+        return
+    lines = doc.get("lines", [])
+    if not lines:
+        print("nothing to advise — looks calm")
+        return
+    for line in lines:
+        print(f"- {line['text']}")
+
+
+def _resolve_or_die(target):
+    doc = request_or_die({"cmd": "resolve", "target": target})
+    matches = doc.get("matches", [])
+    if not matches:
+        sys.exit(f"ramstein: no process matches '{target}'")
+    if len(matches) > 1:
+        rows = "\n".join(
+            f"  pid {m['pid']:<7} {human_bytes(m['rss']):>8}  {m['comm']}"
+            for m in matches)
+        sys.exit(f"ramstein: '{target}' is ambiguous — {len(matches)} "
+                 f"matches:\n{rows}\npass a pid instead")
+    return matches[0]
+
+
+def _print_coexist_warning(doc):
+    if doc.get("coexist_warning"):
+        print(f"! {doc['coexist_warning']} is active — proceeding, but it "
+              "may already be handling this")
+
+
+def cmd_calm(argv):
+    if not argv or argv[0].startswith("-"):
+        sys.exit("ramstein: calm needs a target pid or comm — "
+                 "calm <pid|comm> [--high SIZE|--release|--nice N|--kill]")
+    target, rest = argv[0], argv[1:]
+    m = _resolve_or_die(target)
+    pid, comm, starttime = m["pid"], m["comm"], m["starttime"]
+
+    if "--kill" in rest:
+        if not sys.stdin.isatty():
+            sys.exit("ramstein: --kill refuses a non-interactive TTY")
+        try:
+            typed = input(f"really kill {pid} ({comm})? type its PID to "
+                         "confirm: ").strip()
+        except EOFError:
+            typed = ""
+        if typed != str(pid):
+            sys.exit("ramstein: kill not confirmed")
+        doc = request_or_die({"cmd": "kill", "pid": pid, "starttime": starttime,
+                              "confirm": pid, "sig": "TERM"})
+        _print_coexist_warning(doc)
+        print(f"SIGTERM sent to {pid} ({comm})")
+        for _ in range(10):
+            if not os.path.exists(f"/proc/{pid}"):
+                print(f"{pid} exited")
+                return
+            time.sleep(0.5)
+        if sys.stdin.isatty():
+            try:
+                ans = input(f"{pid} still alive after 5s — SIGKILL? "
+                           "[y/N] ").strip().lower()
+            except EOFError:
+                ans = ""
+            if ans in ("y", "yes"):
+                request_or_die({"cmd": "kill", "pid": pid,
+                                "starttime": starttime, "confirm": pid,
+                                "sig": "KILL"})
+                print(f"SIGKILL sent to {pid}")
+                return
+        print(f"{pid} left alone (still alive after SIGTERM)")
+        return
+
+    if "--release" in rest:
+        doc = request_or_die({"cmd": "calm", "pid": pid, "starttime": starttime,
+                              "action": "release"})
+        _print_coexist_warning(doc)
+        print(f"{comm} (pid {pid}): memory.high released to max")
+        return
+
+    nice_val = _flag_val(rest, "--nice", None)
+    if nice_val is not None:
+        doc = request_or_die({"cmd": "calm", "pid": pid, "starttime": starttime,
+                              "action": "nice", "nice": int(nice_val)})
+        _print_coexist_warning(doc)
+        print(f"{comm} (pid {pid}): nice -> {doc['nice']}")
+        return
+
+    high_val = _flag_val(rest, "--high", None)
+    if high_val is not None:
+        doc = request_or_die({"cmd": "calm", "pid": pid, "starttime": starttime,
+                              "action": "high", "size": high_val})
+        _print_coexist_warning(doc)
+        got = doc.get("memory_high")
+        print(f"{comm} (pid {pid}): memory.high -> "
+              f"{'max' if got is None else human_bytes(got)}")
+        return
+
+    sys.exit("ramstein: calm needs one of --high SIZE | --release | "
+             "--nice N | --kill")
+
+
 def main():
     argv = sys.argv[1:]
     verb = argv[0] if argv and not argv[0].startswith("-") else "status"
     rest = argv[1:] if argv and not argv[0].startswith("-") else argv
     verbs = {"status": cmd_status, "top": cmd_top, "blame": cmd_blame,
-             "swap": cmd_swap, "zombies": cmd_zombies}
+             "swap": cmd_swap, "zombies": cmd_zombies, "oom": cmd_oom,
+             "advise": cmd_advise, "calm": cmd_calm}
     if verb in verbs:
         verbs[verb](rest)
     elif verb in PLANNED:
