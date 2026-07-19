@@ -264,11 +264,16 @@ RAMSTEIN_RUNTIME_DIR=$RD python3 bin/ramstein blame --since 1m --json | python3 
 # CI machines are slow, so this is a canary, not a benchmark (M2-SPEC.md)
 python3 - <<'PY'
 import importlib.util
+import sys
 import time
 from importlib.machinery import SourceFileLoader
 
 # bin/ramsteind has no .py suffix, so spec_from_file_location can't infer a
-# loader on its own — hand it one explicitly.
+# loader on its own — hand it one explicitly. It now does `import sutra`,
+# a sibling module in bin/ — put that dir on sys.path so it resolves the
+# same way it does when the daemon is run normally (python3 bin/ramsteind
+# puts the script's own directory on sys.path[0] automatically).
+sys.path.insert(0, "bin")
 loader = SourceFileLoader("ramsteind_perf", "bin/ramsteind")
 spec = importlib.util.spec_from_loader(loader.name, loader)
 mod = importlib.util.module_from_spec(spec)
@@ -501,7 +506,8 @@ DEBFILE="build/deb/ramstein_$(tr -d '[:space:]' < VERSION)_all.deb"
 [ -f "$DEBFILE" ] || { echo "SMOKE FAIL: $DEBFILE not built"; exit 1; }
 CONTENTS=$(dpkg-deb --contents "$DEBFILE")
 for want in usr/bin/ramsteind usr/bin/ramstein usr/bin/ramstein-healthcheck \
-            usr/bin/ramstein-update lib/systemd/system/ramsteind.service \
+            usr/bin/ramstein-update usr/bin/sutra.py \
+            lib/systemd/system/ramsteind.service \
             lib/systemd/system/ramstein-update.service \
             lib/systemd/system/ramstein-update.timer \
             usr/share/man/man1/ramstein.1 usr/share/man/man8/ramsteind.8 \

@@ -12,17 +12,16 @@ stdlib only, by constitution.
 
 import argparse
 import json
-import math
 import os
 import signal
-import socket
 import sqlite3
-import struct
 import subprocess
 import threading
 import time
 
-VERSION = "0.5.0"
+import sutra
+
+VERSION = "0.6.0"
 
 RUNTIME_DIR = os.environ.get("RAMSTEIN_RUNTIME_DIR", "/run/ramstein")
 STATUS_PATH = os.path.join(RUNTIME_DIR, "status.json")
@@ -69,22 +68,7 @@ CLAMPS = {
 
 
 def load_config(path):
-    cfg = dict(DEFAULTS)
-    try:
-        with open(path) as f:
-            raw = json.load(f)
-    except (OSError, ValueError):
-        return cfg
-    if not isinstance(raw, dict):
-        return cfg
-    for key, default in DEFAULTS.items():
-        if key not in raw:
-            continue
-        val = raw[key]
-        if isinstance(default, (int, float)) and isinstance(val, (int, float)):
-            lo, hi = CLAMPS[key]
-            cfg[key] = type(default)(min(hi, max(lo, val)))
-    return cfg
+    return sutra.load_config(path, DEFAULTS, CLAMPS)
 
 
 # --- polling ----------------------------------------------------------------
@@ -134,13 +118,12 @@ def poll_memory(state, cfg, now):
     psi = read_psi()
 
     prev = state.get("mem")
-    ewma = 0.0
-    if prev is not None:
-        dt = max(1e-3, now - prev["t"])
-        rate = (prev["avail"] - avail) / dt  # bytes/s, positive = being eaten
-        alpha = 1.0 - math.exp(-dt / cfg["burn_tau"])
-        ewma = alpha * rate + (1.0 - alpha) * prev["ewma"]
-    state["mem"] = {"t": now, "avail": avail, "ewma": ewma}
+    # sutra.ewma_rate wants the quantity whose INCREASE is the burn; RAMstein
+    # measures consumption, so feed it the used-equivalent (total - avail) —
+    # since total is constant, avail falling and used rising are the same
+    # rate, just mirrored. burn stays positive-when-memory-is-eaten.
+    state["mem"], ewma = sutra.ewma_rate(prev, total - avail, now,
+                                         cfg["burn_tau"])
 
     eta = None
     if ewma > 1024.0:  # below 1 KiB/s the ETA is astrology
@@ -175,14 +158,7 @@ def classify(total, avail, psi, eta, cfg):
 
 
 def write_status(doc, cfg):
-    tmp = STATUS_PATH + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(doc, f, separators=(",", ":"))
-        f.write("\n")
-    os.chmod(tmp, 0o640)
-    if os.getuid() == 0:
-        os.chown(tmp, cfg["owner_uid"], -1)
-    os.replace(tmp, STATUS_PATH)
+    sutra.write_status(STATUS_PATH, doc, owner=(cfg["owner_uid"], -1))
 
 
 # --- index: the persistent truth about who's holding memory hostage --------
@@ -797,134 +773,69 @@ def do_kill(pid, starttime, confirm, sig):
 
 
 # --- control socket ---------------------------------------------------------
-# Input is hostile by default: SO_PEERCRED-gated (root or the owner, on top
-# of the 0660 file mode — family ruling 2026-07-14), bounded reads, JSON
-# only, a fixed command set, anything else answers {"error": ...} and the
-# connection dies.
+# The security seam (SO_PEERCRED-gated, bounded reads, hostile-input framing,
+# the listen(64) backlog M4's attack suite demanded) lives in
+# sutra.ControlServer now. This dispatch closure carries only the domain
+# commands; ping/status are sutra's job.
 
-class Control(threading.Thread):
-    MAX_LINE = 4096
-
-    def __init__(self, cfg, get_status):
-        super().__init__(daemon=True)
-        self.cfg = cfg
-        self.get_status = get_status
-        self._allowed = {0, os.getuid(), cfg["owner_uid"]}
-        try:
-            os.unlink(SOCKET_PATH)
-        except FileNotFoundError:
-            pass
-        self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.srv.bind(SOCKET_PATH)
-        os.chmod(SOCKET_PATH, 0o660)
-        if os.getuid() == 0:
-            os.chown(SOCKET_PATH, cfg["owner_uid"], -1)
-        # a deep-ish backlog so a burst of rapid connects is absorbed by the
-        # kernel queue instead of bouncing clients with EAGAIN — M4's attack
-        # suite (rapid-reconnect phase) found listen(4) too small under a
-        # 200-connection burst; the accept loop itself was never the
-        # bottleneck (each connection already hands off to its own thread)
-        self.srv.listen(64)
-
-    def run(self):
-        while True:
-            try:
-                conn, _ = self.srv.accept()
-            except OSError:
-                return
-            threading.Thread(target=self.handle, args=(conn,),
-                             daemon=True).start()
-
-    def handle(self, conn):
-        try:
-            creds = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
-                                    struct.calcsize("3i"))
-            _pid, peer_uid, _gid = struct.unpack("3i", creds)
-            if peer_uid not in self._allowed:
-                raise PermissionError("peer not allowed")
-            conn.settimeout(5)
-            data = b""
-            while b"\n" not in data:
-                chunk = conn.recv(1024)
-                if not chunk:
-                    break
-                data += chunk
-                if len(data) > self.MAX_LINE:
-                    raise ValueError("line too long")
-            req = json.loads(data.decode("utf-8").splitlines()[0] or "{}")
-            if not isinstance(req, dict):
-                raise ValueError("not an object")
-            cmd = req.get("cmd")
-            if cmd == "ping":
-                resp = {"ok": True, "version": VERSION}
-            elif cmd == "status":
-                resp = self.get_status()
-            elif cmd == "top":
-                by_swap = req.get("swap", False)
-                if not isinstance(by_swap, bool):
-                    raise ValueError("swap must be a bool")
-                resp = query_top(by_swap, _limit(req))
-            elif cmd == "swap":
-                resp = query_swap(_limit(req))
-            elif cmd == "blame":
-                since = req.get("since")
-                if not isinstance(since, (int, float)) or since <= 0:
-                    raise ValueError("since must be a positive epoch timestamp")
-                resp = query_blame(float(since), _limit(req))
-            elif cmd == "zombies":
-                resp = query_zombies()
-            elif cmd == "resolve":
-                target = req.get("target")
-                if not isinstance(target, str) or not target:
-                    raise ValueError("target must be a non-empty string")
-                resp = query_resolve(target)
-            elif cmd == "oom":
-                resp = query_oom(self.get_status)
-            elif cmd == "advise":
-                resp = query_advise(self.cfg, self.get_status)
-            elif cmd == "calm":
-                pid = req.get("pid")
-                starttime = req.get("starttime")
-                action = req.get("action")
-                if not isinstance(pid, int) or not isinstance(starttime, int):
-                    raise ValueError("pid/starttime must be ints")
-                if action == "high":
-                    size = req.get("size")
-                    if not isinstance(size, str) or not size:
-                        raise ValueError("size must be a non-empty string")
-                    resp = do_calm(pid, starttime, "high", size=size)
-                elif action == "release":
-                    resp = do_calm(pid, starttime, "release")
-                elif action == "nice":
-                    nice = req.get("nice")
-                    if not isinstance(nice, int) or not NICE_MIN <= nice <= NICE_MAX:
-                        raise ValueError(
-                            f"nice must be an int in {NICE_MIN}..{NICE_MAX}")
-                    resp = do_calm(pid, starttime, "nice", nice=nice)
-                else:
-                    raise ValueError("unknown calm action")
-            elif cmd == "kill":
-                pid = req.get("pid")
-                starttime = req.get("starttime")
-                confirm = req.get("confirm")
-                sig = req.get("sig", "TERM")
-                if not isinstance(pid, int) or not isinstance(starttime, int) \
-                        or not isinstance(confirm, int):
-                    raise ValueError("pid/starttime/confirm must be ints")
-                if sig not in ("TERM", "KILL"):
-                    raise ValueError("sig must be TERM or KILL")
-                resp = do_kill(pid, starttime, confirm, sig)
-            else:
-                resp = {"error": "unknown command"}
-        except Exception as exc:  # noqa: BLE001 — hostile input, never crash
-            resp = {"error": type(exc).__name__}
-        try:
-            conn.sendall((json.dumps(resp, separators=(",", ":")) + "\n")
-                         .encode())
-        except OSError:
-            pass
-        finally:
-            conn.close()
+def _make_dispatch(cfg, get_status):
+    def dispatch(cmd, req):
+        if cmd == "top":
+            by_swap = req.get("swap", False)
+            if not isinstance(by_swap, bool):
+                raise ValueError("swap must be a bool")
+            return query_top(by_swap, _limit(req))
+        if cmd == "swap":
+            return query_swap(_limit(req))
+        if cmd == "blame":
+            since = req.get("since")
+            if not isinstance(since, (int, float)) or since <= 0:
+                raise ValueError("since must be a positive epoch timestamp")
+            return query_blame(float(since), _limit(req))
+        if cmd == "zombies":
+            return query_zombies()
+        if cmd == "resolve":
+            target = req.get("target")
+            if not isinstance(target, str) or not target:
+                raise ValueError("target must be a non-empty string")
+            return query_resolve(target)
+        if cmd == "oom":
+            return query_oom(get_status)
+        if cmd == "advise":
+            return query_advise(cfg, get_status)
+        if cmd == "calm":
+            pid = req.get("pid")
+            starttime = req.get("starttime")
+            action = req.get("action")
+            if not isinstance(pid, int) or not isinstance(starttime, int):
+                raise ValueError("pid/starttime must be ints")
+            if action == "high":
+                size = req.get("size")
+                if not isinstance(size, str) or not size:
+                    raise ValueError("size must be a non-empty string")
+                return do_calm(pid, starttime, "high", size=size)
+            if action == "release":
+                return do_calm(pid, starttime, "release")
+            if action == "nice":
+                nice = req.get("nice")
+                if not isinstance(nice, int) or not NICE_MIN <= nice <= NICE_MAX:
+                    raise ValueError(
+                        f"nice must be an int in {NICE_MIN}..{NICE_MAX}")
+                return do_calm(pid, starttime, "nice", nice=nice)
+            raise ValueError("unknown calm action")
+        if cmd == "kill":
+            pid = req.get("pid")
+            starttime = req.get("starttime")
+            confirm = req.get("confirm")
+            sig = req.get("sig", "TERM")
+            if not isinstance(pid, int) or not isinstance(starttime, int) \
+                    or not isinstance(confirm, int):
+                raise ValueError("pid/starttime/confirm must be ints")
+            if sig not in ("TERM", "KILL"):
+                raise ValueError("sig must be TERM or KILL")
+            return do_kill(pid, starttime, confirm, sig)
+        return None  # unknown -> sutra frames {"error": "unknown command"}
+    return dispatch
 
 
 # --- main -------------------------------------------------------------------
@@ -947,7 +858,11 @@ def main():
     latest = {"doc": {"error": "no status yet"}}
     pill_cache = {"summary": None}
     sampler = Sampler(cfg)
-    ctl = Control(cfg, lambda: latest["doc"])
+    dispatch = _make_dispatch(cfg, lambda: latest["doc"])
+    ctl = sutra.ControlServer(SOCKET_PATH,
+                              sutra.allow_uids({0, os.getuid(), cfg["owner_uid"]}),
+                              VERSION, dispatch, lambda: latest["doc"],
+                              socket_owner=(cfg["owner_uid"], -1))
     ctl.start()
 
     while not stop.is_set():

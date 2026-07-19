@@ -8,9 +8,10 @@ and must keep answering from a bare TTY at 100% memory pressure.
 
 import json
 import os
-import socket
 import sys
 import time
+
+import sutra
 
 RUNTIME_DIR = os.environ.get("RAMSTEIN_RUNTIME_DIR", "/run/ramstein")
 
@@ -20,21 +21,7 @@ PLANNED = {}
 def request(payload):
     """One JSON command to the daemon; None if the socket is unreachable."""
     sock_path = os.path.join(RUNTIME_DIR, "control.sock")
-    try:
-        conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        conn.settimeout(10)
-        conn.connect(sock_path)
-        conn.sendall(json.dumps(payload).encode() + b"\n")
-        buf = b""
-        while b"\n" not in buf:
-            chunk = conn.recv(65536)
-            if not chunk:
-                break
-            buf += chunk
-        conn.close()
-        return json.loads(buf.decode())
-    except (OSError, ValueError):
-        return None
+    return sutra.request(sock_path, payload, timeout=10)
 
 
 def request_or_die(payload):
@@ -50,12 +37,11 @@ def fetch():
     doc = request({"cmd": "status"})
     if isinstance(doc, dict) and "memory" in doc:
         return doc
-    try:
-        with open(os.path.join(RUNTIME_DIR, "status.json")) as f:
-            return json.load(f)
-    except (OSError, ValueError):
+    doc = sutra.read_status(os.path.join(RUNTIME_DIR, "status.json"))
+    if doc is None:
         sys.exit("ramstein: no daemon and no status.json — is ramsteind "
                  "running?")
+    return doc
 
 
 def _flag_val(argv, name, default):

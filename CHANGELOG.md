@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0 — adopt the sutra backbone (behavior-preserving)
+- vendored bin/sutra.py + bin/sutra.version (sutra 0.1.0, ByeByte is the pilot extraction); ramsteind/ramstein now import it as a sibling instead of hand-rolling the same skeleton
+- ramsteind: load_config -> sutra.load_config; write_status -> sutra.write_status; the EWMA inline in poll_memory -> sutra.ewma_rate (fed `total - avail`, the used-equivalent whose increase is the burn — mathematically identical to the old avail-falling calc); the Control class deleted in favor of a dispatch closure over cfg/get_status carrying the unchanged domain commands (top/blame/swap/zombies/resolve/oom/advise/calm/kill), served by sutra.ControlServer + allow_uids({0, os.getuid(), owner_uid}) — ping/status are sutra's job now, and the M4 listen(64) fix comes along for free as sutra's own default
+- ramstein: request()/fetch() now call sutra.request / sutra.read_status instead of hand-rolling the socket client and status.json fallback
+- make check-sutra: verifies bin/sutra.py's sha256 against bin/sutra.version (integrity, always) and diffs against ~/code/REPOS/sutra/sutra.py when that checkout is present (freshness); wired into CI and the front of make smoke; make deb now ships bin/sutra.py alongside the bins
+- no observable change: same socket contract, same status.json shape, same config semantics — make smoke + make attack stay green throughout
+
 ## 0.5.0 — M4 completion
 - man/ramstein.1, man/ramsteind.8: groff -man source, verbs with real-output examples, config keys + clamps table, security model (kill gate, memory.high floor, coexistence, hostile-input doctrine) — installed by install.sh, removed by uninstall.sh
 - make deb: minimal dpkg-deb package (bins to /usr/bin, units, man pages, config.json as a conffile); postinst/prerm/postrm share the owner_uid seed logic with install.sh via scripts/seed-owner-uid.py; never installed by smoke, only built and inspected

@@ -1,12 +1,36 @@
 # ramstein — the memory demon
-.PHONY: smoke attack install uninstall pill deb
+.PHONY: smoke attack install uninstall pill deb check-sutra
 
 VERSION := $(shell tr -d '[:space:]' < VERSION)
 DEBROOT := build/deb/ramstein_$(VERSION)_all
 DEBFILE := build/deb/ramstein_$(VERSION)_all.deb
 
-smoke:
+smoke: check-sutra
 	bash tests/smoke.sh
+
+# drift guard for the vendored sutra copy: integrity (hash matches what
+# vendor.sh recorded — the copy wasn't hand-edited) always runs; freshness
+# (diff against the canonical source) only when that checkout is present,
+# which it normally isn't in CI.
+check-sutra:
+	@ver=$$(cut -d' ' -f1 bin/sutra.version); \
+	sha=$$(awk '{print $$NF}' bin/sutra.version); \
+	actual=$$(sha256sum bin/sutra.py | cut -d' ' -f1); \
+	if [ "$$sha" != "$$actual" ]; then \
+	    echo "check-sutra FAIL: bin/sutra.py doesn't match bin/sutra.version" \
+	         "(hand-edited? re-vendor: bash ~/code/REPOS/sutra/vendor.sh bin)"; \
+	    exit 1; \
+	fi; \
+	echo "check-sutra: integrity ok (sutra $$ver, sha256 $$sha)"; \
+	canon="$$HOME/code/REPOS/sutra/sutra.py"; \
+	if [ -f "$$canon" ]; then \
+	    if cmp -s bin/sutra.py "$$canon"; then \
+	        echo "check-sutra: freshness ok (matches canonical)"; \
+	    else \
+	        echo "check-sutra FAIL: bin/sutra.py differs from canonical $$canon (re-vendor)"; \
+	        exit 1; \
+	    fi; \
+	fi
 
 # the thorough adversarial pass (full cmd surface + oversized/garbage/
 # invalid-utf8/nested/unknown/rapid-reconnect/half-open-stall); smoke.sh
@@ -46,6 +70,7 @@ deb:
 	install -d -m 0755 $(DEBROOT)/etc/ramstein
 	install -d -m 0755 $(DEBROOT)/lib/systemd/system
 	install -m 0755 bin/ramsteind bin/ramstein bin/ramstein-healthcheck bin/ramstein-update $(DEBROOT)/usr/bin/
+	install -m 0644 bin/sutra.py $(DEBROOT)/usr/bin/sutra.py
 	install -m 0644 VERSION $(DEBROOT)/usr/share/ramstein/VERSION
 	install -m 0755 scripts/seed-owner-uid.py $(DEBROOT)/usr/share/ramstein/scripts/
 	install -m 0644 man/ramstein.1 $(DEBROOT)/usr/share/man/man1/ramstein.1

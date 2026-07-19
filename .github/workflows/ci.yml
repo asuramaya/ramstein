@@ -12,13 +12,16 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Python compiles
-        run: python3 -m py_compile bin/ramsteind bin/ramstein bin/ramstein-healthcheck bin/ramstein-update
+        run: python3 -m py_compile bin/ramsteind bin/ramstein bin/ramstein-healthcheck bin/ramstein-update bin/sutra.py
 
       - name: Shell scripts parse
         run: bash -n install.sh uninstall.sh tests/smoke.sh
 
       - name: Shellcheck
         run: shellcheck install.sh uninstall.sh tests/smoke.sh
+
+      - name: check-sutra (vendored copy integrity)
+        run: make check-sutra
 
       - name: Smoke (real daemon, real /proc, hostile socket input)
         run: make smoke
