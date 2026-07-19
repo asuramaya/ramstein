@@ -22,3 +22,11 @@ jobs:
 
       - name: Smoke (real daemon, real /proc, hostile socket input)
         run: make smoke
+
+      - name: Attack (full cmd surface + oversized/garbage/invalid-utf8/nested/unknown/rapid-reconnect/half-open-stall)
+        run: make attack
+
+      - name: Man pages render without warnings
+        run: |
+          groff -man -Tutf8 -ww man/ramstein.1 > /dev/null
+          groff -t -man -Tutf8 -ww man/ramsteind.8 > /dev/null

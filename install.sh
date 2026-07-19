@@ -66,22 +66,22 @@ done
 install -d -m 0755 "$SHAREDIR"
 install -m 0644 "$SRC/VERSION" "$SHAREDIR/VERSION"
 
+# 1b. man pages
+echo "-- man pages -> $PREFIX/share/man"
+install -d -m 0755 "$PREFIX/share/man/man1" "$PREFIX/share/man/man8"
+install -m 0644 "$SRC/man/ramstein.1"  "$PREFIX/share/man/man1/ramstein.1"
+install -m 0644 "$SRC/man/ramsteind.8" "$PREFIX/share/man/man8/ramsteind.8"
+
 # 2. default config — the seed, never the master, and NEVER overwritten: a
 # reinstall keeps your tuned copy. owner_uid is stamped to the installing
 # user so the socket/status handoff points at the right account.
 if [[ ! -f "$CONFDIR/config.json" ]]; then
   echo "-- config -> $CONFDIR/config.json (owner_uid=$OWNER_UID)"
   install -d -m 0755 "$CONFDIR"
-  python3 - "$SRC/config/config.json" "$CONFDIR/config.json" "$OWNER_UID" <<'PY'
-import json, sys
-src, dst, uid = sys.argv[1], sys.argv[2], int(sys.argv[3])
-with open(src) as f:
-    cfg = json.load(f)
-cfg["owner_uid"] = uid
-with open(dst, "w") as f:
-    json.dump(cfg, f, indent=2)
-    f.write("\n")
-PY
+  # shared with the .deb's postinst (scripts/seed-owner-uid.py) so the two
+  # installers can't drift on what "seeding" means
+  python3 "$SRC/scripts/seed-owner-uid.py" \
+    "$SRC/config/config.json" "$CONFDIR/config.json" "$OWNER_UID"
   chown root:root "$CONFDIR/config.json"
   chmod 0644 "$CONFDIR/config.json"
 else
@@ -122,11 +122,12 @@ cat <<EOF
   ramstein status             available memory, PSI, burn rate, ETA-to-OOM
   ramstein-healthcheck        one-line vitals verdict (exit 0 = healthy)
   ramstein-update --check     is a newer release out? (never installs by itself)
+  man ramstein / man 8 ramsteind   full verb reference, config keys, security model
   Remove:  sudo ./uninstall.sh   (keeps /etc/ramstein + /var/lib/ramstein; --purge drops them)
 
 daily update CHECK is off by default (it's notify-only, never installs). Opt in:
   sudo systemctl enable --now ramstein-update.timer
 
->>> step 2 — the GNOME pill (per-account, as yourself, no sudo) — arrives
-    with M1; it is not born yet. This installer will stage it when it is. <<<
+>>> step 2 — the GNOME pill (per-account, as yourself, no sudo): <<<
+    make pill && gnome-extensions enable ramstein@asuramaya
 EOF

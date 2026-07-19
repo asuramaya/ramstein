@@ -3,9 +3,9 @@
 # Copyright (C) 2026 asuramaya and RAMstein contributors
 # RAMstein uninstaller. Keeps /etc/ramstein (config) and /var/lib/ramstein
 # (state) unless --purge is given. Root-only, and never self-elevates — see
-# install.sh for why. There is no per-account GNOME pill to clean up yet
-# (it arrives with M1); when there is, removing it stays a per-account,
-# non-root step — never this script's job.
+# install.sh for why. The GNOME pill is a per-account, non-root install
+# (make pill) — removing it stays a per-account step, never this script's
+# job: gnome-extensions disable/uninstall ramstein@asuramaya, yourself.
 set -uo pipefail
 
 PREFIX="${PREFIX:-/usr/local}"
@@ -38,6 +38,7 @@ for b in ramstein ramsteind ramstein-healthcheck ramstein-update; do
 done
 rm -f "$UNITDIR/ramsteind.service" "$UNITDIR/ramstein-update.service" "$UNITDIR/ramstein-update.timer"
 rm -rf "$SHAREDIR"
+rm -f "$PREFIX/share/man/man1/ramstein.1" "$PREFIX/share/man/man8/ramsteind.8"
 systemctl daemon-reload
 
 if [[ "$PURGE" -eq 1 ]]; then

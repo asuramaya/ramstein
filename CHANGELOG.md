@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0 — M4 completion
+- man/ramstein.1, man/ramsteind.8: groff -man source, verbs with real-output examples, config keys + clamps table, security model (kill gate, memory.high floor, coexistence, hostile-input doctrine) — installed by install.sh, removed by uninstall.sh
+- make deb: minimal dpkg-deb package (bins to /usr/bin, units, man pages, config.json as a conffile); postinst/prerm/postrm share the owner_uid seed logic with install.sh via scripts/seed-owner-uid.py; never installed by smoke, only built and inspected
+- hardening: systemd unit gets CapabilityBoundingSet (CAP_SYS_PTRACE, CAP_SYS_NICE, CAP_KILL, CAP_DAC_OVERRIDE, CAP_CHOWN — each mapped to a real code path), SystemCallFilter=@system-service, ProtectKernelTunables, ProtectClock, MemoryDenyWriteExecute, RestrictAddressFamilies=AF_UNIX; ProtectKernelTunables makes /sys read-only, which would have silently broken `calm --high`'s cgroup memory.high write — carved out via ReadWritePaths, verified against a LIVE calm --nice/--high/kill on a real fixture process (not just smoke fixtures) before calling it done; systemd-analyze verify clean, security score 4.7 OK
+- tests/attack_socket.py: standalone adversarial harness covering the full M2/M3 command surface plus oversized/garbage/invalid-utf8/nested/unknown/rapid-reconnect/half-open-stall; make attack wired into CI alongside make smoke. Found a real bug: listen(4)'s backlog was too small for a rapid-reconnect burst (EAGAIN under 200 back-to-back connects) — bumped to listen(64), matching sutra's own documented rationale
+
 ## 0.4.1 — pill catches up
 - extension/ramstein@asuramaya: fixed a swap-row mislabel — "X of Y free" reads like X is *used* (the "3 of 10" idiom), backwards for X being what's *left*; now "X free of Y", matching the CLI
 - the pill was still M0-era: memory/swap/pressure/burn only, blind to everything M2/M3 unlocked. ramsteind now computes a small digest (top RSS process, zombie count, the single most-urgent advise line) on the sampler's own cadence and rides it along in status.json's new `pill` field — no socket client added to the pill, still one file + one GFileMonitor. New rows: top process (when available), zombies (only when >0), and an advise headline (only when there's something to say, with a "+N more" count)

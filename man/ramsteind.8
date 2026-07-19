@@ -1,0 +1,163 @@
+'\" t
+.TH RAMSTEIND 8 "2026-07-17" "ramstein 0.5.0" "ramstein manual"
+.SH NAME
+ramsteind \- the ramstein memory daemon
+.SH SYNOPSIS
+.B ramsteind
+.RB [ \-\-config
+.IR path ]
+.RB [ \-\-once ]
+.SH DESCRIPTION
+.B ramsteind
+is the only privileged actor in ramstein: it owns the truth about bytes
+alive \(em
+.IR /proc/meminfo " + " /proc/pressure/memory
+polling, EWMA burn rate, ETA-to-OOM, a per-process sqlite index, and the
+gentle (and one ungentle) levers
+.BR ramstein (1)'s
+.I calm
+verb acts through. Nothing above the control socket ever needs privilege
+to read; writing (cgroup
+.IR memory.high ,
+renice, kill) does.
+.PP
+.B \-\-once
+performs a single poll, writes
+.IR status.json ,
+and exits \(em used by
+.B make smoke
+and testing.
+.SH CONFIGURATION
+Config is the seed, never the master: every key is typed and clamped on
+load; unknown keys are ignored; a tampered config can tune numbers within
+the ranges below but can never grant the daemon a new ability or weaken
+an invariant \(em the kill gate, the coexistence check, and the memory.high
+RSS floor are hardcoded, not configurable. Default path:
+.IR /etc/ramstein/config.json .
+.TS
+tab(@) allbox;
+lb lb lb
+l l l.
+key@default@clamp
+poll_interval@10@1\(en3600
+burn_tau@120@5\(en86400
+eta_cap_hours@24.0@0.1\(en8760
+warn_psi_some@10.0@0\(en100
+warn_avail_pct@15.0@0\(en100
+warn_eta_hours@4.0@0.01\(en8760
+hot_psi_full@5.0@0\(en100
+hot_avail_pct@5.0@0\(en100
+hot_eta_minutes@30.0@0.1\(en525600
+owner_uid@1000@0\(en2^31
+sample_every@3@1\(en360
+proc_min_bytes@16MiB@1MiB\(en2^40
+recent_ring@120@2\(en100000
+hourly_ring@168@2\(en100000
+advise_growth_mib_per_hour@500.0@1\(en1000000
+.TE
+.PP
+Units are seconds unless named otherwise.
+.I sample_every
+is poll ticks between M2 samples;
+.I proc_min_bytes
+is the rss+swap floor a process must clear to earn an index row;
+.I recent_ring
+/
+.I hourly_ring
+are sample counts kept in each ring;
+.I advise_growth_mib_per_hour
+is rule 2's leak-ish growth-rate threshold.
+.SH FILES
+.TP
+.I /etc/ramstein/config.json
+Seeded once at install (owner_uid from the installing sudo call), never
+overwritten on reinstall.
+.TP
+.I /var/lib/ramstein/index.db
+The per-process sample ring (sqlite, WAL mode): two rings sharing one
+promoted flag \(em
+.I recent_ring
+keeps every sample (~1h at defaults),
+.I hourly_ring
+keeps one promoted sample per hour (~7d). Identity key is
+.RI ( pid ", " starttime )
+so a reused pid can never be mistaken for the process that held it before.
+.TP
+.I /var/lib/ramstein/ledger.jsonl
+One JSON line per
+.I calm
+or
+.I kill
+action: timestamp, verb, pid, comm, argument, result.
+.TP
+.I /run/ramstein/status.json
+0640, owned by
+.IR owner_uid .
+Written atomically (tmp file + rename). Carries the M2/M3 pill digest
+(top process, zombie count, one advise headline) for the GNOME extension,
+recomputed on the sampler's own cadence.
+.TP
+.I /run/ramstein/control.sock
+0660, owned by
+.IR owner_uid .
+.SH SIGNALS
+.TP
+.B SIGTERM, SIGINT
+Clean shutdown: the current poll loop iteration finishes, the socket is
+closed.
+.SH SECURITY
+The relevant attacker is an unprivileged local process abusing the root
+daemon; ramsteind has no network attack surface at all \(em the only
+component that ever reaches the internet is the separate, unprivileged
+.BR ramstein\-update (1)
+checker.
+.TP
+.B Socket
+AF_UNIX, newline-delimited JSON, bounded reads (4 KiB line cap, 5 s
+timeout). Every connection is checked against
+.B SO_PEERCRED
+\(em only root or the configured
+.I owner_uid
+may issue commands \(em on top of the socket's own 0660 file mode. Two
+independent gates.
+.TP
+.B Hostile input
+Malformed JSON, non-objects, and unknown commands are answered with
+.RI { \(dqerror\(dq : ...} and the connection ends; they never crash the
+daemon.
+.TP
+.B The kill gate
+Nothing is killed without a fresh, per-invocation confirmation typed at a
+real TTY \(em no config flag, no persisting
+.BR \-\-yes ,
+no non-interactive kill path; a non-TTY stdin is refused outright by the
+CLI before it ever reaches the socket. The daemon independently
+re-validates
+.RI ( pid ", " starttime )
+identity against live
+.I /proc
+before signaling \(em a stale or reused pid is refused even if the CLI
+layer were somehow bypassed. PID 1, kernel threads, and the daemon's own
+pid are never valid targets, hardcoded, not configurable.
+.TP
+.B The memory.high floor
+.I calm \-\-high
+clamps its target to at least 1.1x the process's own current RSS \(em a
+tampered or fat-fingered size can never be set low enough to
+instant-thrash-OOM the process it's meant to calm.
+.TP
+.B Coexistence
+If systemd-oomd or earlyoom is already active, every
+.I calm
+action and
+.I advise
+say so; RAMstein never races another OOM-fighter \(em its kill prompts
+stay advisory information, not an automatic stand-down of the action
+itself (that decision is still yours, and still requires the same TTY
+confirmation).
+.SH SEE ALSO
+.BR ramstein (1),
+.BR ramstein\-healthcheck (1),
+.BR systemd.exec (5)
+.SH AUTHOR
+asuramaya and RAMstein contributors.

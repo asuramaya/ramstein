@@ -1,0 +1,158 @@
+.TH RAMSTEIN 1 "2026-07-17" "ramstein 0.5.0" "ramstein manual"
+.SH NAME
+ramstein \- verb CLI for the ramstein memory daemon
+.SH SYNOPSIS
+.B ramstein
+.RI [ verb ]
+.RI [ options ]
+.SH DESCRIPTION
+.B ramstein
+talks to
+.BR ramsteind (8)
+over its control socket and prints the answer. With no verb, it runs
+.BR status .
+Every verb accepts
+.B \-\-json
+for machine-readable output.
+.SH VERBS
+.TP
+.B status
+Available memory, PSI pressure, burn rate, and ETA-to-OOM.
+.TP
+.B top " [\-\-swap] [\-\-limit N]"
+Live per-process RSS, ranked (or swap-ranked with
+.BR \-\-swap ).
+.I N
+defaults to 20, clamped 1\(en1000.
+.TP
+.B blame " [\-\-since T] [\-\-limit N]"
+What grew in RSS since
+.IR T ,
+a join of two index samples: grown, new (absent from the base sample), or
+gone (absent from the latest \(em shown as freed, negative).
+.I T
+is
+.IR Ns / Nm / Nh / Nd
+or
+.IR YYYY-MM-DD ;
+defaults to
+.IR 10m .
+.TP
+.B swap " [\-\-limit N]"
+Who's parked in swap, VmSwap descending.
+.TP
+.B zombies
+Defunct processes and the parent not reaping them. Reads live
+.IR /proc ,
+not the index \(em zombies are a now-question.
+.TP
+.B oom
+Risk snapshot (available/PSI/burn/ETA) plus the top 5 kill candidates by
+the kernel's own
+.IR /proc/<pid>/oom_score .
+Read-only.
+.TP
+.B advise
+One-line nudges: sustained pressure, a fast RSS grower, swap over half
+full, unreaped zombies, another OOM-fighter active, ETA under an hour.
+.TP
+.BI calm " target " "[\-\-high SIZE|\-\-release|\-\-nice N|\-\-kill]"
+The gentle levers, and the one ungentle one.
+.I target
+is a pid or an exact comm name \(em an ambiguous comm (more than one
+matching process, routinely true for chrome/postgres/python) refuses with
+the candidate list; pass a pid instead.
+.RS
+.TP
+.BI \-\-high " SIZE"
+Write the target's cgroup
+.I memory.high
+to
+.I SIZE
+(e.g.
+.IR 500M ", " 2G ).
+Clamped to
+.RI [ 64M ", " MemTotal ]
+and to at least 1.1x the target's current RSS \(em a size can never be
+set low enough to instant-thrash-OOM the process it's meant to calm.
+.TP
+.B \-\-release
+Clear
+.I memory.high
+back to
+.IR max .
+.TP
+.BI \-\-nice " N"
+Renice the target,
+.I N
+clamped 0\(en19 \(em
+.B calm
+only ever lowers priority, never raises it.
+.TP
+.B \-\-kill
+SIGTERM, then an optional SIGKILL if the process is still alive 5 seconds
+later. Requires a fresh interactive confirmation typed at a real TTY \(em
+.B ramstein
+prints the target's pid and comm and asks you to type the pid back. No
+.BR \-\-yes ,
+no environment override, no non-interactive path: a script piping
+.B \-\-kill
+is refused outright, every time, on purpose.
+.RE
+.SH EXAMPLES
+.EX
+$ ramstein status
+ramstein v0.5.0   (status 0s old)
+ ! mem 45.2G available of 61.2G   swap 5.1G free of 8.0G   pressure some 0.0/full 0.0   burn 9.8M/s   OOM ~87m
+
+$ ramstein top \-\-limit 3
+top by rss   (sample 10s ago)
+     RSS     SWAP       PID  PROC
+  671.7M       0B    515128    claude
+  645.5M       0B   2311838    python3
+  640.9M       0B   1552474    claude
+
+$ ramstein blame \-\-since 5m \-\-limit 3
+RSS movers over the last 5m:
+  +  645.5M  python3          pid 2311838 (now 645.5M) new
+  +  329.2M  chrome\-headless  pid 2312307 (now 329.2M) new
+  +  230.0M  nautilus         pid 2291973 (now 230.0M) new
+
+$ ramstein oom
+available 45.2G of 61.2G   pressure some 0.0/full 0.0   burn 9.8M/s   OOM ~87m
+who dies first (by oom_score):
+    870    390.0M   2312307  chrome\-headless
+    869    294.8M   2274175  chrome
+
+$ ramstein advise
+\- 2 zombie(s) unreaped \(em warp\-terminal isn't reaping (2 of them)
+\- systemd\-oomd is active \(em RAMstein's kill prompts stay advisory\-only, standing down
+
+$ ramstein calm 2312307 \-\-nice 10
+! systemd\-oomd is active \(em proceeding, but it may already be handling this
+chrome\-headless (pid 2312307): nice \-> 10
+.EE
+.SH FILES
+.TP
+.I /run/ramstein/status.json
+The read seam \(em memory, swap, pressure, burn, ETA, and the M2/M3 pill
+digest. Mode 0640.
+.TP
+.I /run/ramstein/control.sock
+The command socket. Mode 0660, peercred-gated.
+.SH ENVIRONMENT
+.TP
+.B RAMSTEIN_RUNTIME_DIR
+Overrides
+.I /run/ramstein
+(status.json and control.sock live here). Used for testing.
+.SH EXIT STATUS
+Non-zero if the daemon is unreachable, or if the daemon answers with an
+error (bad arguments, ambiguous target, refused kill, etc.) \(em the
+message explains why.
+.SH SEE ALSO
+.BR ramsteind (8),
+.BR ramstein\-healthcheck (1),
+.BR ramstein\-update (1)
+.SH AUTHOR
+asuramaya and RAMstein contributors.

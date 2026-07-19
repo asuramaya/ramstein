@@ -13,9 +13,38 @@ RuntimeDirectoryMode=0755
 StateDirectory=ramstein
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/run/ramstein /var/lib/ramstein
-# Everything M0 reads lives under /proc — nothing in $HOME matters here.
+# /sys/fs/cgroup carries calm --high's memory.high write — ProtectKernel
+# Tunables below makes all of /sys read-only, so it needs the same
+# allow-list carve-out ReadWritePaths already does for ProtectSystem=strict
+# (nest a writable path inside a read-only one). Verified against a LIVE
+# calm --high, not just fixtures — see M4-SPEC.md's hardening lesson.
+ReadWritePaths=/run/ramstein /var/lib/ramstein /sys/fs/cgroup
+# Everything M0 reads lives under /proc — nothing in $HOME matters to any
+# verb through M3 (calm/kill touch /proc + /sys/fs/cgroup, never $HOME).
 ProtectHome=yes
+
+# --- M4 hardening pass ---
+# Each retained capability maps to something the code actually does as
+# root; nothing here is "just in case."
+#   CAP_SYS_PTRACE — the M2 sampler + M3 oom/zombies scan EVERY process's
+#     /proc/<pid>/{status,stat,cgroup,oom_score}, not just owner_uid's own;
+#     reading another user's process internals needs this (PLAN.md's own
+#     M0 note: "only other users' process internals... need [privilege]").
+#   CAP_SYS_NICE — calm --nice renices a target process not owned by the
+#     daemon's own (root) identity in the DAC sense that setpriority checks.
+#   CAP_KILL — calm --kill signals a target process; sending a signal to a
+#     process of a different uid needs this bit even as uid 0 once the
+#     bounding set is restricted.
+#   CAP_DAC_OVERRIDE — writing a target's cgroup memory.high regardless of
+#     its specific ownership/mode (cgroup delegation schemes vary).
+#   CAP_CHOWN — write_status() and the control socket setup chown
+#     status.json/control.sock to owner_uid whenever running as root.
+CapabilityBoundingSet=CAP_SYS_PTRACE CAP_SYS_NICE CAP_KILL CAP_DAC_OVERRIDE CAP_CHOWN
+SystemCallFilter=@system-service
+ProtectKernelTunables=yes
+ProtectClock=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX
 
 [Install]
 WantedBy=multi-user.target

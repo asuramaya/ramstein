@@ -493,4 +493,22 @@ print(f"pill digest ok: top={pill['top_process'] and pill['top_process']['comm']
       f" zombies={pill['zombie_count']} advise={pill['advise_count']}")
 PY
 
+# --- M4: make deb — builds a real .deb; contents include bins+units+man.
+# Builds and inspects only — never installed.
+make deb > /tmp/ramstein-deb-build.log 2>&1 \
+    || { echo "SMOKE FAIL: make deb failed"; cat /tmp/ramstein-deb-build.log; exit 1; }
+DEBFILE="build/deb/ramstein_$(tr -d '[:space:]' < VERSION)_all.deb"
+[ -f "$DEBFILE" ] || { echo "SMOKE FAIL: $DEBFILE not built"; exit 1; }
+CONTENTS=$(dpkg-deb --contents "$DEBFILE")
+for want in usr/bin/ramsteind usr/bin/ramstein usr/bin/ramstein-healthcheck \
+            usr/bin/ramstein-update lib/systemd/system/ramsteind.service \
+            lib/systemd/system/ramstein-update.service \
+            lib/systemd/system/ramstein-update.timer \
+            usr/share/man/man1/ramstein.1 usr/share/man/man8/ramsteind.8 \
+            etc/ramstein/config.json; do
+    echo "$CONTENTS" | grep -q "$want" \
+        || { echo "SMOKE FAIL: deb missing $want"; exit 1; }
+done
+echo "deb ok: $DEBFILE built, contents verified (never installed)"
+
 echo "SMOKE OK"
