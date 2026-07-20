@@ -1,4 +1,4 @@
-.TH RAMSTEIN 1 "2026-07-17" "ramstein 0.5.0" "ramstein manual"
+.TH RAMSTEIN 1 "2026-07-20" "ramstein 0.8.0" "ramstein manual"
 .SH NAME
 ramstein \- verb CLI for the ramstein memory daemon
 .SH SYNOPSIS
@@ -99,6 +99,42 @@ no environment override, no non-interactive path: a script piping
 .B \-\-kill
 is refused outright, every time, on purpose.
 .RE
+.TP
+.BI autocalm " status|arm|dry|run"
+Arms
+.B calm
+to act on its own, on a timer \(em never kill. Three independent gates,
+all required before it acts for real: config
+.RI ( auto_calm_enabled ,
+off by default), the runtime armed state below (always resets to
+disarmed/dry-run on every daemon restart), and the
+.B ramstein\-autocalm.timer
+unit being manually enabled
+.RI ( systemctl " " enable " " \-\-now ).
+.RS
+.TP
+.B status
+Current enabled/armed state, policy thresholds, and the last cycle's
+outcome.
+.TP
+.B arm
+Lets the next triggered cycle act for real (renice and/or a cgroup
+.I memory.high
+squeeze on the top RSS grower). Requires a real TTY and typing
+.B arm
+to confirm \(em lighter than
+.BR \-\-kill 's
+gate since every autocalm step is reversible, but never a bare flag.
+.TP
+.B dry
+Back to disarmed \(em cycles keep computing and notifying, never acting.
+.TP
+.B run
+Runs one check-and-maybe-act cycle immediately (what
+.B ramstein\-autocalm.timer
+calls periodically once enabled). Useful on demand to see what a cycle
+would do.
+.RE
 .SH EXAMPLES
 .EX
 $ ramstein status
@@ -131,6 +167,12 @@ $ ramstein advise
 $ ramstein calm 2312307 \-\-nice 10
 ! systemd\-oomd is active \(em proceeding, but it may already be handling this
 chrome\-headless (pid 2312307): nice \-> 10
+
+$ ramstein autocalm status
+auto\-calm: enabled=False  armed=False
+  trigger: PSI some > 20.0% or full > 10.0% or swap storm
+  steps: renice+squeeze  (nice=15, squeeze to 130% rss, cooldown 300s)
+  no cycles run yet
 .EE
 .SH FILES
 .TP

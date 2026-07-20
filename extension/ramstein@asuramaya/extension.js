@@ -147,9 +147,21 @@ class RAMsteinToggle extends QuickMenuToggle {
         this._adviseSection = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(this._adviseSection);
 
+        // V2.M2: auto-calm's last cycle — hidden until at least one cycle
+        // has ever triggered (dry-run or real). Notifications are a
+        // separate, one-shot thing (_maybeNotifyAutocalm) — this row is the
+        // persistent "last calm line" the spec calls for.
+        this._autocalmSection = new PopupMenu.PopupMenuSection();
+        this.menu.addMenuItem(this._autocalmSection);
+
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this._versionItem = row('');
         this.menu.addMenuItem(this._versionItem);
+
+        // tracks the last autocalm cycle we've already notified about, so a
+        // GFileMonitor refresh (every poll) doesn't re-notify for the same
+        // one — see _maybeNotifyAutocalm
+        this._lastAutocalmTs = null;
 
         // M1 has nothing to toggle; a click is a free instant refresh
         this.connect('clicked', () => this.refresh());
@@ -166,6 +178,7 @@ class RAMsteinToggle extends QuickMenuToggle {
             this._alertSection.removeAll();
             this._rowSection.removeAll();
             this._adviseSection.removeAll();
+            this._autocalmSection.removeAll();
             this._rowSection.addMenuItem(row(
                 `<span foreground="${DIM}">` +
                 `${stale ? 'ramsteind stopped updating' : 'ramsteind not running'}</span>`));
@@ -298,8 +311,53 @@ class RAMsteinToggle extends QuickMenuToggle {
                 `<span foreground="${WARN}">${esc(pill.advise_headline + extra)}</span>`));
         }
 
+        // V2.M2: auto-calm's last cycle — the "last calm line" the spec
+        // calls for. armed+acted gets the accent (it really did something);
+        // dry-run gets DIM (it only computed what it would have done).
+        this._autocalmSection.removeAll();
+        const ac = st.autocalm;
+        const lastResult = ac?.last_result;
+        if (lastResult?.trigger) {
+            const t = lastResult.target ?? {};
+            const steps = (lastResult.steps ?? [])
+                .map(s => s.step).join('+') || 'no steps enabled';
+            const verb = lastResult.acted ? 'acted' : 'dry-run';
+            const vcolor = lastResult.acted ? ACCENT : DIM;
+            const age = ac.last_action_ts != null
+                ? fmtEta(Math.max(0, st.ts - ac.last_action_ts)) : '—';
+            this._autocalmSection.addMenuItem(iconRow('preferences-system-symbolic',
+                `<span foreground="${vcolor}">auto-calm ${verb}</span>` +
+                `<span foreground="${DIM}">${NB}${esc(steps)} on` +
+                `${NB}${esc(t.comm ?? '?')}${NB}(pid${NB}${t.pid ?? '?'})` +
+                `${NB}·${NB}${age}${NB}ago</span>`));
+        }
+        this._maybeNotifyAutocalm(st);
+
         this.menu.setHeader(this.iconName, 'RAMstein', this.subtitle);
         this._setVersion(st.daemon?.version);
+    }
+
+    // A root systemd daemon has no clean path into the operator's own
+    // desktop session, so the daemon only SURFACES the payload
+    // (status.json's "autocalm" field) — the pill, already running in the
+    // right session with real notification access, does the actual
+    // Main.notify() call. Fires once per cycle (tracked by last_action_ts),
+    // never re-fires for a result already seen on an earlier poll.
+    _maybeNotifyAutocalm(st) {
+        const ac = st.autocalm;
+        const r = ac?.last_result;
+        if (!r?.trigger || ac.last_action_ts == null)
+            return;
+        if (this._lastAutocalmTs === ac.last_action_ts)
+            return;
+        this._lastAutocalmTs = ac.last_action_ts;
+        const t = r.target ?? {};
+        const verb = r.acted ? 'acted' : 'would act (dry-run)';
+        const steps = (r.steps ?? []).map(s => s.step).join(', ') || 'nothing';
+        const kill = r.notify?.suggested_kill;
+        Main.notify('RAMstein — auto-calm',
+            `${verb} on ${t.comm ?? '?'} (pid ${t.pid ?? '?'}) — ${r.trigger}.` +
+            ` Steps: ${steps}.` + (kill ? ` If needed: ${kill}` : ''));
     }
 
     _setVersion(ver) {

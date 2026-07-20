@@ -315,13 +315,83 @@ def cmd_calm(argv):
              "--nice N | --kill")
 
 
+def cmd_autocalm(argv):
+    sub = argv[0] if argv else "status"
+    rest = argv[1:]
+
+    if sub == "status":
+        doc = request_or_die({"cmd": "autocalm", "action": "status"})
+        if "--json" in rest:
+            print(json.dumps(doc, indent=2))
+            return
+        print(f"auto-calm: enabled={doc['enabled']}  armed={doc['armed']}")
+        p = doc["policy"]
+        steps = "+".join(s for s, on in
+                         (("renice", p["step_renice"]), ("squeeze", p["step_squeeze"]))
+                         if on) or "(no steps enabled)"
+        print(f"  trigger: PSI some > {p['psi_some']:.1f}% or"
+              f" full > {p['psi_full']:.1f}%"
+              + (" or swap storm" if p["use_swap_storm"] else ""))
+        print(f"  steps: {steps}  (nice={p['nice']}, squeeze to"
+              f" {p['squeeze_pct']:.0f}% rss, cooldown {p['cooldown_seconds']:.0f}s)")
+        if doc.get("last_action_ts"):
+            age = human_eta(int(time.time() - doc["last_action_ts"])).lstrip("~") or "0s"
+            r = doc["last_result"] or {}
+            verb = "acted" if r.get("acted") else ("dry-run" if r.get("dry_run") else "no-op")
+            print(f"  last cycle ({age} ago): {verb} — {r.get('trigger') or r.get('reason')}")
+        else:
+            print("  no cycles run yet")
+        return
+
+    if sub == "dry":
+        request_or_die({"cmd": "autocalm", "action": "dry"})
+        print("auto-calm disarmed — back to dry-run (computes + notifies, never acts)")
+        return
+
+    if sub == "arm":
+        if not sys.stdin.isatty():
+            sys.exit("ramstein: autocalm arm refuses a non-interactive TTY")
+        print("Arming auto-calm lets ramsteind ACT on its own on a timer —")
+        print("renice the top memory grower and/or squeeze its cgroup")
+        print("memory.high — without asking you first. It will NEVER kill")
+        print("anything: kill stays a human verb with a TTY confirm, forever.")
+        try:
+            typed = input("type 'arm' to confirm: ").strip()
+        except EOFError:
+            typed = ""
+        if typed != "arm":
+            sys.exit("ramstein: autocalm arm not confirmed")
+        request_or_die({"cmd": "autocalm", "action": "arm"})
+        print("auto-calm ARMED — it will act for real on its next triggered cycle")
+        print("(still needs auto_calm_enabled=true in config, and the"
+              " ramstein-autocalm.timer to actually be enabled)")
+        return
+
+    if sub == "run":
+        doc = request_or_die({"cmd": "autocalm", "action": "run"})
+        if "--json" in rest:
+            print(json.dumps(doc, indent=2))
+            return
+        if not doc.get("acted") and not doc.get("dry_run"):
+            print(f"auto-calm: {doc.get('reason', 'no action')}")
+            return
+        verb = "acted" if doc.get("acted") else "would act (dry-run)"
+        t = doc.get("target") or {}
+        steps = ", ".join(s["step"] for s in doc.get("steps", [])) or "none"
+        print(f"auto-calm {verb} on {t.get('comm', '?')} (pid {t.get('pid', '?')})"
+              f" — {doc.get('trigger')}. steps: {steps}")
+        return
+
+    sys.exit("ramstein: autocalm needs one of status | arm | dry | run")
+
+
 def main():
     argv = sys.argv[1:]
     verb = argv[0] if argv and not argv[0].startswith("-") else "status"
     rest = argv[1:] if argv and not argv[0].startswith("-") else argv
     verbs = {"status": cmd_status, "top": cmd_top, "blame": cmd_blame,
              "swap": cmd_swap, "zombies": cmd_zombies, "oom": cmd_oom,
-             "advise": cmd_advise, "calm": cmd_calm}
+             "advise": cmd_advise, "calm": cmd_calm, "autocalm": cmd_autocalm}
     if verb in verbs:
         verbs[verb](rest)
     elif verb in PLANNED:

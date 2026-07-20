@@ -30,13 +30,15 @@ fi
 echo "== RAMstein uninstaller =="
 
 echo "-- stopping service + timer"
-systemctl disable --now ramsteind.service ramstein-update.timer ramstein-update.service 2>/dev/null || true
+systemctl disable --now ramsteind.service ramstein-update.timer ramstein-update.service \
+  ramstein-autocalm.timer ramstein-autocalm.service 2>/dev/null || true
 
 echo "-- removing files"
 for b in ramstein ramsteind ramstein-healthcheck ramstein-update; do
   rm -f "$BINDIR/$b"
 done
-rm -f "$UNITDIR/ramsteind.service" "$UNITDIR/ramstein-update.service" "$UNITDIR/ramstein-update.timer"
+rm -f "$UNITDIR/ramsteind.service" "$UNITDIR/ramstein-update.service" "$UNITDIR/ramstein-update.timer" \
+      "$UNITDIR/ramstein-autocalm.service" "$UNITDIR/ramstein-autocalm.timer"
 rm -rf "$SHAREDIR"
 rm -f "$PREFIX/share/man/man1/ramstein.1" "$PREFIX/share/man/man8/ramsteind.8"
 systemctl daemon-reload

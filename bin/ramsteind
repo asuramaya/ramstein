@@ -21,7 +21,7 @@ import time
 
 import sutra
 
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 
 RUNTIME_DIR = os.environ.get("RAMSTEIN_RUNTIME_DIR", "/run/ramstein")
 STATUS_PATH = os.path.join(RUNTIME_DIR, "status.json")
@@ -52,6 +52,28 @@ DEFAULTS = {
     "zombie_advise_min": 3,    # V2.M1: a parent needs this many unreaped
                                # children before advise names it — a lone
                                # stray zombie about to be reaped is noise
+    # V2.M2: auto-calm — the master switch. Even fully armed (see the
+    # `ramstein autocalm arm` runtime toggle, which always resets to
+    # disarmed/dry-run on every daemon restart) and even with the opt-in
+    # systemd timer enabled, a cycle does nothing unless this is also true.
+    # Kill is never in scope, at any setting — see do_autocalm_run.
+    "auto_calm_enabled": False,
+    "auto_calm_psi_some": 20.0,   # a HIGHER bar than warn_psi_some (10.0) —
+                                   # taking action earns a stricter threshold
+                                   # than just lighting the pill WARN
+    "auto_calm_psi_full": 10.0,
+    "auto_calm_use_swap_storm": True,  # an active M1 warning also triggers
+    "auto_calm_step_renice": True,
+    "auto_calm_step_squeeze": True,
+    "auto_calm_nice": 15,
+    # memory.high -> this % of the target's CURRENT rss. do_calm's own
+    # floor (PLAN.md Invariant #2) never lets memory.high below 110% of
+    # rss regardless of what's requested — so this must be >= that floor
+    # or the request is silently a no-op, always overridden upward. 130%
+    # gives the target a little headroom to keep running while capping how
+    # much FURTHER it can grow before the kernel starts pushing back.
+    "auto_calm_squeeze_pct": 130.0,
+    "auto_calm_cooldown_seconds": 300.0,  # min gap between acted-on cycles
 }
 
 CLAMPS = {
@@ -73,6 +95,15 @@ CLAMPS = {
     "swap_storm_eta_minutes": (0.1, 1440.0),
     "swap_storm_hysteresis_polls": (1, 60),
     "zombie_advise_min": (1, 100000),
+    "auto_calm_psi_some": (0.0, 100.0),
+    "auto_calm_psi_full": (0.0, 100.0),
+    "auto_calm_nice": (0, 19),         # NICE_MIN/NICE_MAX — calm only lowers
+    # floor matches do_calm's own hardcoded 1.1x-rss floor (PLAN.md
+    # Invariant #2) — anything below 110% would be silently overridden
+    # upward by do_calm itself, every time, so the clamp says so honestly
+    # rather than accepting a value that can never take effect
+    "auto_calm_squeeze_pct": (110.0, 500.0),
+    "auto_calm_cooldown_seconds": (30.0, 86400.0),
 }
 
 
@@ -862,13 +893,146 @@ def do_kill(pid, starttime, confirm, sig):
     return result
 
 
+# --- V2.M2: auto-calm — arms the existing calm machinery to act on its own -
+# Three independent consent gates, all required for a REAL (non-dry) action:
+#   1. auto_calm_enabled (config, default False) — the feature exists at all
+#   2. armed (runtime, toggled by `ramstein autocalm arm`/`dry`, ALWAYS
+#      resets to disarmed/dry-run on every daemon restart — a fresh boot
+#      never inherits a prior "yes", the same discipline as the kill gate
+#      requiring a fresh confirmation every time, never a remembered one)
+#   3. the ramstein-autocalm.timer unit being manually enabled — installed
+#      but not enabled by default, so a cycle never even RUNS unless the
+#      operator deliberately turned the schedule on
+# do_autocalm_run is only ever invoked on demand (the socket "run" action,
+# which the timer's service calls periodically) — never from the daemon's
+# own continuous poll loop, so gates 2+3 both being satisfied is the only
+# way anything happens on a schedule. Kill is never reachable from here at
+# any setting — the graduated response stops at notify, always.
+
+def do_autocalm_run(cfg, get_status, autocalm_state):
+    def _settle(result):
+        autocalm_state["last_result"] = result
+        return result
+
+    if not cfg["auto_calm_enabled"]:
+        return _settle({"ok": True, "acted": False,
+                        "reason": "auto_calm_enabled is false"})
+
+    doc = get_status()
+    mem = doc.get("memory") if isinstance(doc, dict) else None
+    warning = doc.get("warning") if isinstance(doc, dict) else None
+    if not mem:
+        return _settle({"ok": True, "acted": False, "reason": "no status yet"})
+
+    psi = mem.get("psi") or {}
+    some10, full10 = psi.get("some_avg10"), psi.get("full_avg10")
+    trigger = None
+    if some10 is not None and some10 > cfg["auto_calm_psi_some"]:
+        trigger = (f"PSI some avg10 {some10:.1f}% >"
+                   f" {cfg['auto_calm_psi_some']:.1f}%")
+    elif full10 is not None and full10 > cfg["auto_calm_psi_full"]:
+        trigger = (f"PSI full avg10 {full10:.1f}% >"
+                   f" {cfg['auto_calm_psi_full']:.1f}%")
+    elif cfg["auto_calm_use_swap_storm"] and isinstance(warning, dict) \
+            and warning.get("kind") == "swap_storm":
+        trigger = "swap storm active (V2.M1 warning)"
+
+    if trigger is None:
+        return _settle({"ok": True, "acted": False,
+                        "reason": "no trigger condition met"})
+
+    armed = autocalm_state.get("armed", False)
+    now = time.time()
+    # cooldown only rate-limits REAL actions, tracked in its OWN field
+    # (last_armed_action_ts) — last_action_ts below is the general "a cycle
+    # ran" marker the pill/CLI display, and a dry-run cycle must keep that
+    # fresh every tick (an operator watching "what would it do" shouldn't
+    # see stale data) without it ever counting toward the cooldown.
+    if armed:
+        last_armed_ts = autocalm_state.get("last_armed_action_ts")
+        if last_armed_ts is not None \
+                and now - last_armed_ts < cfg["auto_calm_cooldown_seconds"]:
+            remaining = cfg["auto_calm_cooldown_seconds"] - (now - last_armed_ts)
+            return _settle({"ok": True, "acted": False, "trigger": trigger,
+                            "reason": f"cooldown active ({remaining:.0f}s left)"})
+
+    # target: the current top RSS grower — same figure the pill already
+    # surfaces as top_process, no new selection logic
+    rows = query_top(False, 1).get("rows") or []
+    if not rows:
+        return _settle({"ok": True, "acted": False, "trigger": trigger,
+                        "reason": "no eligible target process"})
+    proc = _find_proc(rows[0]["pid"])
+    if proc is None:
+        return _settle({"ok": True, "acted": False, "trigger": trigger,
+                        "reason": "target vanished before action"})
+
+    steps = []
+    if cfg["auto_calm_step_renice"]:
+        if armed:
+            r = do_calm(proc["pid"], proc["starttime"], "nice",
+                        nice=cfg["auto_calm_nice"])
+        else:
+            r = {"dry_run": True, "would": f"renice to {cfg['auto_calm_nice']}"}
+        steps.append({"step": "renice", "result": r})
+    if cfg["auto_calm_step_squeeze"]:
+        squeeze_bytes = max(1, int(proc["rss"] * cfg["auto_calm_squeeze_pct"] / 100.0))
+        if armed:
+            r = do_calm(proc["pid"], proc["starttime"], "high",
+                        size=str(squeeze_bytes))
+        else:
+            r = {"dry_run": True, "would": f"memory.high to ~{squeeze_bytes}B"}
+        steps.append({"step": "squeeze", "result": r})
+
+    # step 3, notify, is never a daemon-side action: a root systemd service
+    # has no clean path into the operator's own desktop session. The daemon
+    # only SURFACES the payload (status.json's "autocalm" field, read by
+    # the already-running pill, which already has real notification access
+    # in the right session) — same one-file architecture as everything else
+    # the pill reads, no new daemon-protocol client needed in GJS.
+    notify = {
+        "pid": proc["pid"], "comm": proc["comm"], "trigger": trigger,
+        "armed": armed, "steps": [s["step"] for s in steps],
+        "suggested_kill": f"ramstein calm {proc['pid']} --kill",
+    }
+    result = {"ok": True, "acted": armed, "dry_run": not armed,
+              "target": {"pid": proc["pid"], "comm": proc["comm"]},
+              "trigger": trigger, "steps": steps, "notify": notify}
+    autocalm_state["last_action_ts"] = now
+    if armed:
+        autocalm_state["last_armed_action_ts"] = now
+        _ledger_write({"ts": now, "verb": "autocalm", "pid": proc["pid"],
+                       "comm": proc["comm"], "arg": trigger,
+                       "result": "acted", "steps": [s["step"] for s in steps]})
+    return _settle(result)
+
+
+def query_autocalm_status(cfg, autocalm_state):
+    return {
+        "enabled": cfg["auto_calm_enabled"],
+        "armed": autocalm_state.get("armed", False),
+        "policy": {
+            "psi_some": cfg["auto_calm_psi_some"],
+            "psi_full": cfg["auto_calm_psi_full"],
+            "use_swap_storm": cfg["auto_calm_use_swap_storm"],
+            "step_renice": cfg["auto_calm_step_renice"],
+            "step_squeeze": cfg["auto_calm_step_squeeze"],
+            "nice": cfg["auto_calm_nice"],
+            "squeeze_pct": cfg["auto_calm_squeeze_pct"],
+            "cooldown_seconds": cfg["auto_calm_cooldown_seconds"],
+        },
+        "last_action_ts": autocalm_state.get("last_action_ts"),
+        "last_result": autocalm_state.get("last_result"),
+    }
+
+
 # --- control socket ---------------------------------------------------------
 # The security seam (SO_PEERCRED-gated, bounded reads, hostile-input framing,
 # the listen(64) backlog M4's attack suite demanded) lives in
 # sutra.ControlServer now. This dispatch closure carries only the domain
 # commands; ping/status are sutra's job.
 
-def _make_dispatch(cfg, get_status):
+def _make_dispatch(cfg, get_status, autocalm_state):
     def dispatch(cmd, req):
         if cmd == "top":
             by_swap = req.get("swap", False)
@@ -924,6 +1088,19 @@ def _make_dispatch(cfg, get_status):
             if sig not in ("TERM", "KILL"):
                 raise ValueError("sig must be TERM or KILL")
             return do_kill(pid, starttime, confirm, sig)
+        if cmd == "autocalm":
+            action = req.get("action")
+            if action == "status":
+                return query_autocalm_status(cfg, autocalm_state)
+            if action == "arm":
+                autocalm_state["armed"] = True
+                return {"ok": True, "armed": True}
+            if action == "dry":
+                autocalm_state["armed"] = False
+                return {"ok": True, "armed": False}
+            if action == "run":
+                return do_autocalm_run(cfg, get_status, autocalm_state)
+            raise ValueError("unknown autocalm action")
         return None  # unknown -> sutra frames {"error": "unknown command"}
     return dispatch
 
@@ -947,8 +1124,11 @@ def main():
     state = {}
     latest = {"doc": {"error": "no status yet"}}
     pill_cache = {"summary": None}
+    # V2.M2: always starts disarmed/dry-run — in-memory only, never
+    # persisted, so a daemon restart can never inherit a prior "yes"
+    autocalm_state = {"armed": False, "last_action_ts": None, "last_result": None}
     sampler = Sampler(cfg)
-    dispatch = _make_dispatch(cfg, lambda: latest["doc"])
+    dispatch = _make_dispatch(cfg, lambda: latest["doc"], autocalm_state)
     ctl = sutra.ControlServer(SOCKET_PATH,
                               sutra.allow_uids({0, os.getuid(), cfg["owner_uid"]}),
                               VERSION, dispatch, lambda: latest["doc"],
@@ -966,6 +1146,14 @@ def main():
             "memory": mem,
             "warning": poll_swap_storm(state, cfg, now, mem["swap_total"],
                                        mem["swap_free"], mem["eta_oom_seconds"]),
+            # cheap (in-memory dict read, no I/O) — rides along every poll so
+            # the pill's GFileMonitor sees a fresh autocalm result as soon as
+            # the NEXT regular tick lands, without autocalm needing its own
+            # write path
+            "autocalm": {"enabled": cfg["auto_calm_enabled"],
+                        "armed": autocalm_state["armed"],
+                        "last_action_ts": autocalm_state["last_action_ts"],
+                        "last_result": autocalm_state["last_result"]},
         }
         latest["doc"] = doc
         # pill summary refreshes on the sampler's own cadence (not every

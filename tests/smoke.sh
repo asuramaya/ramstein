@@ -575,6 +575,195 @@ print("swap storm ok: hysteresis held through a transient clear, dropped after"
       f" {cfg['swap_storm_hysteresis_polls']} consecutive clear polls")
 PY
 
+# --- V2.M2: auto-calm ---------------------------------------------------
+# status/arm/dry/hostile input go through the real running test daemon's
+# socket — cheap, safe, no real action possible since the test config's
+# auto_calm_enabled defaults to false (unset -> DEFAULTS). The trigger->
+# graduate cycle itself is exercised directly against the real module (same
+# technique as the swap-storm block above): a real fixture process + the
+# real fake cgroup root, but a SYNTHETIC PSI reading fed through get_status
+# instead of real kernel pressure — a test suite shouldn't need to actually
+# starve the machine's memory to prove the graduated response works.
+python3 - "$RD" <<'PY'
+import json, os, socket, sys
+
+rd = sys.argv[1]
+
+
+def ask(obj):
+    c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    c.settimeout(10)
+    c.connect(os.path.join(rd, "control.sock"))
+    c.sendall(json.dumps(obj).encode() + b"\n")
+    buf = b""
+    while b"\n" not in buf:
+        chunk = c.recv(65536)
+        if not chunk:
+            break
+        buf += chunk
+    c.close()
+    return json.loads(buf.decode())
+
+
+status = ask({"cmd": "autocalm", "action": "status"})
+assert status["enabled"] is False, status  # test config never sets this
+assert status["armed"] is False, status
+for key in ("psi_some", "psi_full", "use_swap_storm", "step_renice",
+            "step_squeeze", "nice", "squeeze_pct", "cooldown_seconds"):
+    assert key in status["policy"], f"policy missing {key}"
+print("autocalm status ok: disabled/disarmed by default, policy shape correct")
+
+armed = ask({"cmd": "autocalm", "action": "arm"})
+assert armed == {"ok": True, "armed": True}, armed
+assert ask({"cmd": "autocalm", "action": "status"})["armed"] is True, "arm didn't stick"
+dry = ask({"cmd": "autocalm", "action": "dry"})
+assert dry == {"ok": True, "armed": False}, dry
+assert ask({"cmd": "autocalm", "action": "status"})["armed"] is False, "dry didn't stick"
+print("autocalm arm/dry ok: runtime toggle round-trips over the socket")
+
+# auto_calm_enabled is false in the test config -> run is always a no-op,
+# armed or not, regardless of real system pressure
+run = ask({"cmd": "autocalm", "action": "run"})
+assert run == {"ok": True, "acted": False,
+               "reason": "auto_calm_enabled is false"}, run
+print("autocalm run ok: no-op while auto_calm_enabled is false")
+
+# hostile input must answer with an error, never crash the daemon
+assert "error" in ask({"cmd": "autocalm", "action": "not-a-real-action"}), \
+    "bogus autocalm action accepted"
+assert "error" in ask({"cmd": "autocalm"}), "missing action accepted"
+assert ask({"cmd": "ping"})["ok"] is True, "daemon died after autocalm abuse"
+print("hostile autocalm input ok: rejected, daemon alive")
+PY
+
+python3 - "$RD" <<'PY'
+import os, subprocess, sys, time
+from importlib.machinery import SourceFileLoader
+import importlib.util
+
+rd = sys.argv[1]
+os.environ["RAMSTEIN_STATE_DIR"] = os.path.join(rd, "autocalm_state")
+os.environ["RAMSTEIN_CGROUP_ROOT"] = os.path.join(rd, "autocalm_fake_cgroup")
+
+sys.path.insert(0, "bin")
+loader = SourceFileLoader("ramsteind_autocalm", "bin/ramsteind")
+spec = importlib.util.spec_from_loader(loader.name, loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+
+cfg = dict(mod.DEFAULTS)
+cfg.update(auto_calm_enabled=True, auto_calm_psi_some=5.0,
+           auto_calm_cooldown_seconds=9999)  # low bar to trigger, long
+                                              # cooldown so it only fires once
+sampler = mod.Sampler(cfg)
+
+child = subprocess.Popen([sys.executable, "-c",
+    "import time; buf = bytearray(100 * 1024 * 1024); time.sleep(60)"])
+try:
+    # get the fixture into the index so query_top can find it — 100MiB
+    # (not 50) so requested (rss*1.3) safely clears BOTH do_calm's 1.1x-rss
+    # floor and its absolute 64MiB floor, keeping the expected-value math
+    # below exact instead of depending on which floor would've won at a
+    # smaller, noisier size
+    fixture_rss = None
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        sampler._sample(time.time())
+        # limit=1000, not a small number — this machine routinely has real
+        # processes well above the fixture's 100MiB (same reason the M2
+        # top/blame block above asks for limit=1000), so a narrow limit
+        # would starve the fixture out of the ranking entirely
+        rows = mod.query_top(False, 1000).get("rows") or []
+        row = next((r for r in rows if r["pid"] == child.pid), None)
+        # >=90MiB, not just "found at all" — a sample can land in the
+        # instant between Popen returning and the child finishing its
+        # bytearray(100MiB) allocation, catching a tiny transient rss that
+        # would throw off every expected-value computation below
+        if row and row["rss"] >= 90 * 1024 * 1024:
+            fixture_rss = row["rss"]
+            break
+        time.sleep(0.5)
+    else:
+        raise AssertionError(
+            f"fixture pid {child.pid} never reached a stable ~100MiB rss"
+            f" in the index (last seen: {row['rss'] if row else 'never'})")
+
+    # a real, writable fake cgroup for the fixture, same trick M3's calm
+    # --high test uses
+    cg_line = open(f"/proc/{child.pid}/cgroup").read().splitlines()[0]
+    rel = cg_line.split(":", 2)[2].lstrip("/")
+    fake_dir = os.path.join(os.environ["RAMSTEIN_CGROUP_ROOT"], rel)
+    os.makedirs(fake_dir, exist_ok=True)
+    with open(os.path.join(fake_dir, "memory.high"), "w") as f:
+        f.write("max")
+    orig_nice = os.getpriority(os.PRIO_PROCESS, child.pid)
+
+    # do_autocalm_run picks query_top's #1 row as its target — on a real,
+    # busy dev machine other unrelated processes (routinely several
+    # editor/LSP "python3"es well above 100MiB) can outrank the fixture, so
+    # pin query_top to a deterministic result instead of trusting real
+    # machine-wide competition. Real indexing was already proven above;
+    # this only isolates the SELECTION step from whatever else happens to
+    # be running right now. Everything downstream (do_calm's renice/cgroup
+    # write) still acts on the real fixture pid for real.
+    mod.query_top = lambda by_swap, limit: {"ts": time.time(), "rows": [
+        {"pid": child.pid, "comm": "python3", "rss": fixture_rss,
+         "swap": 0, "state": "S"}]}
+
+    def fake_status(psi_some):
+        return {"memory": {"psi": {"some_avg10": psi_some, "full_avg10": 0.0}},
+                "warning": None}
+
+    autocalm_state = {"armed": False, "last_action_ts": None, "last_result": None}
+
+    # disarmed: triggers, computes, but must NOT touch the real process
+    r = mod.do_autocalm_run(cfg, lambda: fake_status(99.0), autocalm_state)
+    assert r["ok"] and r["dry_run"] and not r["acted"], r
+    assert r["target"]["pid"] == child.pid, r
+    assert "PSI some" in r["trigger"], r
+    assert {s["step"] for s in r["steps"]} == {"renice", "squeeze"}, r
+    assert all(s["result"].get("dry_run") for s in r["steps"]), r
+    assert os.getpriority(os.PRIO_PROCESS, child.pid) == orig_nice, \
+        "dry-run renamed the fixture's priority — should never touch it"
+    with open(os.path.join(fake_dir, "memory.high")) as f:
+        assert f.read().strip() == "max", "dry-run wrote memory.high — should never touch it"
+    assert r["notify"]["suggested_kill"] == f"ramstein calm {child.pid} --kill", r["notify"]
+    print("autocalm dry-run ok: triggered + computed steps, fixture left untouched")
+
+    # armed: must act for real this time
+    autocalm_state["armed"] = True
+    r = mod.do_autocalm_run(cfg, lambda: fake_status(99.0), autocalm_state)
+    assert r["ok"] and r["acted"] and not r["dry_run"], r
+    got_nice = os.getpriority(os.PRIO_PROCESS, child.pid)
+    assert got_nice == cfg["auto_calm_nice"], \
+        f"armed renice didn't apply: got {got_nice}, wanted {cfg['auto_calm_nice']}"
+    with open(os.path.join(fake_dir, "memory.high")) as f:
+        written = int(f.read().strip())
+    # do_autocalm_run requests rss * squeeze_pct/100; do_calm's own floor
+    # (1.1x rss, or the 64MiB absolute minimum) then clamps that further —
+    # replicate the exact same math from the same rss reading query_top
+    # already gave us, so this is an exact check, not just a sanity range
+    requested = int(fixture_rss * cfg["auto_calm_squeeze_pct"] / 100.0)
+    floor = max(64 * 1024 * 1024, int(fixture_rss * 1.1))
+    expected = max(floor, requested)
+    assert written == expected, (
+        f"memory.high got {written}, wanted {expected}"
+        f" (rss={fixture_rss}, requested={requested}, floor={floor})")
+    assert written > fixture_rss, \
+        "squeeze landed AT OR BELOW current rss — should give headroom, not choke it"
+    print(f"autocalm armed ok: renice -> {got_nice}, memory.high -> {written}B"
+          f" (rss was {fixture_rss}B)")
+
+    # cooldown: an immediate second armed cycle must NOT act again
+    r2 = mod.do_autocalm_run(cfg, lambda: fake_status(99.0), autocalm_state)
+    assert r2["ok"] and not r2["acted"], r2
+    assert "cooldown" in r2["reason"], r2
+    print("autocalm cooldown ok: back-to-back trigger did not re-act")
+finally:
+    child.terminate()
+    child.wait(timeout=5)
+PY
+
 # --- M4: make deb — builds a real .deb; contents include bins+units+man.
 # Builds and inspects only — never installed.
 make deb > /tmp/ramstein-deb-build.log 2>&1 \
@@ -587,6 +776,8 @@ for want in usr/bin/ramsteind usr/bin/ramstein usr/bin/ramstein-healthcheck \
             lib/systemd/system/ramsteind.service \
             lib/systemd/system/ramstein-update.service \
             lib/systemd/system/ramstein-update.timer \
+            lib/systemd/system/ramstein-autocalm.service \
+            lib/systemd/system/ramstein-autocalm.timer \
             usr/share/man/man1/ramstein.1 usr/share/man/man8/ramsteind.8 \
             etc/ramstein/config.json; do
     echo "$CONTENTS" | grep -q "$want" \

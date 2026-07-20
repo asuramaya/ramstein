@@ -1,0 +1,18 @@
+[Unit]
+Description=ramstein auto-calm cycle (opt-in — NOT enabled by default)
+
+# The third of auto-calm's three consent gates — the other two are
+# auto_calm_enabled=true in config and `ramstein autocalm arm` (which
+# always resets to disarmed on every daemon restart). Even with both of
+# those satisfied, nothing runs on a schedule until this is deliberately
+# turned on:
+#   sudo systemctl enable --now ramstein-autocalm.timer
+# Each firing is self-contained and safe on its own — do_autocalm_run()
+# re-checks the trigger condition and its own cooldown every time, so a
+# missed or duplicate firing is a no-op, never a double action.
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+
+[Install]
+WantedBy=timers.target

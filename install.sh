@@ -88,11 +88,13 @@ else
   echo "-- config: keeping existing $CONFDIR/config.json (never overwritten)"
 fi
 
-# 3. systemd: daemon (+ updater units, installed but NOT enabled)
+# 3. systemd: daemon (+ updater/autocalm units, installed but NOT enabled)
 echo "-- systemd units + enabling"
-install -m 0644 "$SRC/systemd/system/ramsteind.service"       "$UNITDIR/ramsteind.service"
-install -m 0644 "$SRC/systemd/system/ramstein-update.service" "$UNITDIR/ramstein-update.service"
-install -m 0644 "$SRC/systemd/system/ramstein-update.timer"   "$UNITDIR/ramstein-update.timer"
+install -m 0644 "$SRC/systemd/system/ramsteind.service"        "$UNITDIR/ramsteind.service"
+install -m 0644 "$SRC/systemd/system/ramstein-update.service"  "$UNITDIR/ramstein-update.service"
+install -m 0644 "$SRC/systemd/system/ramstein-update.timer"    "$UNITDIR/ramstein-update.timer"
+install -m 0644 "$SRC/systemd/system/ramstein-autocalm.service" "$UNITDIR/ramstein-autocalm.service"
+install -m 0644 "$SRC/systemd/system/ramstein-autocalm.timer"   "$UNITDIR/ramstein-autocalm.timer"
 systemctl daemon-reload
 systemctl enable ramsteind.service
 # `enable --now` on an ALREADY-active unit is a no-op start — it would leave
@@ -127,6 +129,12 @@ cat <<EOF
 
 daily update CHECK is off by default (it's notify-only, never installs). Opt in:
   sudo systemctl enable --now ramstein-update.timer
+
+auto-calm is off by default and stays off across THREE separate gates —
+config (auto_calm_enabled), runtime (ramstein autocalm arm, always resets
+to dry-run on restart), and this timer. It only ever renices/squeezes; kill
+always stays a human verb with a TTY confirm. Opt in, once all three matter:
+  ramstein autocalm arm && sudo systemctl enable --now ramstein-autocalm.timer
 
 >>> step 2 — the GNOME pill (per-account, as yourself, no sudo): <<<
     make pill && gnome-extensions enable ramstein@asuramaya

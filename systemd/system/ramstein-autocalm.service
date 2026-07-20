@@ -1,0 +1,13 @@
+[Unit]
+Description=ramstein auto-calm cycle — one check-and-maybe-act pass
+After=ramsteind.service
+Requires=ramsteind.service
+
+[Service]
+Type=oneshot
+# Talks to the control socket like any `ramstein` CLI invocation — all real
+# privileged work (renice, cgroup write) happens inside ramsteind itself,
+# gated by its own armed/dry state and cooldown. Root so the socket's
+# SO_PEERCRED allow-list (0, daemon uid, owner_uid) always includes it
+# regardless of what owner_uid happens to be configured to.
+ExecStart=/usr/local/bin/ramstein autocalm run

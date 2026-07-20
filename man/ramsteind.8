@@ -1,5 +1,5 @@
 '\" t
-.TH RAMSTEIND 8 "2026-07-17" "ramstein 0.5.0" "ramstein manual"
+.TH RAMSTEIND 8 "2026-07-20" "ramstein 0.8.0" "ramstein manual"
 .SH NAME
 ramsteind \- the ramstein memory daemon
 .SH SYNOPSIS
@@ -54,6 +54,18 @@ proc_min_bytes@16MiB@1MiB\(en2^40
 recent_ring@120@2\(en100000
 hourly_ring@168@2\(en100000
 advise_growth_mib_per_hour@500.0@1\(en1000000
+swap_storm_eta_minutes@10.0@0.1\(en1440
+swap_storm_hysteresis_polls@3@1\(en60
+zombie_advise_min@3@1\(en100000
+auto_calm_enabled@false@bool
+auto_calm_psi_some@20.0@0\(en100
+auto_calm_psi_full@10.0@0\(en100
+auto_calm_use_swap_storm@true@bool
+auto_calm_step_renice@true@bool
+auto_calm_step_squeeze@true@bool
+auto_calm_nice@15@0\(en19
+auto_calm_squeeze_pct@130.0@110\(en500
+auto_calm_cooldown_seconds@300.0@30\(en86400
 .TE
 .PP
 Units are seconds unless named otherwise.
@@ -66,7 +78,29 @@ is the rss+swap floor a process must clear to earn an index row;
 .I hourly_ring
 are sample counts kept in each ring;
 .I advise_growth_mib_per_hour
-is rule 2's leak-ish growth-rate threshold.
+is rule 2's leak-ish growth-rate threshold;
+.I swap_storm_eta_minutes
+/
+.I swap_storm_hysteresis_polls
+govern V2.M1's early warning (see
+.B WARNING
+below);
+.I zombie_advise_min
+is how many unreaped children one parent needs before
+.I advise
+names it;
+the
+.I auto_calm_*
+keys are V2.M2's policy \(em see
+.B AUTO\-CALM
+below.
+.I auto_calm_enabled
+is the master switch; even armed (see
+.BR ramstein (1)'s
+.I autocalm
+verb) and even with
+.B ramstein\-autocalm.timer
+enabled, a cycle does nothing while this is false.
 .SH FILES
 .TP
 .I /etc/ramstein/config.json
@@ -95,7 +129,11 @@ action: timestamp, verb, pid, comm, argument, result.
 .IR owner_uid .
 Written atomically (tmp file + rename). Carries the M2/M3 pill digest
 (top process, zombie count, one advise headline) for the GNOME extension,
-recomputed on the sampler's own cadence.
+recomputed on the sampler's own cadence; V2.M1's
+.I warning
+field (swap-storm, when active) and V2.M2's
+.I autocalm
+field (armed state, last cycle) ride along on every poll.
 .TP
 .I /run/ramstein/control.sock
 0660, owned by
@@ -105,6 +143,56 @@ recomputed on the sampler's own cadence.
 .B SIGTERM, SIGINT
 Clean shutdown: the current poll loop iteration finishes, the socket is
 closed.
+.SH WARNING (V2.M1 \(em swap-storm early warning)
+A second EWMA tracks swap consumption specifically (independent of the
+main burn EWMA). When it's actively growing
+.I and
+the combined ETA-to-OOM crosses
+.IR swap_storm_eta_minutes ,
+.I status.json
+gains a
+.I warning
+object
+.RI ( kind ": " swap_storm ", " eta_oom_seconds ", " swap_burn_bps ", "
+.IR top_growers ,
+the top-3 processes by swap delta over a recent window). It's sticky:
+.I swap_storm_hysteresis_polls
+consecutive clear polls are required before it drops, so a value hovering
+right at the horizon doesn't flap the pill on and off. This catches a gap
+the general avail%/PSI/eta classifier can miss \(em
+.I MemAvailable
+is a reclaimable-cache-aware kernel heuristic that can look fine for a
+while even as swap visibly drains.
+.SH AUTO-CALM (V2.M2)
+Arms
+.BR ramstein (1)'s
+.I calm
+machinery to act on its own, on a timer. Three independent gates, all
+required before anything real happens \(em see
+.B Auto\-calm
+under
+.B SECURITY
+below for the full model. Trigger: PSI some/full avg10 crossing
+.IR auto_calm_psi_some / auto_calm_psi_full ,
+or (when
+.I auto_calm_use_swap_storm
+is true) an active swap-storm warning. Graduated response against the
+current top RSS grower, each step independently toggleable:
+.IR auto_calm_step_renice " (to " auto_calm_nice ")"
+then
+.IR auto_calm_step_squeeze " (cgroup " memory.high " to "
+.I auto_calm_squeeze_pct
+percent of the target's current RSS \(em always at least 110%, since
+.I calm \-\-high's
+own floor never allows less and a lower request would silently be a
+no-op; the default headroom lets the target keep running while capping
+how much further it can grow).
+.I auto_calm_cooldown_seconds
+rate-limits how often a cycle can act for real. There is no step past
+squeeze \(em the daemon never kills anything on its own, at any setting;
+it only ever surfaces a suggested
+.I calm \-\-kill
+command for a human to run.
 .SH SECURITY
 The relevant attacker is an unprivileged local process abusing the root
 daemon; ramsteind has no network attack surface at all \(em the only
@@ -139,6 +227,24 @@ identity against live
 before signaling \(em a stale or reused pid is refused even if the CLI
 layer were somehow bypassed. PID 1, kernel threads, and the daemon's own
 pid are never valid targets, hardcoded, not configurable.
+.TP
+.B Auto\-calm
+Three independent gates, all required before a cycle acts for real \(em
+config
+.RI ( auto_calm_enabled ,
+off by default), the runtime armed state (toggled only by
+.BR ramstein (1)'s
+.I autocalm arm / dry
+\(em armed always resets to disarmed/dry-run on every daemon restart, the
+same discipline as the kill gate never trusting a remembered confirmation
+across a process boundary), and
+.B ramstein\-autocalm.timer
+being manually enabled (installed, not enabled, same as
+.BR ramstein\-update.timer ).
+Kill is never reachable from an auto-calm cycle at any setting \(em the
+graduated response stops at a desktop notification naming the one
+.I calm \-\-kill
+command it will not run itself.
 .TP
 .B The memory.high floor
 .I calm \-\-high

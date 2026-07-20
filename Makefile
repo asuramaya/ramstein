@@ -85,7 +85,8 @@ deb:
 	install -m 0644 man/ramsteind.8 $(DEBROOT)/usr/share/man/man8/ramsteind.8
 	install -m 0644 config/config.json $(DEBROOT)/etc/ramstein/config.json
 	install -m 0644 systemd/system/ramsteind.service systemd/system/ramstein-update.service \
-	    systemd/system/ramstein-update.timer $(DEBROOT)/lib/systemd/system/
+	    systemd/system/ramstein-update.timer systemd/system/ramstein-autocalm.service \
+	    systemd/system/ramstein-autocalm.timer $(DEBROOT)/lib/systemd/system/
 	install -m 0755 packaging/deb/postinst $(DEBROOT)/DEBIAN/postinst
 	install -m 0755 packaging/deb/prerm $(DEBROOT)/DEBIAN/prerm
 	install -m 0755 packaging/deb/postrm $(DEBROOT)/DEBIAN/postrm

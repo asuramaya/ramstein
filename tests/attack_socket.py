@@ -151,6 +151,10 @@ HOSTILE = [
     {"cmd": "kill", "pid": FPID, "starttime": 1, "confirm": FPID, "sig": "NUKE"},
     {"cmd": "kill", "pid": 1, "starttime": 1, "confirm": 1},
     {"cmd": "kill", "pid": os.getpid(), "starttime": 1, "confirm": os.getpid()},
+    {"cmd": "autocalm"}, {"cmd": "autocalm", "action": "wat"},
+    {"cmd": "autocalm", "action": None}, {"cmd": "autocalm", "action": 123},
+    {"cmd": "autocalm", "action": "run", "extra": "garbage"},
+    {"cmd": "autocalm", "action": "arm", "extra": [1, 2, 3]},
     {"cmd": "wat"}, {"cmd": 123}, {"cmd": None}, {}, {"cmd": []},
 ]
 for msg in HOSTILE:
@@ -294,6 +298,82 @@ if not alive("after half-open stall"):
     fails.append("daemon did not recover after a half-open client")
 print(f"   half-open client isolated, daemon alive throughout: "
       f"{alive('half-open-stall tail')}")
+
+# ----------------------------------------------------------- hostile policy config
+# auto_calm_* governs a REAL action's parameters (nice level, cgroup squeeze
+# size, cooldown) — a hostile config here must clamp, exactly like every
+# other config key, never grant something wider than the documented range.
+# A second, separate daemon instance: the main one above is already running
+# with a config fixed at its own startup.
+print("== hostile policy config (auto_calm_*) ==")
+RD2 = tempfile.mkdtemp(prefix="ramstein-attack-cfg-")
+os.makedirs(os.path.join(RD2, "state"), exist_ok=True)
+with open(os.path.join(RD2, "config.json"), "w") as f:
+    json.dump({
+        "poll_interval": 1, "owner_uid": os.getuid(),
+        "auto_calm_enabled": "yes",       # wrong type -> default (False)
+        "auto_calm_nice": 999,            # way above NICE_MAX (19)
+        "auto_calm_squeeze_pct": -50.0,   # below the floor (110)
+        "auto_calm_cooldown_seconds": 0,  # below the floor (30)
+        "auto_calm_psi_some": 500.0,      # above 100
+    }, f)
+env2 = dict(env)
+env2["RAMSTEIN_RUNTIME_DIR"] = RD2
+env2["RAMSTEIN_STATE_DIR"] = os.path.join(RD2, "state")
+proc2 = subprocess.Popen(
+    [sys.executable, os.path.join(HERE, "bin", "ramsteind"),
+     "--config", os.path.join(RD2, "config.json")],
+    env=env2)
+SOCK2 = os.path.join(RD2, "control.sock")
+try:
+    socket_ready = False
+    for _ in range(80):
+        if os.path.exists(SOCK2):
+            socket_ready = True
+            break
+        time.sleep(0.1)
+    if not socket_ready:
+        fails.append("hostile-config daemon never created its socket")
+
+    def ask2(payload):
+        c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        c.settimeout(8)
+        c.connect(SOCK2)
+        c.sendall(json.dumps(payload).encode() + b"\n")
+        buf = b""
+        while b"\n" not in buf:
+            chunk = c.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+        c.close()
+        return json.loads(buf.decode())
+
+    if socket_ready:
+        status = ask2({"cmd": "autocalm", "action": "status"})
+        checks = [
+            (status.get("enabled") is False, f"enabled should default False on"
+             f" a bad type, got {status.get('enabled')!r}"),
+            (status["policy"]["nice"] <= 19, f"nice not clamped: {status['policy']['nice']}"),
+            (status["policy"]["squeeze_pct"] >= 110.0,
+             f"squeeze_pct not clamped up to its floor: {status['policy']['squeeze_pct']}"),
+            (status["policy"]["cooldown_seconds"] >= 30.0,
+             f"cooldown_seconds not clamped up to its floor: {status['policy']['cooldown_seconds']}"),
+            (status["policy"]["psi_some"] <= 100.0,
+             f"psi_some not clamped: {status['policy']['psi_some']}"),
+        ]
+        for ok, msg in checks:
+            if not ok:
+                fails.append(f"[hostile config] {msg}")
+        print(f"   {len(checks)} out-of-range auto_calm_* values all clamped,"
+              f" none widened: {all(c[0] for c in checks)}")
+finally:
+    proc2.terminate()
+    try:
+        proc2.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc2.kill()
+        proc2.wait()
 
 # ---------------------------------------------------------------------- done
 fixture.terminate()
