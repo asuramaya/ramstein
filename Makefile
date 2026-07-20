@@ -48,12 +48,20 @@ install:
 uninstall:
 	./uninstall.sh
 
-# the pill only ever needs your own $$HOME and gnome-shell session — never root
+# the pill only ever needs your own $$HOME and gnome-shell session — never root.
+# `gnome-extensions disable/enable` (and even the ReloadExtension D-Bus call,
+# which recent gnome-shell declares but leaves unimplemented — confirmed by
+# hand against 50.1) only re-fire the extension's lifecycle hooks; they don't
+# re-import the ES module, so code changes silently keep running the old
+# import until the process that holds it dies. On Wayland gnome-shell IS the
+# compositor, so that's a log out and back in — there's no in-place restart
+# the way X11's Alt+F2 r has one.
 pill:
 	mkdir -p $(HOME)/.local/share/gnome-shell/extensions
 	cp -r extension/ramstein@asuramaya $(HOME)/.local/share/gnome-shell/extensions/
 	@echo "pill installed — now: gnome-extensions enable ramstein@asuramaya"
-	@echo "then log out and back in once (Wayland reloads extensions at login)"
+	@echo "code changes after that need a log out/in to actually take effect"
+	@echo "(disable+enable only re-fires lifecycle hooks, doesn't re-import the JS)"
 
 # Bins land straight in /usr/bin, not /usr/lib/ramstein + symlinks: every
 # binary here (ramsteind, ramstein, ramstein-healthcheck, ramstein-update)
