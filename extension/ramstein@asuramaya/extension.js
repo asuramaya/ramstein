@@ -180,24 +180,40 @@ class RAMsteinToggle extends QuickMenuToggle {
         const mem = st.memory;
         const pill = st.pill ?? null;
         const state = mem.state ?? 'ok';
-        const color = STATE_COLOR[state] ?? DIM;
         const some10 = num(mem.psi?.some_avg10);
         const full10 = num(mem.psi?.full_avg10);
 
+        // V2.M1: swap-storm early warning — a distinct, additional signal
+        // from the daemon's own classifier (avail%/PSI/eta can stay "ok"
+        // for a while even as swap visibly drains). Presence alone bumps
+        // the pill's effective severity to at least WARN, on top of
+        // whatever `state` already says — never downgrades from hot.
+        const swapStorm = isObj(st.warning) && st.warning.kind === 'swap_storm'
+            ? st.warning : null;
+        const baseRank = RANK[state] ?? 0;
+        const rank = Math.max(baseRank, swapStorm ? 1 : 0);
+        const effState = rank >= 2 ? 'hot' : rank >= 1 ? 'warn' : 'ok';
+        const color = STATE_COLOR[effState] ?? DIM;
+
         // tile: the hero readout — how much is left, how long until the
-        // kernel starts shooting
-        this.subtitle = `${STATE_MARK[state] ?? ''}` +
-            `${fmtBytes(mem.available)} · OOM ${fmtEta(mem.eta_oom_seconds)}`;
-        // the heat: pill lights accent whenever the state is warn or worse
-        this.checked = (RANK[state] ?? 0) >= 1;
-        this.iconName = STATE_ICON[state] ?? ICON;
+        // kernel starts shooting. Swap storm pre-empts the usual subtitle
+        // with its own countdown — a distinct, more urgent story.
+        this.subtitle = swapStorm
+            ? `⚠ swap storm · OOM ${fmtEta(swapStorm.eta_oom_seconds)}`
+            : `${STATE_MARK[effState] ?? ''}` +
+              `${fmtBytes(mem.available)} · OOM ${fmtEta(mem.eta_oom_seconds)}`;
+        // the heat: pill lights accent whenever the effective state is warn+
+        this.checked = rank >= 1;
+        this.iconName = STATE_ICON[effState] ?? ICON;
 
         // alert banner: warn/hot gets its own loud line — the why is the
         // thresholds the daemon classifies on: PSI full, available, ETA.
         // NBSP-glued so a wrap (the popup is a fixed ~280-300px) can only
         // land on a ' · ' join, never split a figure like "OOM ~2h" in two.
+        // Gated on the daemon's own `state` (not the swap-storm-bumped
+        // rank) since its content is specifically about that classifier.
         this._alertSection.removeAll();
-        if ((RANK[state] ?? 0) >= 1) {
+        if (baseRank >= 1) {
             const bits = [];
             if (mem.eta_oom_seconds != null)
                 bits.push(`OOM${NB}${fmtEta(mem.eta_oom_seconds)}`);
@@ -205,8 +221,24 @@ class RAMsteinToggle extends QuickMenuToggle {
                 bits.push(`psi${NB}full${NB}${full10.toFixed(1)}%`);
             bits.push(`${fmtBytes(mem.available)}${NB}left`);
             this._alertSection.addMenuItem(wrapRow(
-                `<span foreground="${color}">` +
+                `<span foreground="${STATE_COLOR[state] ?? DIM}">` +
                 `${STATE_MARK[state]}memory — ${esc(bits.join(' · '))}</span>`));
+        }
+
+        // swap-storm banner: its own line, independent of the section
+        // above — names the top-3 growers so the countdown comes with a
+        // "who" attached, not just a number
+        if (swapStorm) {
+            const bits = [`OOM${NB}${fmtEta(swapStorm.eta_oom_seconds)}`];
+            if (swapStorm.swap_burn_bps != null)
+                bits.push(`swap${NB}burn${NB}${esc(fmtBurn(swapStorm.swap_burn_bps))}`);
+            const growers = (swapStorm.top_growers || [])
+                .map(g => `${esc(g.comm)}${NB}+${fmtBytes(g.swap_delta)}`)
+                .join(', ');
+            if (growers)
+                bits.push(`top:${NB}${growers}`);
+            this._alertSection.addMenuItem(wrapRow(
+                `<span foreground="${WARN}">⚠ swap storm — ${bits.join(' · ')}</span>`));
         }
 
         // rows: memory (hero, bold+large) / swap / top process / zombies,

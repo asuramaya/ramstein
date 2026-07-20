@@ -21,7 +21,7 @@ import time
 
 import sutra
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 
 RUNTIME_DIR = os.environ.get("RAMSTEIN_RUNTIME_DIR", "/run/ramstein")
 STATUS_PATH = os.path.join(RUNTIME_DIR, "status.json")
@@ -46,6 +46,12 @@ DEFAULTS = {
     "recent_ring": 120,        # fine-grained samples kept (~1h at defaults)
     "hourly_ring": 168,        # promoted samples kept (~7d)
     "advise_growth_mib_per_hour": 500.0,  # advise rule 2's leak-ish threshold
+    "swap_storm_eta_minutes": 10.0,   # V2.M1: combined ETA below this + swap
+                                       # actively growing -> warning:swap_storm
+    "swap_storm_hysteresis_polls": 3,  # consecutive clear polls before it drops
+    "zombie_advise_min": 3,    # V2.M1: a parent needs this many unreaped
+                               # children before advise names it — a lone
+                               # stray zombie about to be reaped is noise
 }
 
 CLAMPS = {
@@ -64,6 +70,9 @@ CLAMPS = {
     "recent_ring": (2, 100000),
     "hourly_ring": (2, 100000),
     "advise_growth_mib_per_hour": (1.0, 1000000.0),
+    "swap_storm_eta_minutes": (0.1, 1440.0),
+    "swap_storm_hysteresis_polls": (1, 60),
+    "zombie_advise_min": (1, 100000),
 }
 
 
@@ -159,6 +168,81 @@ def classify(total, avail, psi, eta, cfg):
 
 def write_status(doc, cfg):
     sutra.write_status(STATUS_PATH, doc, owner=(cfg["owner_uid"], -1))
+
+
+# --- V2.M1: the watchman — swap-storm early warning -------------------------
+# A second EWMA, this one over swap consumption specifically. The general
+# classifier (avail%/PSI/eta) can stay "ok" for a while even as swap visibly
+# drains, since MemAvailable is a reclaimable-cache-aware kernel heuristic
+# that doesn't move in lockstep with swap — this is the signal that catches
+# THAT gap. Sticky with hysteresis (a counter of consecutive clear polls,
+# not just a single below-threshold reading) so it doesn't flap on a value
+# hovering right at the horizon.
+
+def poll_swap_storm(state, cfg, now, swap_total, swap_free, eta_oom_seconds):
+    prev = state.get("swap")
+    state["swap"], swap_ewma = sutra.ewma_rate(
+        prev, swap_total - swap_free, now, cfg["burn_tau"])
+
+    horizon = cfg["swap_storm_eta_minutes"] * 60
+    triggered = (swap_ewma > 1024.0 and eta_oom_seconds is not None
+                 and eta_oom_seconds < horizon)
+
+    active = state.get("swap_storm_active", False)
+    clear_count = state.get("swap_storm_clear_count", 0)
+    if triggered:
+        active, clear_count = True, 0
+    elif active:
+        clear_count += 1
+        if clear_count >= cfg["swap_storm_hysteresis_polls"]:
+            active, clear_count = False, 0
+    state["swap_storm_active"] = active
+    state["swap_storm_clear_count"] = clear_count
+
+    if not active:
+        return None
+    return {
+        "kind": "swap_storm",
+        "eta_oom_seconds": eta_oom_seconds,
+        "swap_burn_bps": round(swap_ewma, 1),
+        "top_growers": _top_swap_growers(3),
+    }
+
+
+def _top_swap_growers(limit):
+    """Top swap-delta growers over a recent window — a storm is about
+    GROWTH, not standing swap usage, so this diffs two samples the same way
+    advise's growth rule (rule 2) does, rather than just ranking current
+    VmSwap. Needs the index; returns [] before the sampler's first sample or
+    once span is too thin to trust (< 5 min, same floor as rule 2)."""
+    con = _connect_index()
+    try:
+        head = _latest_sample(con)
+        if head is None:
+            return []
+        head_id, head_ts = head
+        base = con.execute(
+            "SELECT id, ts FROM samples WHERE ts <= ?"
+            " ORDER BY ts DESC LIMIT 1", (head_ts - 300,)).fetchone()
+        if base is None:
+            base = con.execute(
+                "SELECT id, ts FROM samples ORDER BY ts ASC LIMIT 1").fetchone()
+        if base is None or base[0] == head_id or head_ts - base[1] < 300:
+            return []
+        base_id, _base_ts = base
+        # SQLite's WHERE can't see a SELECT-list alias (delta), so the
+        # positive-growth filter runs client-side after the fetch instead
+        rows = con.execute(
+            "SELECT h.pid, h.comm, h.swap - COALESCE(b.swap, 0) AS delta"
+            " FROM proc_stats h LEFT JOIN proc_stats b"
+            "   ON b.sample_id=? AND b.pid=h.pid AND b.starttime=h.starttime"
+            " WHERE h.sample_id=? AND h.swap > 0"
+            " ORDER BY delta DESC LIMIT ?",
+            (base_id, head_id, limit * 4)).fetchall()
+        return [{"pid": r[0], "comm": r[1], "swap_delta": r[2]}
+                for r in rows if r[2] > 0][:limit]
+    finally:
+        con.close()
 
 
 # --- index: the persistent truth about who's holding memory hostage --------
@@ -630,16 +714,22 @@ def query_advise(cfg, get_status):
                     f"swap {used_pct:.0f}% full — top tenant {tenant['comm']}"
                     f" (pid {tenant['pid']}, {tenant['swap']}B)"})
 
-    # rule 4: zombies, name the parent not reaping them
+    # rule 4: zombie-reaper advisory (V2.M1) — group by parent, only speak
+    # once ONE parent has a real backlog (zombie_advise_min), not on a lone
+    # stray about to be reaped normally; names the actual culprit with a
+    # concrete reap suggestion, not just a count. The 12-real-zombies live
+    # catch from M3 is exactly the shape this targets.
     zs = query_zombies()["rows"]
     if zs:
         tally = {}
         for z in zs:
             tally[z["parent_comm"]] = tally.get(z["parent_comm"], 0) + 1
         parent, count = max(tally.items(), key=lambda kv: kv[1])
-        lines.append({"rule": "zombies", "text":
-            f"{len(zs)} zombie(s) unreaped — {parent} isn't reaping"
-            f" ({count} of them)"})
+        if count >= cfg["zombie_advise_min"]:
+            lines.append({"rule": "zombies", "text":
+                f"{parent} isn't reaping — {count} of {len(zs)} zombie(s)"
+                f" unreaped are its children; restart it or send it a"
+                f" signal that makes it wait()"})
 
     # rule 5: another OOM-fighter active — stand-down language
     fighter = _coexisting_oom_fighter()
@@ -867,12 +957,15 @@ def main():
 
     while not stop.is_set():
         now = time.time()
+        mem = poll_memory(state, cfg, now)
         doc = {
             "v": 1,
             "ts": now,
             "daemon": {"version": VERSION, "pid": os.getpid(),
                        "poll_interval": cfg["poll_interval"]},
-            "memory": poll_memory(state, cfg, now),
+            "memory": mem,
+            "warning": poll_swap_storm(state, cfg, now, mem["swap_total"],
+                                       mem["swap_free"], mem["eta_oom_seconds"]),
         }
         latest["doc"] = doc
         # pill summary refreshes on the sampler's own cadence (not every

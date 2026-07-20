@@ -163,17 +163,24 @@ PY
 # zombie lifecycle: a real fork that exits unreaped, held open by a small
 # harness — a plain single fork, not the classic daemonizing double-fork,
 # since reparenting to init/a subreaper reaps it too fast to observe.
+# COUNT (arg 4, default 1) forks that many children from the SAME parent —
+# the advise fixture below uses this to clear zombie_advise_min's clamp.
 cat > "$RD/zombie_maker.py" <<'PY'
 import os, sys, time
 pidfile, reap_flag, done_flag = sys.argv[1:4]
-child = os.fork()
-if child == 0:
-    os._exit(0)
+count = int(sys.argv[4]) if len(sys.argv) > 4 else 1
+children = []
+for _ in range(count):
+    child = os.fork()
+    if child == 0:
+        os._exit(0)
+    children.append(child)
 with open(pidfile, "w") as f:
-    f.write(str(child))
+    f.write(",".join(str(c) for c in children))
 while not os.path.exists(reap_flag):
     time.sleep(0.1)
-os.waitpid(child, 0)
+for child in children:
+    os.waitpid(child, 0)
 with open(done_flag, "w") as f:
     f.write("reaped")
 PY
@@ -328,9 +335,11 @@ assert ask({"cmd": "ping"})["ok"] is True, "daemon died after M3 hostile input"
 print("hostile M3 input ok: rejected, daemon alive")
 PY
 
-# advise: a live zombie must fire rule 4, the fake systemctl shim must fire
-# rule 5 (coexistence) — reuses zombie_maker.py written during the M2 section
-python3 "$RD/zombie_maker.py" "$RD/zpid2" "$RD/reap_now2" "$RD/reaped2" &
+# advise: 3 live zombies from ONE parent (matches zombie_advise_min's
+# default clamp — V2.M1 no longer fires this rule on a lone stray) must
+# fire rule 4 named + actionable, the fake systemctl shim must fire rule 5
+# (coexistence) — reuses zombie_maker.py written during the M2 section
+python3 "$RD/zombie_maker.py" "$RD/zpid2" "$RD/reap_now2" "$RD/reaped2" 3 &
 ZPID=$!
 for _ in $(seq 1 40); do
     [ -s "$RD/zpid2" ] && break
@@ -360,15 +369,21 @@ def ask(obj):
 
 
 rules = set()
+zline = None
 for _ in range(40):
     adv = ask({"cmd": "advise"})
     rules = {line["rule"] for line in adv["lines"]}
+    zline = next((l["text"] for l in adv["lines"] if l["rule"] == "zombies"), None)
     if "zombies" in rules and "coexist" in rules:
         break
     time.sleep(0.25)
 assert "zombies" in rules, f"zombie rule never fired: {rules}"
 assert "coexist" in rules, f"coexistence rule never fired: {rules}"
+# V2.M1: named parent + reap suggestion, not just a count
+assert "isn't reaping" in zline and "wait()" in zline, \
+    f"zombie advisory missing named-parent/reap-suggestion wording: {zline!r}"
 print(f"advise ok: rules fired {sorted(rules)}")
+print(f"zombie advisory ok: {zline!r}")
 PY
 
 touch "$RD/reap_now2"
@@ -496,6 +511,68 @@ if pill["top_process"] is not None:
         assert key in pill["top_process"], f"pill.top_process missing {key}"
 print(f"pill digest ok: top={pill['top_process'] and pill['top_process']['comm']}"
       f" zombies={pill['zombie_count']} advise={pill['advise_count']}")
+PY
+
+# --- V2.M1: the watchman — swap-storm early warning -------------------------
+# poll_swap_storm's trigger/hysteresis state machine is unit-tested directly
+# against the real ramsteind module (same SourceFileLoader technique as the
+# sampler perf canary above) rather than driven through real swap pressure —
+# a test suite shouldn't stress a CI runner's or a dev machine's actual swap,
+# and swap growth isn't otherwise controllable or deterministic enough to
+# assert on. The zombie-reaper advisory's clamp is exercised for real above
+# (a real fork/zombie fixture), since zombies cost nothing to fake.
+python3 - "$RD" <<'PY'
+import os, sys
+from importlib.machinery import SourceFileLoader
+import importlib.util
+
+# top_growers hits the sqlite index (_connect_index), so STATE_DIR must be
+# redirected to scratch BEFORE the module loads — it's bound at import time,
+# same reason the real daemon/smoke.sh always set this before invocation.
+os.environ["RAMSTEIN_STATE_DIR"] = os.path.join(sys.argv[1], "swapstorm_state")
+
+sys.path.insert(0, "bin")
+loader = SourceFileLoader("ramsteind_swapstorm", "bin/ramsteind")
+spec = importlib.util.spec_from_loader(loader.name, loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+
+for key in ("swap_storm_eta_minutes", "swap_storm_hysteresis_polls",
+            "zombie_advise_min"):
+    assert key in mod.DEFAULTS and key in mod.CLAMPS, f"missing config key {key}"
+print("swap storm config ok: new keys present in DEFAULTS/CLAMPS")
+
+cfg = dict(mod.DEFAULTS)
+cfg["swap_storm_eta_minutes"] = 10.0
+cfg["swap_storm_hysteresis_polls"] = 3
+mod.Sampler(cfg)  # creates the index schema top_growers' query needs to exist
+
+state = {}
+now = 1000.0
+swap_free = 1_000_000_000
+w = None
+for _ in range(3):
+    now += 1
+    swap_free -= 50_000_000  # 50MB/tick of real growth -> a fast EWMA rise
+    w = mod.poll_swap_storm(state, cfg, now, swap_total=2_000_000_000,
+                            swap_free=swap_free, eta_oom_seconds=120)
+assert w is not None and w["kind"] == "swap_storm", f"never triggered: {w}"
+assert w["eta_oom_seconds"] == 120, w
+print("swap storm ok: triggered on fast swap growth + short combined eta")
+
+# clear condition: must NOT drop on one good reading — needs
+# hysteresis_polls CONSECUTIVE clear reads first (no flapping)
+now += 1
+w = mod.poll_swap_storm(state, cfg, now, swap_total=2_000_000_000,
+                        swap_free=swap_free, eta_oom_seconds=9999)
+assert w is not None, "cleared on a single good reading — hysteresis broken"
+for _ in range(2):
+    now += 1
+    w = mod.poll_swap_storm(state, cfg, now, swap_total=2_000_000_000,
+                            swap_free=swap_free, eta_oom_seconds=9999)
+assert w is None, f"still active after {cfg['swap_storm_hysteresis_polls']} clear polls: {w}"
+print("swap storm ok: hysteresis held through a transient clear, dropped after"
+      f" {cfg['swap_storm_hysteresis_polls']} consecutive clear polls")
 PY
 
 # --- M4: make deb — builds a real .deb; contents include bins+units+man.
