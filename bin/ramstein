@@ -385,13 +385,31 @@ def cmd_autocalm(argv):
     sys.exit("ramstein: autocalm needs one of status | arm | dry | run")
 
 
+def cmd_update(argv):
+    """Delegate straight to ramstein-update (execvp — its exit code becomes
+    ours). `ramstein update --check --json` is the pill's UpdateSurface
+    checking for a newer release without needing pkexec; a bare `ramstein
+    update` is the manual-install consent tier."""
+    binary = "ramstein-update"
+    path = binary  # last resort: PATH lookup
+    for cand in (f"/usr/bin/{binary}", f"/usr/local/bin/{binary}"):
+        if os.path.exists(cand):
+            path = cand
+            break
+    try:
+        os.execvp(path, [binary, *argv])
+    except OSError as e:
+        sys.exit(f"cannot run {binary}: {e}")
+
+
 def main():
     argv = sys.argv[1:]
     verb = argv[0] if argv and not argv[0].startswith("-") else "status"
     rest = argv[1:] if argv and not argv[0].startswith("-") else argv
     verbs = {"status": cmd_status, "top": cmd_top, "blame": cmd_blame,
              "swap": cmd_swap, "zombies": cmd_zombies, "oom": cmd_oom,
-             "advise": cmd_advise, "calm": cmd_calm, "autocalm": cmd_autocalm}
+             "advise": cmd_advise, "calm": cmd_calm, "autocalm": cmd_autocalm,
+             "update": cmd_update}
     if verb in verbs:
         verbs[verb](rest)
     elif verb in PLANNED:

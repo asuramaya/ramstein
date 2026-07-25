@@ -7,67 +7,41 @@
 // zombie count, an advise headline) ride along as a small digest the
 // daemon computes into status.json — calm/kill stay CLI-only, on purpose;
 // a system-tray toggle is the wrong place for a kill confirmation.
-// Row/icon conventions follow phanspeed and kast — the family's own
-// golden examples for what a quick-settings pill should look like.
+//
+// Wave B: adopts pill.js, the family's vendored extension commons (palette,
+// formatters, row helpers, the status watcher, the update-surface UI, the
+// Quick Settings indicator boilerplate) — everything here is RAMstein's own
+// domain judgement (severity ranking, hero/alert/advise/autocalm content,
+// swap-storm re-skinning, memory-specific ETA/burn formatting).
 
 import GObject from 'gi://GObject';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
-import Pango from 'gi://Pango';
-import St from 'gi://St';
 
-import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
-import {QuickMenuToggle, SystemIndicator} from 'resource:///org/gnome/shell/ui/quickSettings.js';
+import {QuickMenuToggle} from 'resource:///org/gnome/shell/ui/quickSettings.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
+import * as Pill from './pill.js';
+
 const STATUS_PATH = '/run/ramstein/status.json';
+const {PALETTE, NB} = Pill;
+const {ACCENT, DIM, WARN} = PALETTE;
 
 const ICON = 'utilities-system-monitor-symbolic';
 
-// concept palette (family)
-const ACCENT = '#b9acff';
-const DIM = '#9aa0a6';
-const GOOD = '#4caf50';
-const WARN = '#ffbb33';
-const BAD = '#ff5b5b';
-
-const STATE_COLOR = {ok: GOOD, warn: WARN, hot: BAD};
+const STATE_COLOR = {ok: PALETTE.GOOD, warn: PALETTE.WARN, hot: PALETTE.BAD};
 const STATE_MARK = {ok: '', warn: '⚠ ', hot: '‼ '};
 // the toggle/header icon changes shape, not just color, on real trouble —
 // phanspeed's emergency-state icon swap, so a glance at the top bar alone
 // (no color perception needed) tells warn from hot
 const STATE_ICON = {ok: ICON, warn: 'dialog-warning-symbolic', hot: 'dialog-error-symbolic'};
 
-// NBSP: glues a label to its figure ("OOM ~2h") so a wrap can only land on
-// a real separator (' · '), never mid-phrase — see wrapRow/iconRow below
-const NB = ' ';
-
-function isObj(v) {
-    return v && typeof v === 'object' && !Array.isArray(v);
-}
-function num(v) {
-    return (typeof v === 'number' && isFinite(v)) ? v : null;
-}
-function esc(s) {
-    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
-}
-function fmtBytes(n) {
-    if (n == null)
-        return '?';
-    const units = ['B', 'K', 'M', 'G', 'T'];
-    let i = 0;
-    while (Math.abs(n) >= 1024 && i < units.length - 1) {
-        n /= 1024;
-        i++;
-    }
-    return i === 0 ? `${Math.round(n)}B` : `${n.toFixed(1)}${units[i]}`;
-}
 function fmtBurn(bps) {
     // per-second is meaningful for memory — a leak eats MB/s, not GB/day
     if (bps == null || Math.abs(bps) < 1024 * 1024)
         return 'quiet';
-    return `${fmtBytes(bps)}/s`;
+    return `${Pill.fmtBytes(bps)}/s`;
 }
 function fmtEta(s) {
     // OOM horizons are minutes and hours, not days and weeks
@@ -83,51 +57,16 @@ function fmtEta(s) {
 const RANK = {ok: 0, warn: 1, hot: 2};
 
 function readStatus() {
-    try {
-        const [ok, bytes] = GLib.file_get_contents(STATUS_PATH);
-        if (!ok)
-            return null;
-        const o = JSON.parse(new TextDecoder().decode(bytes));
-        return isObj(o) && isObj(o.memory) ? o : null;
-    } catch (_e) {
-        return null;
-    }
+    return Pill.readStatusFile(STATUS_PATH, o => Pill.isObj(o.memory));
 }
 
-function row(markup) {
-    const it = new PopupMenu.PopupMenuItem('', {reactive: false});
-    it.label.clutter_text.set_markup(markup);
-    return it;
-}
-
-// content that can outgrow the popup's fixed width (the alert banner, the
-// advise headline) wraps to a second line instead of clipping mid-word —
-// PopupMenuItem labels don't wrap by default, which is the bug this fixes
-function wrapRow(markup) {
-    const it = row(markup);
-    it.label.clutter_text.set_line_wrap(true);
-    it.label.clutter_text.set_ellipsize(Pango.EllipsizeMode.NONE);
-    return it;
-}
-
-// icon-led stat row — phanspeed/kast's usual shape, built the same way they
-// build theirs (a reactive-false PopupBaseMenuItem wrapping an St.BoxLayout)
-function iconRow(iconName, markup) {
-    const it = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
-    const box = new St.BoxLayout({x_expand: true});
-    box.add_child(new St.Icon({icon_name: iconName, style_class: 'popup-menu-icon'}));
-    const label = new St.Label({x_expand: true, style: 'margin-left: 8px;'});
-    label.clutter_text.set_markup(markup);
-    label.clutter_text.set_line_wrap(true);
-    label.clutter_text.set_ellipsize(Pango.EllipsizeMode.NONE);
-    box.add_child(label);
-    it.add_child(box);
-    return it;
-}
+// re-check cadence for the pill's own "update available" row — independent
+// of ramstein-update.timer (which only notifies/logs, never paints the UI)
+const UPDATE_CHECK_SECONDS = 6 * 3600;
 
 const RAMsteinToggle = GObject.registerClass(
 class RAMsteinToggle extends QuickMenuToggle {
-    _init() {
+    _init(cancellable) {
         super._init({title: 'RAMstein', iconName: ICON, toggleMode: false});
         this.menu.setHeader(ICON, 'RAMstein', 'bytes alive');
 
@@ -155,8 +94,9 @@ class RAMsteinToggle extends QuickMenuToggle {
         this.menu.addMenuItem(this._autocalmSection);
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        this._versionItem = row('');
-        this.menu.addMenuItem(this._versionItem);
+        this._update = new Pill.UpdateSurface('ramstein', {cancellable});
+        this.menu.addMenuItem(this._update.updateItem);
+        this.menu.addMenuItem(this._update.versionItem);
 
         // tracks the last autocalm cycle we've already notified about, so a
         // GFileMonitor refresh (every poll) doesn't re-notify for the same
@@ -169,8 +109,7 @@ class RAMsteinToggle extends QuickMenuToggle {
 
     refresh() {
         const st = readStatus();
-        const stale = st && (GLib.get_real_time() / 1e6 - st.ts) >
-            3 * (num(st.daemon?.poll_interval) ?? 10) + 5;
+        const stale = Pill.isStale(st, 10);
         if (!st || stale) {
             this.subtitle = stale ? 'status stale' : 'daemon offline';
             this.checked = false;
@@ -179,10 +118,10 @@ class RAMsteinToggle extends QuickMenuToggle {
             this._rowSection.removeAll();
             this._adviseSection.removeAll();
             this._autocalmSection.removeAll();
-            this._rowSection.addMenuItem(row(
+            this._rowSection.addMenuItem(Pill.row(
                 `<span foreground="${DIM}">` +
                 `${stale ? 'ramsteind stopped updating' : 'ramsteind not running'}</span>`));
-            this._setVersion(null);
+            this._update.setVersion(null);
             this.menu.setHeader(ICON, 'RAMstein', this.subtitle);
             return;
         }
@@ -193,15 +132,15 @@ class RAMsteinToggle extends QuickMenuToggle {
         const mem = st.memory;
         const pill = st.pill ?? null;
         const state = mem.state ?? 'ok';
-        const some10 = num(mem.psi?.some_avg10);
-        const full10 = num(mem.psi?.full_avg10);
+        const some10 = Pill.num(mem.psi?.some_avg10);
+        const full10 = Pill.num(mem.psi?.full_avg10);
 
         // V2.M1: swap-storm early warning — a distinct, additional signal
         // from the daemon's own classifier (avail%/PSI/eta can stay "ok"
         // for a while even as swap visibly drains). Presence alone bumps
         // the pill's effective severity to at least WARN, on top of
         // whatever `state` already says — never downgrades from hot.
-        const swapStorm = isObj(st.warning) && st.warning.kind === 'swap_storm'
+        const swapStorm = Pill.isObj(st.warning) && st.warning.kind === 'swap_storm'
             ? st.warning : null;
         const baseRank = RANK[state] ?? 0;
         const rank = Math.max(baseRank, swapStorm ? 1 : 0);
@@ -214,7 +153,7 @@ class RAMsteinToggle extends QuickMenuToggle {
         this.subtitle = swapStorm
             ? `⚠ swap storm · OOM ${fmtEta(swapStorm.eta_oom_seconds)}`
             : `${STATE_MARK[effState] ?? ''}` +
-              `${fmtBytes(mem.available)} · OOM ${fmtEta(mem.eta_oom_seconds)}`;
+              `${Pill.fmtBytes(mem.available)} · OOM ${fmtEta(mem.eta_oom_seconds)}`;
         // the heat: pill lights accent whenever the effective state is warn+
         this.checked = rank >= 1;
         this.iconName = STATE_ICON[effState] ?? ICON;
@@ -232,10 +171,10 @@ class RAMsteinToggle extends QuickMenuToggle {
                 bits.push(`OOM${NB}${fmtEta(mem.eta_oom_seconds)}`);
             if (full10 != null)
                 bits.push(`psi${NB}full${NB}${full10.toFixed(1)}%`);
-            bits.push(`${fmtBytes(mem.available)}${NB}left`);
-            this._alertSection.addMenuItem(wrapRow(
+            bits.push(`${Pill.fmtBytes(mem.available)}${NB}left`);
+            this._alertSection.addMenuItem(Pill.wrapRow(
                 `<span foreground="${STATE_COLOR[state] ?? DIM}">` +
-                `${STATE_MARK[state]}memory — ${esc(bits.join(' · '))}</span>`));
+                `${STATE_MARK[state]}memory — ${Pill.esc(bits.join(' · '))}</span>`));
         }
 
         // swap-storm banner: its own line, independent of the section
@@ -244,13 +183,13 @@ class RAMsteinToggle extends QuickMenuToggle {
         if (swapStorm) {
             const bits = [`OOM${NB}${fmtEta(swapStorm.eta_oom_seconds)}`];
             if (swapStorm.swap_burn_bps != null)
-                bits.push(`swap${NB}burn${NB}${esc(fmtBurn(swapStorm.swap_burn_bps))}`);
+                bits.push(`swap${NB}burn${NB}${Pill.esc(fmtBurn(swapStorm.swap_burn_bps))}`);
             const growers = (swapStorm.top_growers || [])
-                .map(g => `${esc(g.comm)}${NB}+${fmtBytes(g.swap_delta)}`)
+                .map(g => `${Pill.esc(g.comm)}${NB}+${Pill.fmtBytes(g.swap_delta)}`)
                 .join(', ');
             if (growers)
                 bits.push(`top:${NB}${growers}`);
-            this._alertSection.addMenuItem(wrapRow(
+            this._alertSection.addMenuItem(Pill.wrapRow(
                 `<span foreground="${WARN}">⚠ swap storm — ${bits.join(' · ')}</span>`));
         }
 
@@ -261,43 +200,43 @@ class RAMsteinToggle extends QuickMenuToggle {
         // reads as a pill.
         this._rowSection.removeAll();
 
-        this._rowSection.addMenuItem(iconRow(ICON,
+        this._rowSection.addMenuItem(Pill.iconRow(ICON,
             `<span foreground="${color}" font_weight="bold" size="large">` +
-            `${fmtBytes(mem.available)}</span>` +
-            `<span foreground="${DIM}"> available of ${fmtBytes(mem.total)}</span>`));
+            `${Pill.fmtBytes(mem.available)}</span>` +
+            `<span foreground="${DIM}"> available of ${Pill.fmtBytes(mem.total)}</span>`));
 
         // "X free of Y", matching the CLI — not "X of Y free", which reads
         // like X is USED (the classic "3 of 10" idiom) when X is what's
         // LEFT. Backwards at the worst possible moment: misread that way
         // right when swap is nearly full, it says the opposite of true.
-        const swap = (num(mem.swap_total) ?? 0) > 0
-            ? `<span foreground="${ACCENT}">${fmtBytes(mem.swap_free)}</span>` +
-              `<span foreground="${DIM}"> free of ${fmtBytes(mem.swap_total)}</span>`
+        const swap = (Pill.num(mem.swap_total) ?? 0) > 0
+            ? `<span foreground="${ACCENT}">${Pill.fmtBytes(mem.swap_free)}</span>` +
+              `<span foreground="${DIM}"> free of ${Pill.fmtBytes(mem.swap_total)}</span>`
             : `<span foreground="${DIM}">none</span>`;
-        this._rowSection.addMenuItem(iconRow('drive-harddisk-symbolic', swap));
+        this._rowSection.addMenuItem(Pill.iconRow('drive-harddisk-symbolic', swap));
 
         // top process + zombie count come from the M2/M3 digest the daemon
         // computes on the sampler's own cadence — null until the first
         // sample lands (daemon just (re)started), so both are optional
         if (pill?.top_process) {
             const tp = pill.top_process;
-            this._rowSection.addMenuItem(iconRow('system-run-symbolic',
-                `<span foreground="${ACCENT}">${fmtBytes(tp.rss)}</span>` +
-                `<span foreground="${DIM}"> ${esc(tp.comm)} (pid ${tp.pid})</span>`));
+            this._rowSection.addMenuItem(Pill.iconRow('system-run-symbolic',
+                `<span foreground="${ACCENT}">${Pill.fmtBytes(tp.rss)}</span>` +
+                `<span foreground="${DIM}"> ${Pill.esc(tp.comm)} (pid ${tp.pid})</span>`));
         }
 
         if (pill?.zombie_count > 0) {
             const n = pill.zombie_count;
-            this._rowSection.addMenuItem(iconRow('process-stop-symbolic',
+            this._rowSection.addMenuItem(Pill.iconRow('process-stop-symbolic',
                 `<span foreground="${WARN}">${n} unreaped zombie${n === 1 ? '' : 's'}</span>`));
         }
 
         this._rowSection.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        this._rowSection.addMenuItem(row(
+        this._rowSection.addMenuItem(Pill.row(
             `<span foreground="${DIM}">pressure${NB}` +
             `${some10 == null ? '?' : some10.toFixed(1)}%${NB}/${NB}` +
             `${full10 == null ? '?' : full10.toFixed(1)}%${NB}(avg10)` +
-            `${NB}·${NB}burn${NB}${esc(fmtBurn(mem.burn_bps))}</span>`));
+            `${NB}·${NB}burn${NB}${Pill.esc(fmtBurn(mem.burn_bps))}</span>`));
 
         // advise headline: the single most-urgent nudge, with a "+N more"
         // count when there's more than one — full detail stays a CLI-only
@@ -307,8 +246,8 @@ class RAMsteinToggle extends QuickMenuToggle {
         if (pill?.advise_headline) {
             const extra = pill.advise_count > 1
                 ? ` (+${pill.advise_count - 1} more)` : '';
-            this._adviseSection.addMenuItem(iconRow('emblem-important-symbolic',
-                `<span foreground="${WARN}">${esc(pill.advise_headline + extra)}</span>`));
+            this._adviseSection.addMenuItem(Pill.iconRow('emblem-important-symbolic',
+                `<span foreground="${WARN}">${Pill.esc(pill.advise_headline + extra)}</span>`));
         }
 
         // V2.M2: auto-calm's last cycle — the "last calm line" the spec
@@ -325,24 +264,25 @@ class RAMsteinToggle extends QuickMenuToggle {
             const vcolor = lastResult.acted ? ACCENT : DIM;
             const age = ac.last_action_ts != null
                 ? fmtEta(Math.max(0, st.ts - ac.last_action_ts)) : '—';
-            this._autocalmSection.addMenuItem(iconRow('preferences-system-symbolic',
+            this._autocalmSection.addMenuItem(Pill.iconRow('preferences-system-symbolic',
                 `<span foreground="${vcolor}">auto-calm ${verb}</span>` +
-                `<span foreground="${DIM}">${NB}${esc(steps)} on` +
-                `${NB}${esc(t.comm ?? '?')}${NB}(pid${NB}${t.pid ?? '?'})` +
+                `<span foreground="${DIM}">${NB}${Pill.esc(steps)} on` +
+                `${NB}${Pill.esc(t.comm ?? '?')}${NB}(pid${NB}${t.pid ?? '?'})` +
                 `${NB}·${NB}${age}${NB}ago</span>`));
         }
         this._maybeNotifyAutocalm(st);
 
         this.menu.setHeader(this.iconName, 'RAMstein', this.subtitle);
-        this._setVersion(st.daemon?.version);
+        this._update.setVersion(st.daemon?.version);
     }
 
     // A root systemd daemon has no clean path into the operator's own
     // desktop session, so the daemon only SURFACES the payload
     // (status.json's "autocalm" field) — the pill, already running in the
     // right session with real notification access, does the actual
-    // Main.notify() call. Fires once per cycle (tracked by last_action_ts),
-    // never re-fires for a result already seen on an earlier poll.
+    // Pill.notify() (Main.notify() underneath) call. Fires once per cycle
+    // (tracked by last_action_ts), never re-fires for a result already
+    // seen on an earlier poll.
     _maybeNotifyAutocalm(st) {
         const ac = st.autocalm;
         const r = ac?.last_result;
@@ -355,65 +295,49 @@ class RAMsteinToggle extends QuickMenuToggle {
         const verb = r.acted ? 'acted' : 'would act (dry-run)';
         const steps = (r.steps ?? []).map(s => s.step).join(', ') || 'nothing';
         const kill = r.notify?.suggested_kill;
-        Main.notify('RAMstein — auto-calm',
+        Pill.notify('RAMstein — auto-calm',
             `${verb} on ${t.comm ?? '?'} (pid ${t.pid ?? '?'}) — ${r.trigger}.` +
             ` Steps: ${steps}.` + (kill ? ` If needed: ${kill}` : ''));
     }
 
-    _setVersion(ver) {
-        this._versionItem.label.clutter_text.set_markup(
-            `<span foreground="${DIM}">ramstein ${ver ? `v${esc(ver)}` : '(daemon offline)'}</span>`);
-    }
-});
-
-const RAMsteinIndicator = GObject.registerClass(
-class RAMsteinIndicator extends SystemIndicator {
-    _init() {
-        super._init();
-        this.toggle = new RAMsteinToggle();
-        this.quickSettingsItems.push(this.toggle);
+    checkForUpdate() {
+        this._update.checkNow();
     }
 });
 
 export default class RAMsteinExtension extends Extension {
     enable() {
-        this._indicator = new RAMsteinIndicator();
-        Main.panel.statusArea.quickSettings.addExternalIndicator(this._indicator);
-        this._indicator.toggle.refresh();
+        this._cancellable = new Gio.Cancellable();
+        this._toggle = new RAMsteinToggle(this._cancellable);
+        this._indicator = Pill.addQuickSettingsToggle(this._toggle);
+        this._toggle.refresh();
+        this._toggle.checkForUpdate();
 
         // event-driven: the daemon writes status.json with an atomic rename,
-        // which lands here as exactly one CREATED/CHANGES_DONE event per poll
-        this._file = Gio.File.new_for_path(STATUS_PATH);
-        this._monitor = this._file.monitor_file(Gio.FileMonitorFlags.NONE, null);
-        this._monitorId = this._monitor.connect('changed', (_m, _f, _of, ev) => {
-            if (ev === Gio.FileMonitorEvent.CHANGES_DONE_HINT ||
-                ev === Gio.FileMonitorEvent.CREATED ||
-                ev === Gio.FileMonitorEvent.RENAMED)
-                this._indicator.toggle.refresh();
-        });
-        // slow fallback tick: catches daemon death (no events, status goes
-        // stale) and monitor misses across /run recreation on reboot
-        this._timeout = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 60, () => {
-            this._indicator.toggle.refresh();
-            return GLib.SOURCE_CONTINUE;
-        });
+        // which lands here as exactly one CREATED/CHANGES_DONE event per
+        // poll, plus a slow fallback tick that catches daemon death (no
+        // events, status goes stale) and monitor misses across /run
+        // recreation on reboot
+        this._watcher = new Pill.StatusWatcher(
+            STATUS_PATH, () => this._toggle.refresh(), {fallbackSeconds: 60});
+        this._updateTimeout = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT, UPDATE_CHECK_SECONDS, () => {
+                this._toggle.checkForUpdate();
+                return GLib.SOURCE_CONTINUE;
+            });
     }
 
     disable() {
-        if (this._timeout) {
-            GLib.source_remove(this._timeout);
-            this._timeout = null;
+        this._cancellable?.cancel();
+        this._cancellable = null;
+        if (this._updateTimeout) {
+            GLib.source_remove(this._updateTimeout);
+            this._updateTimeout = null;
         }
-        if (this._monitor) {
-            if (this._monitorId)
-                this._monitor.disconnect(this._monitorId);
-            this._monitor.cancel();
-            this._monitor = null;
-            this._monitorId = null;
-        }
-        this._file = null;
-        this._indicator?.quickSettingsItems.forEach(i => i.destroy());
-        this._indicator?.destroy();
+        this._watcher?.destroy();
+        this._watcher = null;
+        Pill.removeIndicator(this._indicator);
         this._indicator = null;
+        this._toggle = null;
     }
 }

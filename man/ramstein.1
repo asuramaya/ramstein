@@ -135,6 +135,18 @@ Runs one check-and-maybe-act cycle immediately (what
 calls periodically once enabled). Useful on demand to see what a cycle
 would do.
 .RE
+.TP
+.BI update " [\-\-check] [\-\-json]"
+Delegates straight to
+.BR ramstein\-update (1)
+(the family's shared update spine \(em Wave B). With no arguments,
+the manual-install consent tier; with
+.BR \-\-check ,
+report-only (what the pill's own update row polls, no root needed).
+Never runs unattended: the daily
+.B ramstein\-update.timer
+only ever passes
+.BR \-\-check .
 .SH EXAMPLES
 .EX
 $ ramstein status
