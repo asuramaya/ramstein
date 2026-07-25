@@ -103,7 +103,10 @@ deb:
 	install -d -m 0755 $(DEBROOT)/etc/ramstein
 	install -d -m 0755 $(DEBROOT)/lib/systemd/system
 	install -m 0755 bin/ramsteind bin/ramstein bin/ramstein-healthcheck bin/ramstein-update $(DEBROOT)/usr/bin/
-	install -m 0644 bin/sutra.py $(DEBROOT)/usr/bin/sutra.py
+	install -m 0644 bin/sutra.py bin/sutra.version bin/sutra.commit \
+	    bin/sutra_update.py bin/sutra_update.version bin/sutra_update.commit \
+	    bin/sutra_xen.py bin/sutra_xen.version bin/sutra_xen.commit \
+	    $(DEBROOT)/usr/bin/
 	install -m 0644 VERSION $(DEBROOT)/usr/share/ramstein/VERSION
 	install -m 0755 scripts/seed-owner-uid.py $(DEBROOT)/usr/share/ramstein/scripts/
 	install -m 0644 man/ramstein.1 $(DEBROOT)/usr/share/man/man1/ramstein.1

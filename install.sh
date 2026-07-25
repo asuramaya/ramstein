@@ -63,6 +63,18 @@ echo "-- binaries -> $BINDIR"
 for b in ramstein ramsteind ramstein-healthcheck ramstein-update; do
   install -m 0755 -o root -g root "$SRC/bin/$b" "$BINDIR/$b"
 done
+# Wave B M4: the vendored sutra commons MUST ship alongside the binaries
+# that import them, in BOTH install layouts (this one and make deb) — a
+# vendored-but-not-shipped copy is a real bug class two sibling pills each
+# independently hit (crashes on `import sutra` only on a real machine,
+# since a dev checkout always has bin/sutra.py sitting right there). Ship
+# the .version/.commit anchors too so a post-install check-sutra can still
+# verify integrity/freshness against what was actually installed.
+for f in sutra.py sutra.version sutra.commit \
+         sutra_update.py sutra_update.version sutra_update.commit \
+         sutra_xen.py sutra_xen.version sutra_xen.commit; do
+  [ -f "$SRC/bin/$f" ] && install -m 0644 -o root -g root "$SRC/bin/$f" "$BINDIR/$f"
+done
 install -d -m 0755 "$SHAREDIR"
 install -m 0644 "$SRC/VERSION" "$SHAREDIR/VERSION"
 

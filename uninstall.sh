@@ -37,6 +37,11 @@ echo "-- removing files"
 for b in ramstein ramsteind ramstein-healthcheck ramstein-update; do
   rm -f "$BINDIR/$b"
 done
+for f in sutra.py sutra.version sutra.commit \
+         sutra_update.py sutra_update.version sutra_update.commit \
+         sutra_xen.py sutra_xen.version sutra_xen.commit; do
+  rm -f "$BINDIR/$f"
+done
 rm -f "$UNITDIR/ramsteind.service" "$UNITDIR/ramstein-update.service" "$UNITDIR/ramstein-update.timer" \
       "$UNITDIR/ramstein-autocalm.service" "$UNITDIR/ramstein-autocalm.timer"
 rm -rf "$SHAREDIR"

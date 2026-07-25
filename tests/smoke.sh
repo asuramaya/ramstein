@@ -764,6 +764,19 @@ finally:
     child.wait(timeout=5)
 PY
 
+# --- Wave B M4: install.sh must EXPLICITLY name the vendored sutra files,
+# not just the pill's own binaries. Static/textual, not a real root install
+# (smoke runs unprivileged, and there's no existing precedent for exercising
+# install.sh as root in this suite) — but a real bug two sibling pills each
+# independently hit: vendor sutra, forget to ship it, `import sutra` only
+# fails on a real fresh machine, never in a dev checkout where bin/sutra.py
+# already sits right next to the binary being run.
+for f in sutra.py sutra_update.py sutra_xen.py; do
+    grep -q "$f" install.sh \
+        || { echo "SMOKE FAIL: install.sh never names $f — vendored but not shipped"; exit 1; }
+done
+echo "install.sh ok: explicitly ships sutra.py + sutra_update.py + sutra_xen.py"
+
 # --- M4: make deb — builds a real .deb; contents include bins+units+man.
 # Builds and inspects only — never installed.
 make deb > /tmp/ramstein-deb-build.log 2>&1 \
@@ -772,7 +785,9 @@ DEBFILE="build/deb/ramstein_$(tr -d '[:space:]' < VERSION)_all.deb"
 [ -f "$DEBFILE" ] || { echo "SMOKE FAIL: $DEBFILE not built"; exit 1; }
 CONTENTS=$(dpkg-deb --contents "$DEBFILE")
 for want in usr/bin/ramsteind usr/bin/ramstein usr/bin/ramstein-healthcheck \
-            usr/bin/ramstein-update usr/bin/sutra.py \
+            usr/bin/ramstein-update usr/bin/sutra.py usr/bin/sutra.version \
+            usr/bin/sutra_update.py usr/bin/sutra_update.version \
+            usr/bin/sutra_xen.py usr/bin/sutra_xen.version \
             lib/systemd/system/ramsteind.service \
             lib/systemd/system/ramstein-update.service \
             lib/systemd/system/ramstein-update.timer \
