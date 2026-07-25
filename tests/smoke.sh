@@ -794,10 +794,14 @@ for want in usr/bin/ramsteind usr/bin/ramstein usr/bin/ramstein-healthcheck \
             lib/systemd/system/ramstein-autocalm.service \
             lib/systemd/system/ramstein-autocalm.timer \
             usr/share/man/man1/ramstein.1 usr/share/man/man8/ramsteind.8 \
+            usr/share/ramstein/allowed_signers \
             etc/ramstein/config.json; do
     echo "$CONTENTS" | grep -q "$want" \
         || { echo "SMOKE FAIL: deb missing $want"; exit 1; }
 done
+[ -f build/deb/SHA256SUMS ] || { echo "SMOKE FAIL: build/deb/SHA256SUMS not built"; exit 1; }
+grep -q "$(basename "$DEBFILE")" build/deb/SHA256SUMS \
+    || { echo "SMOKE FAIL: SHA256SUMS doesn't cover the built .deb"; exit 1; }
 echo "deb ok: $DEBFILE built, contents verified (never installed)"
 
 echo "SMOKE OK"

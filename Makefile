@@ -1,5 +1,5 @@
 # ramstein — the memory demon
-.PHONY: smoke attack install uninstall pill deb check-sutra
+.PHONY: smoke attack install uninstall pill deb check-sutra sync-signers
 
 VERSION := $(shell tr -d '[:space:]' < VERSION)
 DEBROOT := build/deb/ramstein_$(VERSION)_all
@@ -63,6 +63,12 @@ check-sutra:
 attack:
 	python3 tests/attack_socket.py
 
+# rebuild release-signing/allowed_signers from the canonical keys (see
+# docs/RELEASE-SIGNING.md — do NOT run casually; arm ONLY in the same act as
+# cutting the first signed release, per the sequencing rule there)
+sync-signers:
+	bash tools/sync-signers.sh
+
 # install.sh is root-only and never self-elevates (see its header comment for
 # why) — it fails with a clear message if you forget sudo, rather than quietly
 # re-invoking itself. So `make install` needs YOU to type sudo, same as the
@@ -108,6 +114,7 @@ deb:
 	    bin/sutra_xen.py bin/sutra_xen.version bin/sutra_xen.commit \
 	    $(DEBROOT)/usr/bin/
 	install -m 0644 VERSION $(DEBROOT)/usr/share/ramstein/VERSION
+	install -m 0644 release-signing/allowed_signers $(DEBROOT)/usr/share/ramstein/allowed_signers
 	install -m 0755 scripts/seed-owner-uid.py $(DEBROOT)/usr/share/ramstein/scripts/
 	install -m 0644 man/ramstein.1 $(DEBROOT)/usr/share/man/man1/ramstein.1
 	install -m 0644 man/ramsteind.8 $(DEBROOT)/usr/share/man/man8/ramsteind.8
@@ -125,7 +132,7 @@ deb:
 	  echo "Section: admin"; \
 	  echo "Priority: optional"; \
 	  echo "Architecture: all"; \
-	  echo "Depends: python3 (>= 3.8), systemd"; \
+	  echo "Depends: python3 (>= 3.8), systemd, openssh-client"; \
 	  echo "Maintainer: asuramaya <asuramaya@users.noreply.github.com>"; \
 	  echo "Homepage: https://github.com/asuramaya/RAMstein"; \
 	  echo "Description: memory as a deadline, not a percentage"; \
@@ -134,5 +141,6 @@ deb:
 	  echo " Quick Settings pill."; \
 	} > $(DEBROOT)/DEBIAN/control
 	dpkg-deb --build --root-owner-group $(DEBROOT) $(DEBFILE)
+	( cd build/deb && sha256sum "$$(basename $(DEBFILE))" > SHA256SUMS )
 	@echo "-- built $(DEBFILE)"
 	@command -v lintian >/dev/null 2>&1 && lintian $(DEBFILE) || echo "-- lintian not installed, skipping"

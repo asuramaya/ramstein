@@ -1,0 +1,56 @@
+name: signing-sync
+# Enforces RELEASE.md's sync-signers invariant: release-signing/allowed_signers
+# must always be either (a) empty — the pre-arming shipping state,
+# verification inert — or (b) exactly 4 well-formed lines. "Well-formed or
+# empty, never partial" is a CHECKED invariant here, not a convention.
+#
+# Unlike kast/phanspeed, RAMstein's install.sh has no curl-pipe bootstrap (it
+# deliberately only ever runs from a checkout, see install.sh's own header
+# comment) — so there is no embedded RELEASE_ALLOWED_SIGNERS twin to check
+# for drift against here, just the one anchor file's own internal shape.
+#
+# The canonical key home is ~/.ssh/asuramaya-master/ on the operator's own
+# machine (ruling 13ee52ce) — outside every repo, never committed, never
+# reachable by a CI runner. So this check is deliberately INTERNAL-CONSISTENCY
+# ONLY: it can confirm the anchor is well-formed, but it cannot confirm it
+# still matches the operator's actual canonical keys — that comparison only
+# ever happens locally, via `make sync-signers` itself.
+
+on:
+  push:
+    branches: ['main']
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Verify anchor is empty or exactly well-formed
+        run: |
+          python3 - <<'PYEOF'
+          import re
+          import sys
+
+          anchor = open("release-signing/allowed_signers").read()
+          lines = [ln for ln in anchor.split("\n")
+                   if ln.strip() and not ln.strip().startswith("#")]
+
+          if not lines:
+              print("anchor is UNARMED (empty of real lines) — "
+                    "pre-signing shipping state. OK")
+              sys.exit(0)
+
+          print("anchor is ARMED — checking internal consistency.")
+          if len(lines) != 4:
+              sys.exit(f"expected exactly 4 real lines in allowed_signers, "
+                        f"found {len(lines)}")
+          line_re = re.compile(
+              r'^ramstein namespaces="ramstein-release,pills-tag" '
+              r'\S+ \S+ \S+$')
+          for ln in lines:
+              if not line_re.match(ln):
+                  sys.exit(f"malformed allowed_signers line: {ln!r}")
+          print("4 well-formed lines OK")
+          PYEOF

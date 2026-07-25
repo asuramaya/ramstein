@@ -1,0 +1,17 @@
+# RAMstein release-signing anchor (ssh-keygen `AuthorizedSignersFile` format).
+#
+# Ships EMPTY, on purpose. sutra_update.py's armed() treats any real (non-
+# comment, non-blank) line here as "arm the signature check" — while empty,
+# ramstein-update degrades to hash-only verification (SHA256SUMS) with a
+# loud warning, never silently. Arming this file is a one-time operator
+# ceremony (`make sync-signers`, needs the operator's own FIDO2 hardware key
+# at ~/.ssh/asuramaya-master/) that must happen in the SAME act as cutting
+# the first signed release — arming any earlier would brick `ramstein
+# update` against every release published before the arming, which for
+# RAMstein (no releases yet) doesn't bite today but WILL the moment any
+# unsigned release exists. See docs/RELEASE-SIGNING.md.
+#
+# Once armed, each line takes the form:
+#   ramstein namespaces="ramstein-release,pills-tag" <key-type> <base64-key> <comment>
+# CI's signing-sync workflow checks this file stays either empty or exactly
+# well-formed — never partially armed.

@@ -1,0 +1,22 @@
+# RAMstein — runtime dependencies
+#
+# Pure Python standard library — no pip/PyPI dependencies at all. Everything
+# below is an EXTERNAL BINARY ramsteind/ramstein/ramstein-update shells out
+# to, split hard (packaging/deb's Depends, dpkg pulls it in automatically) vs
+# optional (feature degrades gracefully if absent).
+
+# --- hard (make deb's Depends) ---------------------------------------------
+python3         # the interpreter itself (>= 3.8)
+systemd         # ramsteind.service, ramstein-update.timer,
+                # ramstein-autocalm.timer, `systemctl is-active` (the
+                # systemd-oomd/earlyoom coexistence check)
+openssh-client  # `ssh-keygen -Y verify`: ramstein-update's release-signature
+                # check against release-signing/allowed_signers (Wave B,
+                # docs/RELEASE-SIGNING.md). Absent: sutra_update.py's
+                # verify_dir() fails closed (refuses to install) rather than
+                # crashing.
+
+# --- optional (make deb's Recommends) --------------------------------------
+gnome-shell     # the Quick Settings pill (extension/ramstein@asuramaya).
+                # Absent: ramsteind and the `ramstein` CLI work exactly the
+                # same headless; only the GNOME UI is unavailable.

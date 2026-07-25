@@ -77,6 +77,12 @@ for f in sutra.py sutra.version sutra.commit \
 done
 install -d -m 0755 "$SHAREDIR"
 install -m 0644 "$SRC/VERSION" "$SHAREDIR/VERSION"
+# Wave B M5: a persistent copy of the signing anchor at the installed
+# prefix — ramstein-update's anchor_candidates looks here (not the
+# repo-relative path, which only resolves for a dev checkout run in place).
+# Ships empty until the operator's first sync-signers ceremony; re-installing
+# after that point re-copies whatever the checkout's anchor says at the time.
+install -m 0644 "$SRC/release-signing/allowed_signers" "$SHAREDIR/allowed_signers"
 
 # 1b. man pages
 echo "-- man pages -> $PREFIX/share/man"
