@@ -21,7 +21,7 @@ import time
 
 import sutra
 
-VERSION = "0.8.0"
+VERSION = "0.9.0"
 
 RUNTIME_DIR = os.environ.get("RAMSTEIN_RUNTIME_DIR", "/run/ramstein")
 STATUS_PATH = os.path.join(RUNTIME_DIR, "status.json")

@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.9.0 — Wave B: the family backbone, and the first release pipeline
+RAMstein was the last daemon pill still on the 0.1.0-era sutra vendor
+(alfred's order, mail #1232). Six milestones, closing the gap:
+
+- **M1 — re-vendor the current commons.** sutra.py 0.1.0 → 0.7.1 (gains
+  `check_health`, `notify_owner`), plus `sutra_update.py` (the update
+  spine), `sutra_xen.py` (guest-surface reader — no Xen concerns wired in
+  yet, vendored per the family's ship-the-full-set convention), and
+  `pill.js` into the extension dir — each with `.version` (integrity) and
+  `.commit` (LAG/DRIFT freshness) anchors. `check-sutra` rewritten for the
+  multi-file LAG/DRIFT recipe (kast's reference): an old-but-honest vendor
+  (LAG) now warns instead of hard-failing a byte-for-byte compare; a
+  corrupted or rewritten anchor (DRIFT) still hard-fails.
+- **M2 — adopt the update spine.** `ramstein-update` is now a thin wrapper
+  over `sutra_update.main(...)`, combining phanspeed's dpkg-query-first
+  version lookup with this repo's actual two real VERSION-file locations.
+- **M3 — adopt check_health + pill.js.** `ramstein-healthcheck` thin-wraps
+  `sutra.check_health` (and quietly fixes a small pre-existing
+  inconsistency — the old bespoke healthcheck was missing the +5s slack
+  the pill's own staleness rule already used). The GNOME extension adopts
+  `pill.js` — palette, formatters, row helpers, the status watcher, the
+  Quick Settings boilerplate — byte-identical behavior to 0.6.1-0.8.0's
+  hand-rolled versions (independently convergent), plus a new
+  `Pill.UpdateSurface` "update available" row, which needed one new CLI
+  verb (`ramstein update`, execvp-delegates to `ramstein-update`, copied
+  ByeByte's `cmd_update`). extension.js: 419 → 343 lines.
+- **M4 — ship the full set in both layouts.** Found and fixed a real, live
+  bug: `install.sh` had **never** actually installed `bin/sutra.py` at
+  all, since the original 0.6.0 sutra adoption — it only ever worked on
+  this dev machine because of manual per-milestone deploys this session. A
+  genuinely fresh install would have crashed on `ramsteind`'s `import
+  sutra`. Exactly the bug class alfred's mail named ("vendors but doesn't
+  ship — crashes on `import sutra` only on a real machine"). Fixed in both
+  `install.sh` and `make deb`, verified with a real scratch-directory
+  install, not just a static check.
+- **M5 — release machinery, arm-first.** `release.yml` (tag-triggered
+  build: `.deb` + release tarball, one shared `SHA256SUMS`, release notes
+  extracted from this very file's matching section via `--notes-file` —
+  decision `1bc925cb`'s recipe) and `signing-sync.yml` (CI guard: the
+  signing anchor stays empty or exactly well-formed). `release-signing/
+  allowed_signers` ships **empty** — arming is a one-time, local-only,
+  operator-run ceremony (`make sync-signers`) that must happen in the same
+  act as cutting the first signed release, never earlier. `packages.txt`
+  (stdlib-only; the few real runtime deps: python3, systemd,
+  openssh-client). `docs/RELEASE-SIGNING.md`.
+- **M6 — this gate.** `check-sutra` green (integrity + LAG/DRIFT
+  freshness), `make smoke` + `make attack` green, VERSION bumped. Reported
+  to alfred for independent verification before any tag; nothing gets
+  signed or sealed without the operator's own hand on the hardware key.
+
+**Incident, corrected within the same milestone:** testing M5's
+`sync-signers` tooling found this machine's real canonical key home and
+briefly armed `release-signing/allowed_signers` with real keys before the
+mistake was caught and reverted — never committed, never pushed. See the
+Osiris decision record for the full account.
+
 ## 0.8.0 — V2.M2 auto-calm
 - arms the existing `calm` machinery to act on its own, on a timer — operator-authorized explicitly and separately from the rest of V2 (see the Osiris decision record). Three independent consent gates, all required before anything real happens: `auto_calm_enabled` in config (off by default), a runtime armed/dry toggle (`ramstein autocalm arm`/`dry`, ALWAYS resets to disarmed/dry-run on every daemon restart — never a remembered "yes", same discipline as the kill gate), and the `ramstein-autocalm.timer` unit being manually enabled (installed, not enabled, same as `ramstein-update.timer`)
 - trigger: PSI some/full avg10 crossing `auto_calm_psi_some`/`auto_calm_psi_full` (a stricter bar than the pill's own warn thresholds — taking action earns a higher bar than lighting a warning), or an active V2.M1 swap-storm warning
