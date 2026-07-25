@@ -16,6 +16,8 @@ refuse to hand-fix six times:
   * ewma_rate      — the EWMA burn-rate accumulator
   * request        — the client side of the socket, for CLIs and healthchecks
   * read_status    — read status.json without the daemon
+  * check_health   — the freshness+ping vitals verdict every healthcheck bin repeats
+  * notify_owner   — best-effort notify-send into the owner's desktop session
   * runtime_paths / stop_event — the small main() scaffolding
 
 What sutra does NOT own, by design: domain polling, the sqlite index, the
@@ -38,9 +40,11 @@ import re
 import signal
 import socket
 import struct
+import subprocess
 import threading
+import time
 
-SUTRA_VERSION = "0.1.0"
+SUTRA_VERSION = "0.3.0"
 
 
 # --- config: the seed, never the master -------------------------------------
@@ -286,3 +290,78 @@ def read_status(status_path):
             return json.load(f)
     except (OSError, ValueError):
         return None
+
+
+# --- health: the vitals verdict every healthcheck bin repeats ---------------
+# Freshness judged against the daemon's OWN declared poll_interval, never a
+# magic number — a config that slows polling to 10min must not fake an
+# outage (ByeByte/RAMstein's originals agreed on this, independently). Same
+# 3x+5s slack as pill.js's isStale, so a stale status reads identically from
+# a CLI healthcheck and a GNOME pill. Passive: it renders a verdict, it never
+# restarts anything — that stays each pill's call (systemd's Restart=, or
+# nothing, per pill).
+
+def check_health(status_path, socket_path, default_poll=30, ping_timeout=5):
+    """(healthy, reason, info) — info carries whatever's known even on
+    failure (age/limit, then version once ping succeeds), so a caller can
+    report detail without re-deriving it."""
+    doc = read_status(status_path)
+    if doc is None:
+        return False, f"no readable status.json at {status_path}", {}
+    try:
+        ts = float(doc["ts"])
+        poll = float(doc.get("daemon", {}).get("poll_interval", default_poll))
+    except (KeyError, TypeError, ValueError):
+        return False, "status.json missing/invalid ts", {}
+    if not poll > 0:
+        return False, f"status.json declares a nonsense poll_interval ({poll})", {}
+    age = time.time() - ts
+    limit = 3 * poll + 5
+    info = {"age": age, "limit": limit}
+    if age > limit:
+        return False, f"status.json stale ({age:.0f}s old, limit {limit:.0f}s)", info
+    resp = request(socket_path, {"cmd": "ping"}, timeout=ping_timeout)
+    if not (isinstance(resp, dict) and resp.get("ok") is True):
+        return False, f"control socket ping failed: {resp!r}", info
+    info["version"] = resp.get("version", "?")
+    return True, "healthy", info
+
+
+# --- notifications: a toast is a pointer to truth, never the truth itself ---
+# UNIFY.md's notification spec (row 13): notify-send via the daemon's
+# owner-session, or a user daemon's own session directly; app-name = the
+# pill name; urgency 'normal' for update-available/completed auto-actions,
+# 'critical' only for failsafe events (OOM imminent, disk deadline under
+# threshold). Absorbed verbatim from ByeByte's original (root-daemon path);
+# the direct-session branch is new, for a user daemon (gestalt) that's
+# already running as its owner. Best-effort, always: a verb's success never
+# depends on whether a toast could be shown.
+
+def notify_owner(uid, app_name, summary, body, urgency="normal",
+                  bus_path=None, run=subprocess.run):
+    """notify-send `summary`/`body` into uid's desktop session — crossing
+    via `runuser` + that session's bus at /run/user/<uid>/bus (or
+    `bus_path`, when a caller/test needs to override it) when uid isn't
+    the caller's own (a root daemon reaching its owner); called directly
+    when uid is None or already the caller's uid (a user daemon).
+    Silently does nothing if there's no active login session (bus socket
+    absent) or anything about reaching it fails — the caller must already
+    have written the ledger/status entry this toast points at; this
+    function never crashes and never blocks on the result."""
+    if uid is None or uid == os.getuid():
+        cmd = ["notify-send", "-a", app_name, "-u", urgency, summary, body]
+    else:
+        bus = bus_path if bus_path is not None else f"/run/user/{uid}/bus"
+        if not os.path.exists(bus):
+            return
+        try:
+            name = pwd.getpwuid(uid).pw_name
+        except KeyError:
+            return
+        cmd = ["runuser", "-u", name, "--",
+               "env", f"DBUS_SESSION_BUS_ADDRESS=unix:path={bus}",
+               "notify-send", "-a", app_name, "-u", urgency, summary, body]
+    try:
+        run(cmd, capture_output=True, timeout=5, check=False)
+    except (OSError, subprocess.SubprocessError):
+        pass

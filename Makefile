@@ -8,29 +8,54 @@ DEBFILE := build/deb/ramstein_$(VERSION)_all.deb
 smoke: check-sutra
 	bash tests/smoke.sh
 
-# drift guard for the vendored sutra copy: integrity (hash matches what
-# vendor.sh recorded — the copy wasn't hand-edited) always runs; freshness
-# (diff against the canonical source) only when that checkout is present,
-# which it normally isn't in CI.
+# Drift guard for every vendored commons file (Wave B, custodian ruling —
+# supersedes the old plain-HEAD-compare with the LAG/DRIFT split, kast's
+# reference recipe). Integrity (hash matches what vendor.sh recorded — the
+# copy wasn't hand-edited) always runs, hard-fail on mismatch, no canonical
+# checkout needed. Freshness runs only when ~/code/REPOS/sutra is a git
+# checkout, and reads each file's .commit anchor to ask canonical git which
+# of three things this is: EXACT (recorded commit == canonical HEAD), LAG
+# (recorded commit is an ancestor of HEAD — an old but honest vendor: warn,
+# exit 0), or DRIFT (recorded commit isn't in canonical's history at all —
+# a corrupted anchor or a rewritten canonical history: hard fail). A file
+# with no .commit at all (an older vendor, from before the anchor existed)
+# reports freshness unknown rather than failing.
 check-sutra:
-	@ver=$$(cut -d' ' -f1 bin/sutra.version); \
-	sha=$$(awk '{print $$NF}' bin/sutra.version); \
-	actual=$$(sha256sum bin/sutra.py | cut -d' ' -f1); \
-	if [ "$$sha" != "$$actual" ]; then \
-	    echo "check-sutra FAIL: bin/sutra.py doesn't match bin/sutra.version" \
-	         "(hand-edited? re-vendor: bash ~/code/REPOS/sutra/vendor.sh bin)"; \
-	    exit 1; \
-	fi; \
-	echo "check-sutra: integrity ok (sutra $$ver, sha256 $$sha)"; \
-	canon="$$HOME/code/REPOS/sutra/sutra.py"; \
-	if [ -f "$$canon" ]; then \
-	    if cmp -s bin/sutra.py "$$canon"; then \
-	        echo "check-sutra: freshness ok (matches canonical)"; \
-	    else \
-	        echo "check-sutra FAIL: bin/sutra.py differs from canonical $$canon (re-vendor)"; \
+	@for f in bin/sutra.py bin/sutra_update.py bin/sutra_xen.py \
+	          extension/ramstein@asuramaya/pill.js; do \
+	    vf="$${f%.py}"; vf="$${vf%.js}.version"; \
+	    cf="$${f%.py}"; cf="$${cf%.js}.commit"; \
+	    ver=$$(cut -d' ' -f1 "$$vf" 2>/dev/null); \
+	    sha=$$(awk '{print $$NF}' "$$vf" 2>/dev/null); \
+	    actual=$$(sha256sum "$$f" | cut -d' ' -f1); \
+	    if [ "$$sha" != "$$actual" ]; then \
+	        echo "check-sutra FAIL: $$f doesn't match $$vf" \
+	             "(hand-edited? re-vendor: bash ~/code/REPOS/sutra/vendor.sh bin extension/ramstein@asuramaya)"; \
 	        exit 1; \
 	    fi; \
-	fi
+	    echo "check-sutra: integrity ok ($$f, $$ver, sha256 $$sha)"; \
+	    canon="$$HOME/code/REPOS/sutra"; \
+	    if [ -d "$$canon/.git" ]; then \
+	        if [ ! -f "$$cf" ]; then \
+	            echo "check-sutra: freshness unknown ($$f has no .commit anchor, an older vendor)"; \
+	        else \
+	            recorded=$$(cat "$$cf"); \
+	            head=$$(git -C "$$canon" rev-parse HEAD); \
+	            if [ "$$recorded" = "$$head" ]; then \
+	                echo "check-sutra: freshness ok ($$f matches canonical HEAD $$head)"; \
+	            elif git -C "$$canon" merge-base --is-ancestor "$$recorded" HEAD 2>/dev/null; then \
+	                echo "check-sutra: LAG ($$f vendored from $$recorded, canonical has since" \
+	                     "moved to $$head) -- warn, not a failure"; \
+	            else \
+	                echo "check-sutra FAIL: DRIFT ($$f's vendored commit $$recorded is not in" \
+	                     "canonical's history at $$canon) -- re-vendor"; \
+	                exit 1; \
+	            fi; \
+	        fi; \
+	    else \
+	        echo "check-sutra: canonical sutra checkout not present, freshness skipped for $$f"; \
+	    fi; \
+	done
 
 # the thorough adversarial pass (full cmd surface + oversized/garbage/
 # invalid-utf8/nested/unknown/rapid-reconnect/half-open-stall); smoke.sh

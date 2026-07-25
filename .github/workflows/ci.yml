@@ -12,7 +12,10 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Python compiles
-        run: python3 -m py_compile bin/ramsteind bin/ramstein bin/ramstein-healthcheck bin/ramstein-update bin/sutra.py
+        run: python3 -m py_compile bin/ramsteind bin/ramstein bin/ramstein-healthcheck bin/ramstein-update bin/sutra.py bin/sutra_update.py bin/sutra_xen.py
+
+      - name: Extension JS compiles
+        run: node --check "extension/ramstein@asuramaya/extension.js" "extension/ramstein@asuramaya/pill.js"
 
       - name: Shell scripts parse
         run: bash -n install.sh uninstall.sh tests/smoke.sh
