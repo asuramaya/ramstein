@@ -13,18 +13,32 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Verify tag matches VERSION and ramsteind's internal constant
+      - name: Verify tag matches VERSION, and ramsteind actually resolves it
         run: |
           tag="${GITHUB_REF_NAME#v}"
           file="$(tr -d '[:space:]' < VERSION)"
-          daemon="$(sed -n 's/^VERSION = "\(.*\)"$/\1/p' bin/ramsteind)"
-          echo "tag=${tag} VERSION=${file} bin/ramsteind=${daemon}"
+          echo "tag=${tag} VERSION=${file}"
           if [ "${tag}" != "${file}" ]; then
             echo "::error::tag ${tag} does not match VERSION ${file}"
             exit 1
           fi
+          # ramsteind has no version literal of its own to drift (see
+          # docs/ARCHITECTURE.md): it reads the same VERSION file this
+          # checkout ships. Prove that live, from a fresh checkout, rather
+          # than grepping for a constant that no longer exists.
+          daemon="$(cd bin && python3 -c '
+          import importlib.util, sys
+          from importlib.machinery import SourceFileLoader
+          sys.path.insert(0, ".")
+          loader = SourceFileLoader("ramsteind", "ramsteind")
+          spec = importlib.util.spec_from_loader(loader.name, loader)
+          mod = importlib.util.module_from_spec(spec)
+          loader.exec_module(mod)
+          print(mod.VERSION)
+          ')"
+          echo "bin/ramsteind resolves VERSION to: ${daemon}"
           if [ "${file}" != "${daemon}" ]; then
-            echo "::error::VERSION ${file} does not match bin/ramsteind's own VERSION ${daemon}"
+            echo "::error::VERSION ${file} does not match what bin/ramsteind actually resolves (${daemon})"
             exit 1
           fi
 
@@ -50,11 +64,19 @@ jobs:
         run: |
           # Format-agnostic: grabs the section starting at the first `## `
           # heading whose text contains the tag's version, up to (not
-          # including) the next `## ` heading.
+          # including) the next `## ` heading. Notes come from CHANGELOG.md,
+          # never --generate-notes: a human wrote that entry, and a commit
+          # dump is not release notes. A missing section refuses the
+          # release outright, so a forgotten CHANGELOG entry is loud rather
+          # than silent (see docs/RELEASING.md).
           ver="${GITHUB_REF_NAME#v}"
           awk -v v="$ver" 'BEGIN{f=0} /^## / { if(f) exit; if(index($0,v)){f=1;print;next} } f{print}' CHANGELOG.md > RELEASE_NOTES.md
           echo "--- extracted release notes ($(wc -l < RELEASE_NOTES.md) lines) ---"
           cat RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "::error::no CHANGELOG.md section for ${ver}; add one before tagging"
+            exit 1
+          fi
 
       # No signing step here, deliberately: ramstein-update and (once RAMstein
       # gains a verified-release bootstrap) install.sh trust an SSH signature
@@ -79,15 +101,7 @@ jobs:
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber
           else
-            # Prefer the extracted CHANGELOG section; fall back to GitHub's
-            # auto-generated notes if extraction came up empty/too-thin
-            # (e.g. a version bump with no matching heading).
-            if [ "$(wc -l < RELEASE_NOTES.md)" -ge 2 ]; then
-              notes_flag=(--notes-file RELEASE_NOTES.md)
-            else
-              notes_flag=(--generate-notes)
-            fi
             gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
               --title "ramstein ${GITHUB_REF_NAME}" \
-              "${notes_flag[@]}"
+              --notes-file RELEASE_NOTES.md
           fi
