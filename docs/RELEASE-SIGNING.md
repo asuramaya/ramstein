@@ -1,9 +1,12 @@
 # Release signing
 
-Status: **unarmed** — `release-signing/allowed_signers` ships empty, as it
-must until the operator's first sealed RAMstein release (Wave B, this
-milestone). Once armed, it holds the operator's 4 canonical FIDO2 pubkeys,
-same identity every other pill in the family uses.
+Status: **armed at HEAD, not yet shipped.** `release-signing/allowed_signers`
+carries all 4 canonical FIDO2 pubkeys, same identity every other pill in the
+family uses. v0.9.0 was tagged and published before this file held any real
+keys, so its shipped copy is still empty and every client verifying that
+release degrades to sha256-only. The next tagged release is the first one
+whose shipped anchor is real; see [RELEASING.md](RELEASING.md) for the
+running order.
 
 ## Why this exists
 
@@ -65,12 +68,16 @@ RAMstein ever grow a verified-release bootstrap, that convergence work
 would land then, not speculatively here.
 
 **Sequencing rule (do not skip):** `make sync-signers` populates the
-anchor. Run it ONLY in the same act as cutting the operator's first signed
-RAMstein release — arming it any earlier bricks `ramstein update` against
-every existing unsigned release. Until then, `release-signing/
-allowed_signers` ships empty and CI's `signing-sync` check
-(`.github/workflows/signing-sync.yml`) just confirms that stays true (or,
-once armed, that the anchor is exactly 4 well-formed lines).
+anchor. Run it ONLY in the same act as cutting a signed release: arming it
+any earlier bricks `ramstein update` against every existing unsigned
+release. RAMstein's own anchor was armed one commit after the v0.9.0 tag
+rather than inside a new release's own act, which was safe only because no
+installed base yet existed to brick: v0.9.0 was RAMstein's first public
+release, and it had already shipped unsigned by the time arming ran. Treat
+that as the exception it was, not the pattern: every arming after this one
+belongs inside the same act as the release it seals. CI's `signing-sync`
+check (`.github/workflows/signing-sync.yml`) confirms the anchor is either
+empty or exactly 4 well-formed lines.
 
 ## Per-release signing (operator, needs the FIDO2 key attached + a touch)
 

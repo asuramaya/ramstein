@@ -67,7 +67,7 @@ DEFAULTS = {
     "auto_calm_step_squeeze": True,
     "auto_calm_nice": 15,
     # memory.high -> this % of the target's CURRENT rss. do_calm's own
-    # floor (PLAN.md Invariant #2) never lets memory.high below 110% of
+    # floor (docs/ARCHITECTURE.md, "The hands") never lets memory.high below 110% of
     # rss regardless of what's requested — so this must be >= that floor
     # or the request is silently a no-op, always overridden upward. 130%
     # gives the target a little headroom to keep running while capping how
@@ -98,8 +98,8 @@ CLAMPS = {
     "auto_calm_psi_some": (0.0, 100.0),
     "auto_calm_psi_full": (0.0, 100.0),
     "auto_calm_nice": (0, 19),         # NICE_MIN/NICE_MAX — calm only lowers
-    # floor matches do_calm's own hardcoded 1.1x-rss floor (PLAN.md
-    # Invariant #2) — anything below 110% would be silently overridden
+    # floor matches do_calm's own hardcoded 1.1x-rss floor (docs/ARCHITECTURE.md,
+    # "The hands"): anything below 110% would be silently overridden
     # upward by do_calm itself, every time, so the clamp says so honestly
     # rather than accepting a value that can never take effect
     "auto_calm_squeeze_pct": (110.0, 500.0),
@@ -551,14 +551,14 @@ def _limit(req):
 
 
 # --- hands: calm / oom / advise (M3) ----------------------------------------
-# The invariant gates come first, on purpose (M3-SPEC.md): coexistence with
-# systemd-oomd/earlyoom, and the kill gate. The CLI gates the HUMAN (fresh
-# per-invocation TTY confirmation); the daemon gates the SYSCALL (re-resolves
-# pid+starttime itself — never trusts that what the CLI resolved earlier is
-# still true by the time the command arrives). Ledgered to
+# The invariant gates come first, on purpose (docs/ARCHITECTURE.md, "The hands"):
+# coexistence with systemd-oomd/earlyoom, and the kill gate. The CLI gates the
+# HUMAN (fresh per-invocation TTY confirmation); the daemon gates the SYSCALL
+# (re-resolves pid+starttime itself, never trusts that what the CLI resolved
+# earlier is still true by the time the command arrives). Ledgered to
 # STATE_DIR/ledger.jsonl, the family ledger, memory dialect.
 
-CALM_HIGH_FLOOR_BYTES = 64 * 1024 * 1024  # PLAN.md Invariant #2's floor
+CALM_HIGH_FLOOR_BYTES = 64 * 1024 * 1024  # docs/ARCHITECTURE.md's calm floor
 NICE_MIN, NICE_MAX = 0, 19                # calm only ever LOWERS priority
 LEDGER_PATH = os.path.join(STATE_DIR, "ledger.jsonl")
 
@@ -845,7 +845,7 @@ def do_calm(pid, starttime, action, size=None, nice=None):
         if requested is None:
             write_val, value_bytes = "max", None
         else:
-            # PLAN.md Invariant #2: the floor is computed from the target's
+            # docs/ARCHITECTURE.md: the floor is computed from the target's
             # OWN rss, so a tampered/fat-fingered SIZE can never be set low
             # enough to instant-thrash-OOM the thing calm is meant to help.
             floor = max(CALM_HIGH_FLOOR_BYTES, int(proc["rss"] * 1.1))

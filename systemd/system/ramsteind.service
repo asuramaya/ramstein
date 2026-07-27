@@ -17,7 +17,7 @@ ProtectSystem=strict
 # Tunables below makes all of /sys read-only, so it needs the same
 # allow-list carve-out ReadWritePaths already does for ProtectSystem=strict
 # (nest a writable path inside a read-only one). Verified against a LIVE
-# calm --high, not just fixtures — see M4-SPEC.md's hardening lesson.
+# calm --high, not just fixtures: see docs/ARCHITECTURE.md's security model.
 ReadWritePaths=/run/ramstein /var/lib/ramstein /sys/fs/cgroup
 # Everything M0 reads lives under /proc — nothing in $HOME matters to any
 # verb through M3 (calm/kill touch /proc + /sys/fs/cgroup, never $HOME).
@@ -28,8 +28,8 @@ ProtectHome=yes
 # root; nothing here is "just in case."
 #   CAP_SYS_PTRACE — the M2 sampler + M3 oom/zombies scan EVERY process's
 #     /proc/<pid>/{status,stat,cgroup,oom_score}, not just owner_uid's own;
-#     reading another user's process internals needs this (PLAN.md's own
-#     M0 note: "only other users' process internals... need [privilege]").
+#     reading another user's process internals needs this (see
+#     docs/ARCHITECTURE.md's data-sources section).
 #   CAP_SYS_NICE — calm --nice renices a target process not owned by the
 #     daemon's own (root) identity in the DAC sense that setpriority checks.
 #   CAP_KILL — calm --kill signals a target process; sending a signal to a

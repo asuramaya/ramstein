@@ -268,7 +268,7 @@ RAMSTEIN_RUNTIME_DIR=$RD python3 bin/ramstein blame --since 1m --json | python3 
     || { echo "SMOKE FAIL: CLI blame json invalid"; exit 1; }
 
 # sampler perf canary — one full /proc pass must stay well under budget;
-# CI machines are slow, so this is a canary, not a benchmark (M2-SPEC.md)
+# CI machines are slow, so this is a canary, not a benchmark (docs/ARCHITECTURE.md)
 python3 - <<'PY'
 import importlib.util
 import sys
@@ -459,7 +459,7 @@ try:
 
     # kill gate: daemon-side pid+starttime mismatch must refuse (the
     # correct AND wrong-confirmation interactive TTY flows are untestable
-    # in CI — there is no TTY here; M3-SPEC.md calls this out explicitly)
+    # in CI, there is no TTY here; see docs/ARCHITECTURE.md)
     stale = ask({"cmd": "kill", "pid": m["pid"], "starttime": 1,
                 "confirm": m["pid"], "sig": "TERM"})
     assert "error" in stale, f"stale starttime accepted: {stale}"
