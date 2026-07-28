@@ -19,6 +19,17 @@ import subprocess
 import threading
 import time
 
+# --- sutra bootstrap (sutra 0.8.0; see BOOTSTRAP.md -- do not hand-edit) ----
+import os as _os
+import sys as _sys
+_PILL = "ramstein"
+_libdir = _os.path.join(
+    _os.path.dirname(_os.path.dirname(_os.path.realpath(__file__))),
+    "share", _PILL, "lib")
+if _libdir not in _sys.path:
+    _sys.path.insert(0, _libdir)
+del _os, _sys, _libdir, _PILL
+# --- end sutra bootstrap ----------------------------------------------------
 import sutra
 
 # One version constant, packaging/VERSION; nothing here duplicates it as a

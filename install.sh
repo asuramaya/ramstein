@@ -63,17 +63,34 @@ echo "-- binaries -> $BINDIR"
 for b in ramstein ramsteind ramstein-healthcheck ramstein-update; do
   install -m 0755 -o root -g root "$SRC/src/bin/$b" "$BINDIR/$b"
 done
-# Wave B M4: the vendored sutra commons MUST ship alongside the binaries
-# that import them, in BOTH install layouts (this one and make deb) — a
-# vendored-but-not-shipped copy is a real bug class two sibling pills each
-# independently hit (crashes on `import sutra` only on a real machine,
-# since a dev checkout always has src/bin/sutra.py sitting right there). Ship
-# the .version/.commit anchors too so a post-install check-sutra can still
-# verify integrity/freshness against what was actually installed.
+# Sutra install-path adoption (BOOTSTRAP.md, ruling 3e44bd95): every pill
+# vendoring sutra.py into the SAME shared bin dir under the same name made
+# any two pills installed together collide: dpkg refuses the second
+# package outright; a plain `install` here has no ownership tracking and
+# would silently overwrite, anchors included. Measured, not theorised: on
+# the operator's own machine two different pills' sutra.py were already
+# two different canonical commits, with no anchor in that shared dir to
+# catch it. The vendored copies now live in their own private,
+# package-owned dir instead of beside the binaries; every binary that
+# imports sutra finds it there via a small sys.path bootstrap preamble
+# instead of relying on co-location. Anchors travel with the code so a
+# post-install check can verify the INSTALLED copy, not just the repo one.
+echo "-- sutra commons -> $SHAREDIR/lib"
+install -d -m 0755 "$SHAREDIR/lib"
 for f in sutra.py sutra.version sutra.commit \
          sutra_update.py sutra_update.version sutra_update.commit \
          sutra_xen.py sutra_xen.version sutra_xen.commit; do
-  [ -f "$SRC/src/bin/$f" ] && install -m 0644 -o root -g root "$SRC/src/bin/$f" "$BINDIR/$f"
+  [ -f "$SRC/src/share/ramstein/lib/$f" ] && install -m 0644 -o root -g root "$SRC/src/share/ramstein/lib/$f" "$SHAREDIR/lib/$f"
+done
+# Old-layout leftovers: a machine that ran a pre-adoption install.sh has
+# these sitting in $BINDIR, owned by nothing (a .deb upgrade drops
+# package-owned files automatically on its own; install.sh's copies never
+# were package-owned by anything). Left behind they'd linger forever, so
+# clean them up unconditionally on every install, not just an upgrade.
+for f in sutra.py sutra.version sutra.commit \
+         sutra_update.py sutra_update.version sutra_update.commit \
+         sutra_xen.py sutra_xen.version sutra_xen.commit; do
+  rm -f "$BINDIR/$f"
 done
 install -d -m 0755 "$SHAREDIR"
 install -m 0644 "$SRC/packaging/VERSION" "$SHAREDIR/VERSION"

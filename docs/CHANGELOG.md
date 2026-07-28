@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.11.0 — the sutra install-path adoption
+Behavior-preserving for status.json/the control socket, but a real fix for a real collision.
+Every pill vendors `sutra.py` byte-identical, but every pill's installer used to drop that copy
+into the same shared bin directory under the same filename (`/usr/bin` via `.deb`,
+`/usr/local/bin` via `install.sh`), so any two pills installed together collided: `dpkg` refused
+the second package outright, and `install.sh`'s plain `install` silently overwrote, anchors
+included. Found while trying to complete v0.10.0's own install-over-installed verification
+(`dpkg -i` refused to overwrite `/usr/bin/sutra.py`, already owned by phanspeed's package), and
+confirmed worse than it looked from inside this repo alone: two pills on the operator's own
+machine were already running different canonical `sutra.py` commits, undetectable, since the
+shared directory carried no `.version`/`.commit` anchors at all (ruling `3e44bd95`).
+
+- The vendored `sutra.py`/`sutra_update.py`/`sutra_xen.py` (+ anchors) move to a private,
+  package-owned directory: `src/share/ramstein/lib/` in the source tree,
+  `<prefix>/share/ramstein/lib/` once installed (`/usr/share/ramstein/lib/` via `.deb`,
+  `$PREFIX/share/ramstein/lib/` via `install.sh`, off the same `$PREFIX` the binaries already
+  use). Anchors travel with the code, always.
+- Every binary that imports `sutra` or `sutra_update` (`ramsteind`, `ramstein`,
+  `ramstein-healthcheck`, `ramstein-update`) carries the canonical bootstrap preamble sutra
+  itself publishes (BOOTSTRAP.md), immediately before the import, instead of relying on being
+  co-located with `sutra.py`. The preamble computes its own directory at runtime, so it works
+  unmodified whether the binary is running from a dev checkout's `src/bin/`, `/usr/local/bin`
+  via `install.sh`, or `/usr/bin` via `.deb`, no `$PREFIX` ever hardcoded or handed in.
+- `ramstein-healthcheck` now also verifies the INSTALLED `sutra.py` against its own installed
+  `.version` anchor, not just the checked-out copy `check-sutra` covers. `check-sutra` only ever
+  proved the repo copy wasn't hand-edited; the machine runs the installed one, and that gap is
+  exactly how the collision on the operator's own machine went undetected.
+- `install.sh` (and `uninstall.sh`, which already covered it) clean up the old
+  `$PREFIX/bin/sutra*.{py,version,commit}` files unconditionally: a `.deb` upgrade drops
+  package-owned files automatically, but `install.sh`'s old copies were never owned by anything
+  and would otherwise linger forever.
+- `pill.js` is exempt, unchanged: it already installs per-pill under its own extension
+  directory and was never part of the collision.
+
+Verified in full isolation, never against the operator's live system: a systemd-in-Docker
+attempt failed in this sandbox (nested privilege isn't available here), so verification used a
+plain container with a stubbed `systemctl`, matching the same fixture pattern `tests/smoke.sh`
+already uses for the coexistence check. Confirmed live: the daemon actually imports `sutra` from
+the new location (both from a raw dev checkout and from a real `install.sh` install inside the
+container), a simulated pre-adoption leftover (fake old-style files planted in the old shared
+bin dir) gets cleaned up by the new `install.sh`, three consecutive install runs stay idempotent,
+and `uninstall.sh` removes everything cleanly. `make check` + `make smoke` + `make attack` green
+throughout on the real repo.
+
+This is one pill's half of a family-wide fix (sutra 0.8.0 publishes the preamble; each pill
+adopts at its own next touch, sequenced by alfred, obligation `20819d5a`). The cross-pill dpkg
+collision itself isn't fully closed until every pill has made this same move.
+
 ## 0.10.0 — RS-STD-1: the family repo standard
 Structural only, no daemon/CLI/pill behavior changed. Adopted the family's REPO-STANDARD.md
 in three passes (alfred's order, mail #1581), landing the same twelve-row root kast and

@@ -7,16 +7,34 @@ Thin wrapper over sutra.check_health (UNIFY Wave A #3): status.json fresh
 against the daemon's own declared poll_interval, control.sock answering
 ping. Exit 0 when healthy, nonzero with a one-line reason when not.
 
+Also verifies the INSTALLED sutra.py against its own INSTALLED anchor
+(BOOTSTRAP.md): check-sutra only ever proves the repo copy wasn't
+hand-edited, never what the machine is actually running. A mismatch here
+means this machine's real sutra.py and its own .version anchor disagree,
+the exact blind spot that let two pills run different sutra commits on
+one machine with nothing able to notice (ruling 3e44bd95).
+
 Passive by design: it diagnoses and reports, it never restarts anything —
 systemd's Restart= owns recovery, and a monitoring probe that mutates what
 it measures can't be trusted. Honors RAMSTEIN_RUNTIME_DIR exactly like
 ramsteind and ramstein do.
 """
 
+import hashlib
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# --- sutra bootstrap (sutra 0.8.0; see BOOTSTRAP.md -- do not hand-edit) ----
+import os as _os
+import sys as _sys
+_PILL = "ramstein"
+_libdir = _os.path.join(
+    _os.path.dirname(_os.path.dirname(_os.path.realpath(__file__))),
+    "share", _PILL, "lib")
+if _libdir not in _sys.path:
+    _sys.path.insert(0, _libdir)
+del _os, _sys, _libdir, _PILL
+# --- end sutra bootstrap ----------------------------------------------------
 import sutra  # noqa: E402
 
 RUNTIME_DIR = os.environ.get("RAMSTEIN_RUNTIME_DIR", "/run/ramstein")
@@ -24,13 +42,35 @@ STATUS_PATH = os.path.join(RUNTIME_DIR, "status.json")
 SOCKET_PATH = os.path.join(RUNTIME_DIR, "control.sock")
 
 
+def _installed_sutra_ok():
+    """None when the anchor is missing (older install, can't verify);
+    otherwise True/False for whether the installed sutra.py's own sha256
+    still matches the .version anchor installed right beside it."""
+    libdir = os.path.dirname(os.path.abspath(sutra.__file__))
+    version_path = os.path.join(libdir, "sutra.version")
+    try:
+        with open(version_path) as f:
+            expected_sha = f.read().split()[-1]
+    except (OSError, IndexError):
+        return None
+    actual_sha = hashlib.sha256(open(sutra.__file__, "rb").read()).hexdigest()
+    return expected_sha == actual_sha
+
+
 def main():
     healthy, reason, info = sutra.check_health(STATUS_PATH, SOCKET_PATH)
     if not healthy:
         print(f"unhealthy: {reason}")
         return 1
+    sutra_ok = _installed_sutra_ok()
+    if sutra_ok is False:
+        print(f"unhealthy: installed {sutra.__file__} doesn't match its own "
+              f"installed sutra.version anchor (hand-edited, or two pills' "
+              f"installers collided)")
+        return 1
     print(f"healthy: status {info['age']:.0f}s old (limit {info['limit']:.0f}s), "
-          f"socket ping ok, daemon v{info['version']}")
+          f"socket ping ok, daemon v{info['version']}"
+          + (", sutra anchor unknown" if sutra_ok is None else ", sutra anchor ok"))
     return 0
 
 

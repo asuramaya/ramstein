@@ -275,12 +275,10 @@ import sys
 import time
 from importlib.machinery import SourceFileLoader
 
-# src/bin/ramsteind has no .py suffix, so spec_from_file_location can't infer a
-# loader on its own — hand it one explicitly. It now does `import sutra`,
-# a sibling module in src/bin/ — put that dir on sys.path so it resolves the
-# same way it does when the daemon is run normally (python3 src/bin/ramsteind
-# puts the script's own directory on sys.path[0] automatically).
-sys.path.insert(0, "src/bin")
+# src/bin/ramsteind has no .py suffix, so spec_from_file_location can't infer
+# a loader on its own; hand it one explicitly. Its own sutra bootstrap
+# preamble (BOOTSTRAP.md) runs as part of exec_module below and finds
+# src/share/ramstein/lib/sutra.py on its own; no sys.path setup needed here.
 loader = SourceFileLoader("ramsteind_perf", "src/bin/ramsteind")
 spec = importlib.util.spec_from_loader(loader.name, loader)
 mod = importlib.util.module_from_spec(spec)
@@ -531,7 +529,6 @@ import importlib.util
 # same reason the real daemon/smoke.sh always set this before invocation.
 os.environ["RAMSTEIN_STATE_DIR"] = os.path.join(sys.argv[1], "swapstorm_state")
 
-sys.path.insert(0, "src/bin")
 loader = SourceFileLoader("ramsteind_swapstorm", "src/bin/ramsteind")
 spec = importlib.util.spec_from_loader(loader.name, loader)
 mod = importlib.util.module_from_spec(spec)
@@ -645,7 +642,6 @@ rd = sys.argv[1]
 os.environ["RAMSTEIN_STATE_DIR"] = os.path.join(rd, "autocalm_state")
 os.environ["RAMSTEIN_CGROUP_ROOT"] = os.path.join(rd, "autocalm_fake_cgroup")
 
-sys.path.insert(0, "src/bin")
 loader = SourceFileLoader("ramsteind_autocalm", "src/bin/ramsteind")
 spec = importlib.util.spec_from_loader(loader.name, loader)
 mod = importlib.util.module_from_spec(spec)
@@ -769,8 +765,8 @@ PY
 # (smoke runs unprivileged, and there's no existing precedent for exercising
 # install.sh as root in this suite) — but a real bug two sibling pills each
 # independently hit: vendor sutra, forget to ship it, `import sutra` only
-# fails on a real fresh machine, never in a dev checkout where src/bin/sutra.py
-# already sits right next to the binary being run.
+# fails on a real fresh machine, never in a dev checkout where
+# src/share/ramstein/lib/sutra.py already sits where the bootstrap looks.
 for f in sutra.py sutra_update.py sutra_xen.py; do
     grep -q "$f" install.sh \
         || { echo "SMOKE FAIL: install.sh never names $f — vendored but not shipped"; exit 1; }
@@ -785,9 +781,9 @@ DEBFILE="build/deb/ramstein_$(tr -d '[:space:]' < packaging/VERSION)_all.deb"
 [ -f "$DEBFILE" ] || { echo "SMOKE FAIL: $DEBFILE not built"; exit 1; }
 CONTENTS=$(dpkg-deb --contents "$DEBFILE")
 for want in usr/bin/ramsteind usr/bin/ramstein usr/bin/ramstein-healthcheck \
-            usr/bin/ramstein-update usr/bin/sutra.py usr/bin/sutra.version \
-            usr/bin/sutra_update.py usr/bin/sutra_update.version \
-            usr/bin/sutra_xen.py usr/bin/sutra_xen.version \
+            usr/bin/ramstein-update usr/share/ramstein/lib/sutra.py usr/share/ramstein/lib/sutra.version \
+            usr/share/ramstein/lib/sutra_update.py usr/share/ramstein/lib/sutra_update.version \
+            usr/share/ramstein/lib/sutra_xen.py usr/share/ramstein/lib/sutra_xen.version \
             lib/systemd/system/ramsteind.service \
             lib/systemd/system/ramstein-update.service \
             lib/systemd/system/ramstein-update.timer \

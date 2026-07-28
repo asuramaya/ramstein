@@ -21,7 +21,7 @@ smoke: check-sutra
 # with no .commit at all (an older vendor, from before the anchor existed)
 # reports freshness unknown rather than failing.
 check-sutra:
-	@for f in src/bin/sutra.py src/bin/sutra_update.py src/bin/sutra_xen.py \
+	@for f in src/share/ramstein/lib/sutra.py src/share/ramstein/lib/sutra_update.py src/share/ramstein/lib/sutra_xen.py \
 	          src/extension/ramstein@asuramaya/pill.js; do \
 	    vf="$${f%.py}"; vf="$${vf%.js}.version"; \
 	    cf="$${f%.py}"; cf="$${cf%.js}.commit"; \
@@ -30,7 +30,7 @@ check-sutra:
 	    actual=$$(sha256sum "$$f" | cut -d' ' -f1); \
 	    if [ "$$sha" != "$$actual" ]; then \
 	        echo "check-sutra FAIL: $$f doesn't match $$vf" \
-	             "(hand-edited? re-vendor: bash ~/code/REPOS/sutra/vendor.sh src/bin src/extension/ramstein@asuramaya)"; \
+	             "(hand-edited? re-vendor: bash ~/code/REPOS/sutra/vendor.sh src/share/ramstein/lib src/extension/ramstein@asuramaya)"; \
 	        exit 1; \
 	    fi; \
 	    echo "check-sutra: integrity ok ($$f, $$ver, sha256 $$sha)"; \
@@ -66,7 +66,7 @@ attack:
 # static checks, CI-equivalent. Family grammar: smoke attack check deb.
 check: check-sutra
 	python3 -m py_compile src/bin/ramsteind src/bin/ramstein src/bin/ramstein-healthcheck \
-	    src/bin/ramstein-update src/bin/sutra.py src/bin/sutra_update.py src/bin/sutra_xen.py
+	    src/bin/ramstein-update src/share/ramstein/lib/sutra.py src/share/ramstein/lib/sutra_update.py src/share/ramstein/lib/sutra_xen.py
 	node --check "src/extension/ramstein@asuramaya/extension.js" "src/extension/ramstein@asuramaya/pill.js"
 	bash -n install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh
 	shellcheck install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh
@@ -115,15 +115,16 @@ deb:
 	install -d -m 0755 $(DEBROOT)/DEBIAN
 	install -d -m 0755 $(DEBROOT)/usr/bin
 	install -d -m 0755 $(DEBROOT)/usr/share/ramstein/scripts
+	install -d -m 0755 $(DEBROOT)/usr/share/ramstein/lib
 	install -d -m 0755 $(DEBROOT)/usr/share/man/man1
 	install -d -m 0755 $(DEBROOT)/usr/share/man/man8
 	install -d -m 0755 $(DEBROOT)/etc/ramstein
 	install -d -m 0755 $(DEBROOT)/lib/systemd/system
 	install -m 0755 src/bin/ramsteind src/bin/ramstein src/bin/ramstein-healthcheck src/bin/ramstein-update $(DEBROOT)/usr/bin/
-	install -m 0644 src/bin/sutra.py src/bin/sutra.version src/bin/sutra.commit \
-	    src/bin/sutra_update.py src/bin/sutra_update.version src/bin/sutra_update.commit \
-	    src/bin/sutra_xen.py src/bin/sutra_xen.version src/bin/sutra_xen.commit \
-	    $(DEBROOT)/usr/bin/
+	install -m 0644 src/share/ramstein/lib/sutra.py src/share/ramstein/lib/sutra.version src/share/ramstein/lib/sutra.commit \
+	    src/share/ramstein/lib/sutra_update.py src/share/ramstein/lib/sutra_update.version src/share/ramstein/lib/sutra_update.commit \
+	    src/share/ramstein/lib/sutra_xen.py src/share/ramstein/lib/sutra_xen.version src/share/ramstein/lib/sutra_xen.commit \
+	    $(DEBROOT)/usr/share/ramstein/lib/
 	install -m 0644 packaging/VERSION $(DEBROOT)/usr/share/ramstein/VERSION
 	install -m 0644 packaging/release-signing/allowed_signers $(DEBROOT)/usr/share/ramstein/allowed_signers
 	install -m 0755 packaging/seed-owner-uid.py $(DEBROOT)/usr/share/ramstein/scripts/

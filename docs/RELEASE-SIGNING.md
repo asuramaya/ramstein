@@ -129,7 +129,7 @@ publishes both under one signature.
 
 ## Vendored commons (Wave B)
 
-`src/bin/sutra.py` + `src/bin/sutra_update.py` + `src/bin/sutra_xen.py` (+ their
+`src/share/ramstein/lib/sutra.py` + `sutra_update.py` + `sutra_xen.py` (+ their
 `.version`/`.commit` anchors) and `src/extension/ramstein@asuramaya/pill.js`
 are vendored, never hand-edited — `make check-sutra` is the drift guard
 (integrity always; freshness as a three-way LAG/DRIFT read against the

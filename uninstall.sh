@@ -37,6 +37,10 @@ echo "-- removing files"
 for b in ramstein ramsteind ramstein-healthcheck ramstein-update; do
   rm -f "$BINDIR/$b"
 done
+# Legacy cleanup: sutra used to live beside the binaries in $BINDIR
+# (pre-BOOTSTRAP.md). The current install.sh no longer writes there and
+# already removes any it finds on every install, but an uninstall can run
+# against a machine that was never reinstalled since, so clean up here too.
 for f in sutra.py sutra.version sutra.commit \
          sutra_update.py sutra_update.version sutra_update.commit \
          sutra_xen.py sutra_xen.version sutra_xen.commit; do
@@ -44,6 +48,7 @@ for f in sutra.py sutra.version sutra.commit \
 done
 rm -f "$UNITDIR/ramsteind.service" "$UNITDIR/ramstein-update.service" "$UNITDIR/ramstein-update.timer" \
       "$UNITDIR/ramstein-autocalm.service" "$UNITDIR/ramstein-autocalm.timer"
+# Covers the current sutra location too: $SHAREDIR/lib/ (BOOTSTRAP.md).
 rm -rf "$SHAREDIR"
 rm -f "$PREFIX/share/man/man1/ramstein.1" "$PREFIX/share/man/man8/ramsteind.8"
 systemctl daemon-reload

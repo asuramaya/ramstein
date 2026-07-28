@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Python compiles
-        run: python3 -m py_compile src/bin/ramsteind src/bin/ramstein src/bin/ramstein-healthcheck src/bin/ramstein-update src/bin/sutra.py src/bin/sutra_update.py src/bin/sutra_xen.py
+        run: python3 -m py_compile src/bin/ramsteind src/bin/ramstein src/bin/ramstein-healthcheck src/bin/ramstein-update src/share/ramstein/lib/sutra.py src/share/ramstein/lib/sutra_update.py src/share/ramstein/lib/sutra_xen.py
 
       - name: Extension JS compiles
         run: node --check "src/extension/ramstein@asuramaya/extension.js" "src/extension/ramstein@asuramaya/pill.js"

@@ -8,8 +8,9 @@ the daemon is the only thing that ever touches a privileged path.
 ## Repo map
 
 ```
-src/bin/                ramsteind (daemon), ramstein (CLI), ramstein-healthcheck, ramstein-update,
-                        vendored sutra.py / sutra_update.py / sutra_xen.py + their .version/.commit anchors
+src/bin/                ramsteind (daemon), ramstein (CLI), ramstein-healthcheck, ramstein-update
+src/share/ramstein/lib/ vendored sutra.py / sutra_update.py / sutra_xen.py + their .version/.commit
+                        anchors (BOOTSTRAP.md's private per-pill path, mirrors the installed layout)
 src/data/config/        config.json defaults (seed, never master)
 src/data/man/           ramstein.1 (man1), ramsteind.8 (man8)
 src/data/systemd/system/ ramsteind.service, ramstein-update.timer/.service, ramstein-autocalm.timer
@@ -126,7 +127,7 @@ field. It is the pill, running in the user's own session, that turns that into a
 
 ## The sutra backbone
 
-`src/bin/sutra.py`, `src/bin/sutra_update.py`, and `src/bin/sutra_xen.py` (plus
+`src/share/ramstein/lib/sutra.py`, `sutra_update.py`, and `sutra_xen.py` (plus
 `src/extension/ramstein@asuramaya/pill.js`) are vendored byte-identical from the family's shared
 `sutra` commons, never hand-edited; a re-vendor is the only way they change. `make check-sutra`
 is the drift guard: integrity (the file's sha256 against its own `.version` anchor) is a hard
@@ -134,6 +135,22 @@ failure on any mismatch, and freshness (only checked when a canonical `sutra` ch
 present) reads the `.commit` anchor and asks canonical git whether it is an exact match, a lag
 (an ancestor of current HEAD, a stale but honest vendor, warns only), or drift (not an ancestor
 at all, a corrupted anchor or a rewritten canonical history, hard fails).
+
+The vendored copies live in their own private, package-owned directory rather than beside the
+binaries (BOOTSTRAP.md, ruling `3e44bd95`). Every pill vendoring `sutra.py` under the same
+filename into the same shared bin directory (`/usr/bin` via `.deb`, `/usr/local/bin` via
+`install.sh`) made any two pills installed together collide: `dpkg` refuses the second package
+outright, and a plain `install` here has no ownership tracking and would silently overwrite,
+anchors included. It was measured, not theorised: two pills on the same real machine were
+already running different canonical commits of `sutra.py` with no anchor in that shared
+directory to catch it. Each binary that imports `sutra` or `sutra_update` carries a small,
+canonical bootstrap preamble (sutra publishes the exact text; every pill pastes it verbatim,
+never hand-derived) immediately before the import, computing
+`dirname(dirname(realpath(__file__)))/share/ramstein/lib` at runtime so it finds the vendored
+copy whether that's `/usr/local` from a dev checkout's `src/bin/`, `/usr` from a `.deb`, or any
+other install prefix. `ramstein-healthcheck` additionally verifies the INSTALLED sutra copy
+against its own installed `.version` anchor, not just the checked-out one `check-sutra` covers,
+closing the exact blind spot the collision itself exploited.
 
 `ramsteind` gets its config loading, status writing, EWMA math, and control socket from `sutra`
 (`load_config`, `write_status`, `ewma_rate`, `ControlServer`); the one subtlety is that
@@ -162,7 +179,7 @@ so a successor does not have to open the man page to know the shape.
 Config is the seed, never the master: every key is typed and clamped on load, unknown keys are
 ignored, and a tampered config can tune numbers within their clamps but never grant a new ability
 or weaken a hardcoded invariant like the kill gate or the memory.high floor. The version appears
-exactly once, at `packaging/VERSION`; nothing else carries a literal version string. `src/bin/sutra.py` and its
+exactly once, at `packaging/VERSION`; nothing else carries a literal version string. `sutra.py` and its
 siblings are vendored byte-identical; `make check-sutra` proves it, and the fix for drift is
 always a re-vendor, never a hand-edit. Names that come off `/proc` (comm strings) reach the CLI
 and the pill as-is; RAMstein trusts the kernel's own accounting more than it distrusts a
