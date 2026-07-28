@@ -20,7 +20,7 @@ daemon. There is no network attack surface: `ramsteind` never opens a network
 socket — its only listener is `AF_UNIX` at `/run/ramstein/control.sock`, and
 its only reads are `/proc/meminfo` and `/proc/pressure/memory`.
 
-Hardening in place (see `bin/ramsteind` and `systemd/system/ramsteind.service`):
+Hardening in place (see `src/bin/ramsteind` and `src/data/systemd/system/ramsteind.service`):
 
 - **SO_PEERCRED authorization** — only root and the configured `owner_uid`
   may issue commands, checked per-connection on top of the socket's `0660`

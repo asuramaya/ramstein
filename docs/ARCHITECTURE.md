@@ -8,24 +8,21 @@ the daemon is the only thing that ever touches a privileged path.
 ## Repo map
 
 ```
-bin/                    ramsteind (daemon), ramstein (CLI), ramstein-healthcheck, ramstein-update,
+src/bin/                ramsteind (daemon), ramstein (CLI), ramstein-healthcheck, ramstein-update,
                         vendored sutra.py / sutra_update.py / sutra_xen.py + their .version/.commit anchors
-extension/              the GNOME pill (ramstein@asuramaya), vendored pill.js
-systemd/system/         ramsteind.service, ramstein-update.timer/.service, ramstein-autocalm.timer
-config/                 config.json defaults (seed, never master)
-man/                    ramstein.1, ramsteind.8
-release-signing/        allowed_signers, the SSH-signature trust anchor
-tools/                  sync-signers.sh
+src/data/config/        config.json defaults (seed, never master)
+src/data/man/           ramstein.1 (man1), ramsteind.8 (man8)
+src/data/systemd/system/ ramsteind.service, ramstein-update.timer/.service, ramstein-autocalm.timer
+src/extension/          the GNOME pill (ramstein@asuramaya), vendored pill.js
+packaging/              VERSION (the one version constant), packages.txt, deb/, release-signing/
 tests/                  smoke.sh, attack_socket.py, zombie_maker.py
-docs/                   this file, USAGE.md, RELEASING.md, RELEASE-SIGNING.md
+docs/                   this file, USAGE.md, RELEASING.md, RELEASE-SIGNING.md, CHANGELOG.md
 ```
 
-`packages.txt` and `VERSION` sit at root today. This map reflects the tree as it stands right
-now. It is scheduled to move to a `src/`-based layout (executables and the vendored commons
-under `src/bin/`, everything installed onto the system as-is under `src/data/`, the GNOME pill
-under `src/extension/`), with the release and build inputs collected under `packaging/`.
-Nothing installed changes when that happens, only where the source lives. This section gets
-rewritten once that lands.
+`src/` answers "what is this thing", `packaging/` answers "how does it become a release",
+`.github/` carries the community files and CI workflows. Installed paths never moved when this
+tree was built: only the source layout changed (REPO-STANDARD.md's tree pass), so a `.deb` or an
+`install.sh` run still lands binaries in `/usr/bin` or `/usr/local/bin` exactly as before.
 
 ## Boundary, versus byebyte
 
@@ -129,8 +126,8 @@ field. It is the pill, running in the user's own session, that turns that into a
 
 ## The sutra backbone
 
-`bin/sutra.py`, `bin/sutra_update.py`, and `bin/sutra_xen.py` (plus
-`extension/ramstein@asuramaya/pill.js`) are vendored byte-identical from the family's shared
+`src/bin/sutra.py`, `src/bin/sutra_update.py`, and `src/bin/sutra_xen.py` (plus
+`src/extension/ramstein@asuramaya/pill.js`) are vendored byte-identical from the family's shared
 `sutra` commons, never hand-edited; a re-vendor is the only way they change. `make check-sutra`
 is the drift guard: integrity (the file's sha256 against its own `.version` anchor) is a hard
 failure on any mismatch, and freshness (only checked when a canonical `sutra` checkout is
@@ -157,7 +154,7 @@ reads, and every connection is checked against `SO_PEERCRED`: only root or the c
 `owner_uid` may issue commands, on top of the socket's own 0660 mode. Malformed input,
 non-objects, and unknown commands are answered with an error and the connection ends; none of it
 crashes the daemon. The full config clamp table, the exact capability set the hardened systemd
-unit retains, and the complete list of invariants live in `man/ramsteind.8`; this section exists
+unit retains, and the complete list of invariants live in `src/data/man/man8/ramsteind.8`; this section exists
 so a successor does not have to open the man page to know the shape.
 
 ## Conventions worth knowing before you edit
@@ -165,7 +162,7 @@ so a successor does not have to open the man page to know the shape.
 Config is the seed, never the master: every key is typed and clamped on load, unknown keys are
 ignored, and a tampered config can tune numbers within their clamps but never grant a new ability
 or weaken a hardcoded invariant like the kill gate or the memory.high floor. The version appears
-exactly once, at `VERSION`; nothing else carries a literal version string. `bin/sutra.py` and its
+exactly once, at `packaging/VERSION`; nothing else carries a literal version string. `src/bin/sutra.py` and its
 siblings are vendored byte-identical; `make check-sutra` proves it, and the fix for drift is
 always a re-vendor, never a hand-edit. Names that come off `/proc` (comm strings) reach the CLI
 and the pill as-is; RAMstein trusts the kernel's own accounting more than it distrusts a

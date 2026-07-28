@@ -9,23 +9,19 @@ the signing key never goes near CI.
 
 ## 1. Prepare
 
-Bump `VERSION` (root today; `packaging/VERSION` once the tree pass lands). It is the one version
-constant, and `release.yml` asserts it matches the tag and `ramsteind`'s own internal VERSION
-constant.
+Bump `packaging/VERSION`. It is the one version constant, and `release.yml` asserts it matches
+the tag and `ramsteind`'s own internal VERSION constant.
 
-Write the `CHANGELOG.md` entry for the release. Small, focused releases are easier to sign off on
-than a pile of unrelated changes.
+Write the `docs/CHANGELOG.md` entry for the release. Small, focused releases are easier to sign
+off on than a pile of unrelated changes.
 
 Run the checks:
 
 ```
-make smoke            # boot the daemon against fixtures, assert status.json shape
+make check             # lint, py_compile, node --check, man rendering, check-sutra
+make smoke             # boot the daemon against fixtures, assert status.json shape
 make attack            # fuzz the control socket adversarially, no root
 ```
-
-`make check-sutra` runs as part of `make smoke` already. RAMstein has not yet adopted a `make
-check` aggregate; that is expected to land alongside the repo's tree pass, following coldspot's
-pattern.
 
 ## 2. Tag and publish
 
@@ -34,7 +30,7 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
 `release.yml` then builds the `.deb`, a source tarball, and `SHA256SUMS`, extracts the matching
-`CHANGELOG.md` section, and publishes the release unsigned. It signs nothing, on purpose: if CI
+`docs/CHANGELOG.md` section, and publishes the release unsigned. It signs nothing, on purpose: if CI
 could sign, whoever compromised the workflow or the account could sign whatever they pushed, and
 the anchor would be protecting nothing.
 
@@ -52,7 +48,7 @@ releases and shows anything published without a `.sig` as awaiting the seal.
 ## Where RAMstein actually stands
 
 v0.9.0 was tagged and published before the anchor held any real keys, so its shipped copy of
-`release-signing/allowed_signers` is empty and every client verifying it degrades to sha256-only.
+`packaging/release-signing/allowed_signers` is empty and every client verifying it degrades to sha256-only.
 The anchor was armed with all 4 canonical keys immediately after, at HEAD. **The next tagged
 release is the first one where the shipped anchor is real**, and from that release onward
 `ramstein-update` enforces a valid signature and refuses to install an unsigned one. Treat every
@@ -69,7 +65,7 @@ on it.
 
 ## When it goes wrong
 
-**The tag assertion fails** means `VERSION` and the tag disagree, or `ramsteind`'s own internal
+**The tag assertion fails** means `packaging/VERSION` and the tag disagree, or `ramsteind`'s own internal
 VERSION constant is stale. Fix it, delete the tag, tag again.
 
 **A client reports "armed but release is unsigned"** means the release was published and never

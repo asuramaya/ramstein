@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# `make sync-signers` — rebuild release-signing/allowed_signers from the
-# fleet's canonical pubkeys, per ~/code/REPOS/RELEASE.md's sync-signers
-# doctrine.
+# `make sync-signers` — rebuild packaging/release-signing/allowed_signers
+# from the fleet's canonical pubkeys, per ~/code/REPOS/RELEASE.md's
+# sync-signers doctrine.
 #
 # Canonical key home (operator ruling 13ee52ce): ~/.ssh/asuramaya-master/ —
 # OUTSIDE every repo, never committed, never a sibling checkout. This is a
@@ -14,9 +14,9 @@
 # can't silently produce a partial anchor.
 #
 # SEQUENCING: this populates the anchor. Run it ONLY in the same act as
-# cutting the operator's first signed RAMstein release — arming
-# release-signing/allowed_signers any earlier bricks `ramstein update`
-# against every release published before the arming.
+# cutting the operator's first signed RAMstein release; arming
+# packaging/release-signing/allowed_signers any earlier bricks `ramstein
+# update` against every release published before the arming.
 #
 # Unlike kast/phanspeed, RAMstein's install.sh has no curl-pipe bootstrap
 # (it deliberately only ever runs from a checkout — no verified-release
@@ -24,7 +24,11 @@
 # no embedded RELEASE_ALLOWED_SIGNERS twin to keep in sync here — this
 # script only ever touches the one anchor file.
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." 2>/dev/null && pwd)"
+# This file lives at packaging/release-signing/sync-signers.sh, two levels
+# under the repo root, so reaching root needs two ".." hops, spelled out
+# explicitly rather than relied on by coincidence (REPO-STANDARD.md's tree
+# pass moved this file here from tools/, one level shallower).
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." 2>/dev/null && pwd)"
 PRINCIPAL="ramstein"
 NAMESPACES="ramstein-release,pills-tag"
 
@@ -42,7 +46,7 @@ if [[ "${#pubs[@]}" -ne 4 ]]; then
   exit 1
 fi
 
-anchor="$HERE/release-signing/allowed_signers"
+anchor="$HERE/packaging/release-signing/allowed_signers"
 tmp="$(mktemp)"
 for p in "${pubs[@]}"; do
   printf '%s namespaces="%s" %s\n' "$PRINCIPAL" "$NAMESPACES" "$(cat "$p")"

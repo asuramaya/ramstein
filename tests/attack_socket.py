@@ -43,7 +43,7 @@ env["RAMSTEIN_RUNTIME_DIR"] = RD
 env["RAMSTEIN_STATE_DIR"] = os.path.join(RD, "state")
 env["RAMSTEIN_CGROUP_ROOT"] = os.path.join(RD, "fake_cgroup")
 proc = subprocess.Popen(
-    [sys.executable, os.path.join(HERE, "bin", "ramsteind"),
+    [sys.executable, os.path.join(HERE, "src", "bin", "ramsteind"),
      "--config", os.path.join(RD, "config.json")],
     env=env)
 
@@ -64,7 +64,7 @@ def ask(payload, timeout=8, retries=3):
     connect()/sendall() are retried on a transient OSError (EAGAIN etc.) —
     the exact race the rapid-reconnect phase deliberately induces: right
     after a connection burst, even a listen() backlog sized for it can
-    momentarily refuse a new connect. A real client (bin/ramstein's own
+    momentarily refuse a new connect. A real client (src/bin/ramstein's own
     request()) already tolerates this by treating it as "unreachable, try
     again"; this harness must not mistake a transient hiccup for a crash.
     """
@@ -247,7 +247,7 @@ print("== rapid reconnect ==")
 # loop — ramsteind spawns a handler thread per connection specifically to
 # avoid that class. A tight, zero-delay burst can still transiently exceed
 # the listen() backlog (normal AF_UNIX behavior, not that bug) — the bar is
-# a well-behaved RETRYING client (same as bin/ramstein's own request(), and
+# a well-behaved RETRYING client (same as src/bin/ramstein's own request(), and
 # this harness's ask()) always gets through quickly, and the daemon stays
 # fully responsive throughout and after. A PERMANENT failure (never
 # connects even after retries) is the real signal something's wrong.
@@ -321,7 +321,7 @@ env2 = dict(env)
 env2["RAMSTEIN_RUNTIME_DIR"] = RD2
 env2["RAMSTEIN_STATE_DIR"] = os.path.join(RD2, "state")
 proc2 = subprocess.Popen(
-    [sys.executable, os.path.join(HERE, "bin", "ramsteind"),
+    [sys.executable, os.path.join(HERE, "src", "bin", "ramsteind"),
      "--config", os.path.join(RD2, "config.json")],
     env=env2)
 SOCK2 = os.path.join(RD2, "control.sock")

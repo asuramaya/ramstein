@@ -1,38 +1,29 @@
 # Contributing to RAMstein
 
-Thanks for your interest! RAMstein is small and dependency-free on purpose —
+Thanks for your interest! RAMstein is small and dependency-free on purpose,
 keep changes simple and self-contained.
 
-## Project layout
-
-```
-bin/ramsteind                root daemon (pure Python stdlib, no deps)
-bin/ramstein                 verb CLI over the daemon's control socket
-bin/ramstein-healthcheck     one-line vitals verdict (status freshness + socket ping)
-bin/ramstein-update          GitHub release checker (--check; never installs unattended)
-systemd/system/              ramsteind.service + ramstein-update.timer/.service
-config/config.json           default config — the seed, never the master
-tests/smoke.sh               boots the real daemon, asserts shape + hostile input
-install.sh / uninstall.sh
-```
+Before changing much, read [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md). It
+has the repo map and explains the daemon/CLI/pill split, which is the
+decision most likely to bite you if you don't know about it.
 
 ## Dev setup
 
 No build step. The smoke test boots the real daemon against the real `/proc`
-in a temp runtime dir — no root, no install:
+in a temp runtime dir, no root, no install:
 
 ```bash
 make smoke                        # must end with "SMOKE OK"
-python3 -m py_compile bin/ramsteind bin/ramstein
+python3 -m py_compile src/bin/ramsteind src/bin/ramstein
 ```
 
 To poke a dev daemon by hand:
 
 ```bash
 export RAMSTEIN_RUNTIME_DIR=$(mktemp -d)
-python3 bin/ramsteind --config config/config.json &
-python3 bin/ramstein status
-python3 bin/ramstein-healthcheck
+python3 src/bin/ramsteind --config src/data/config/config.json &
+python3 src/bin/ramstein status
+python3 src/bin/ramstein-healthcheck
 ```
 
 ## Before opening a PR

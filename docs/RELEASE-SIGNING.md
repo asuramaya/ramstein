@@ -1,6 +1,6 @@
 # Release signing
 
-Status: **armed at HEAD, not yet shipped.** `release-signing/allowed_signers`
+Status: **armed at HEAD, not yet shipped.** `packaging/release-signing/allowed_signers`
 carries all 4 canonical FIDO2 pubkeys, same identity every other pill in the
 family uses. v0.9.0 was tagged and published before this file held any real
 keys, so its shipped copy is still empty and every client verifying that
@@ -54,7 +54,7 @@ ramstein namespaces="ramstein-release,pills-tag" sk-ssh-ed25519@openssh.com <b64
 make sync-signers
 ```
 
-Rebuilds `release-signing/allowed_signers` from all 4 canonical pubkeys in
+Rebuilds `packaging/release-signing/allowed_signers` from all 4 canonical pubkeys in
 `~/.ssh/asuramaya-master/*.pub` (the operator's own key home; override with
 `KEY_HOME=/path/to/asuramaya-master`). Always a full rebuild, never an
 append. Refuses to run unless it finds exactly 4 canonical keys.
@@ -97,7 +97,7 @@ gh release upload vX.Y.Z SHA256SUMS.sig
 
 ```sh
 sha256sum -c SHA256SUMS                                   # artifact matches the manifest
-ssh-keygen -Y verify -f release-signing/allowed_signers \
+ssh-keygen -Y verify -f packaging/release-signing/allowed_signers \
   -I ramstein -n ramstein-release -s SHA256SUMS.sig \
   < SHA256SUMS                                             # manifest carries the operator's hand
 ```
@@ -106,7 +106,7 @@ Exit 0 = valid signature from the pinned principal, over exactly those
 checksum bytes. Anything else is a hard failure. `ramstein-update` (a thin
 wrapper over the family's shared `sutra_update.py`) already implements
 this: `verify_dir()` checks whether the pinned anchor
-(`ANCHOR_CANDIDATES` in `bin/ramstein-update`) carries any real key line —
+(`ANCHOR_CANDIDATES` in `src/bin/ramstein-update`) carries any real key line —
 blank means unarmed, and verification degrades to sha256-only with a
 warning; once armed, a missing or non-verifying `SHA256SUMS.sig` is a hard
 refusal, no install.
@@ -117,7 +117,7 @@ refusal, no install.
 ramstein/allowed_signers` (`.deb`), `/usr/local/share/ramstein/
 allowed_signers` (`install.sh`'s source install), then the repo-relative
 path (a dev checkout run in place). Both `install.sh` and `make deb` ship
-a persistent copy of `release-signing/allowed_signers` to the installed
+a persistent copy of `packaging/release-signing/allowed_signers` to the installed
 prefix — whatever it says at build/install time, empty or armed.
 
 ## `.deb`
@@ -129,8 +129,8 @@ publishes both under one signature.
 
 ## Vendored commons (Wave B)
 
-`bin/sutra.py` + `bin/sutra_update.py` + `bin/sutra_xen.py` (+ their
-`.version`/`.commit` anchors) and `extension/ramstein@asuramaya/pill.js`
+`src/bin/sutra.py` + `src/bin/sutra_update.py` + `src/bin/sutra_xen.py` (+ their
+`.version`/`.commit` anchors) and `src/extension/ramstein@asuramaya/pill.js`
 are vendored, never hand-edited — `make check-sutra` is the drift guard
 (integrity always; freshness as a three-way LAG/DRIFT read against the
 canonical `~/code/REPOS/sutra` checkout when present), wired into `make

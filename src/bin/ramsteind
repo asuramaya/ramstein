@@ -21,17 +21,22 @@ import time
 
 import sutra
 
-# One version constant, VERSION at repo root; nothing here duplicates it as a
+# One version constant, packaging/VERSION; nothing here duplicates it as a
 # literal. A hardcoded copy drifted once already (0.6.1's footer stayed on
 # 0.6.0 after a daemon-touching release), so the daemon reads the same
 # installed-path candidates ramstein-update already searches for its own
 # version lookup, rather than a second source of truth someone has to
-# remember to bump by hand.
-_SRC_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# remember to bump by hand. This file lives at src/bin/ramsteind, two levels
+# under the repo root, so _SRC_DIR needs three dirname calls, not two — a
+# level got added when bin/ moved under src/ (REPO-STANDARD.md's tree pass);
+# getting this wrong silently swallows the repo-relative fallback instead of
+# raising, which is exactly why it is spelled out here instead of just
+# written and trusted.
+_SRC_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 VERSION_CANDIDATES = (
     "/usr/share/ramstein/VERSION",
     "/usr/local/share/ramstein/VERSION",
-    os.path.join(_SRC_DIR, "VERSION"),
+    os.path.join(_SRC_DIR, "packaging", "VERSION"),
 )
 
 

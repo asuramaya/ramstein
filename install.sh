@@ -36,7 +36,7 @@ fi
 # code — and the family rule is fail-closed: never install what can't be
 # verified. Until the first release ships (with checksums, coldspot-style),
 # this installer only runs from a checkout, next to the files it installs.
-[[ -f "$SRC/bin/ramsteind" ]] || {
+[[ -f "$SRC/src/bin/ramsteind" ]] || {
   echo "run install.sh from a RAMstein checkout:" >&2
   echo "  git clone https://github.com/asuramaya/RAMstein && cd RAMstein && sudo ./install.sh" >&2
   exit 1
@@ -54,41 +54,41 @@ if [[ -z "$OWNER_UID" ]]; then
   echo "note: no \$SUDO_UID (plain root shell?) — seeding owner_uid=1000;" \
        "edit $CONFDIR/config.json if your account differs."
 fi
-VERSION="$(tr -d '[:space:]' < "$SRC/VERSION" 2>/dev/null || echo unknown)"
+VERSION="$(tr -d '[:space:]' < "$SRC/packaging/VERSION" 2>/dev/null || echo unknown)"
 
 echo "== RAMstein ${VERSION} installer =="
 
 # 1. binaries + version marker
 echo "-- binaries -> $BINDIR"
 for b in ramstein ramsteind ramstein-healthcheck ramstein-update; do
-  install -m 0755 -o root -g root "$SRC/bin/$b" "$BINDIR/$b"
+  install -m 0755 -o root -g root "$SRC/src/bin/$b" "$BINDIR/$b"
 done
 # Wave B M4: the vendored sutra commons MUST ship alongside the binaries
 # that import them, in BOTH install layouts (this one and make deb) — a
 # vendored-but-not-shipped copy is a real bug class two sibling pills each
 # independently hit (crashes on `import sutra` only on a real machine,
-# since a dev checkout always has bin/sutra.py sitting right there). Ship
+# since a dev checkout always has src/bin/sutra.py sitting right there). Ship
 # the .version/.commit anchors too so a post-install check-sutra can still
 # verify integrity/freshness against what was actually installed.
 for f in sutra.py sutra.version sutra.commit \
          sutra_update.py sutra_update.version sutra_update.commit \
          sutra_xen.py sutra_xen.version sutra_xen.commit; do
-  [ -f "$SRC/bin/$f" ] && install -m 0644 -o root -g root "$SRC/bin/$f" "$BINDIR/$f"
+  [ -f "$SRC/src/bin/$f" ] && install -m 0644 -o root -g root "$SRC/src/bin/$f" "$BINDIR/$f"
 done
 install -d -m 0755 "$SHAREDIR"
-install -m 0644 "$SRC/VERSION" "$SHAREDIR/VERSION"
+install -m 0644 "$SRC/packaging/VERSION" "$SHAREDIR/VERSION"
 # Wave B M5: a persistent copy of the signing anchor at the installed
 # prefix — ramstein-update's anchor_candidates looks here (not the
 # repo-relative path, which only resolves for a dev checkout run in place).
 # Ships empty until the operator's first sync-signers ceremony; re-installing
 # after that point re-copies whatever the checkout's anchor says at the time.
-install -m 0644 "$SRC/release-signing/allowed_signers" "$SHAREDIR/allowed_signers"
+install -m 0644 "$SRC/packaging/release-signing/allowed_signers" "$SHAREDIR/allowed_signers"
 
 # 1b. man pages
 echo "-- man pages -> $PREFIX/share/man"
 install -d -m 0755 "$PREFIX/share/man/man1" "$PREFIX/share/man/man8"
-install -m 0644 "$SRC/man/ramstein.1"  "$PREFIX/share/man/man1/ramstein.1"
-install -m 0644 "$SRC/man/ramsteind.8" "$PREFIX/share/man/man8/ramsteind.8"
+install -m 0644 "$SRC/src/data/man/man1/ramstein.1"  "$PREFIX/share/man/man1/ramstein.1"
+install -m 0644 "$SRC/src/data/man/man8/ramsteind.8" "$PREFIX/share/man/man8/ramsteind.8"
 
 # 2. default config — the seed, never the master, and NEVER overwritten: a
 # reinstall keeps your tuned copy. owner_uid is stamped to the installing
@@ -96,10 +96,10 @@ install -m 0644 "$SRC/man/ramsteind.8" "$PREFIX/share/man/man8/ramsteind.8"
 if [[ ! -f "$CONFDIR/config.json" ]]; then
   echo "-- config -> $CONFDIR/config.json (owner_uid=$OWNER_UID)"
   install -d -m 0755 "$CONFDIR"
-  # shared with the .deb's postinst (scripts/seed-owner-uid.py) so the two
+  # shared with the .deb's postinst (packaging/seed-owner-uid.py) so the two
   # installers can't drift on what "seeding" means
-  python3 "$SRC/scripts/seed-owner-uid.py" \
-    "$SRC/config/config.json" "$CONFDIR/config.json" "$OWNER_UID"
+  python3 "$SRC/packaging/seed-owner-uid.py" \
+    "$SRC/src/data/config/config.json" "$CONFDIR/config.json" "$OWNER_UID"
   chown root:root "$CONFDIR/config.json"
   chmod 0644 "$CONFDIR/config.json"
 else
@@ -108,11 +108,11 @@ fi
 
 # 3. systemd: daemon (+ updater/autocalm units, installed but NOT enabled)
 echo "-- systemd units + enabling"
-install -m 0644 "$SRC/systemd/system/ramsteind.service"        "$UNITDIR/ramsteind.service"
-install -m 0644 "$SRC/systemd/system/ramstein-update.service"  "$UNITDIR/ramstein-update.service"
-install -m 0644 "$SRC/systemd/system/ramstein-update.timer"    "$UNITDIR/ramstein-update.timer"
-install -m 0644 "$SRC/systemd/system/ramstein-autocalm.service" "$UNITDIR/ramstein-autocalm.service"
-install -m 0644 "$SRC/systemd/system/ramstein-autocalm.timer"   "$UNITDIR/ramstein-autocalm.timer"
+install -m 0644 "$SRC/src/data/systemd/system/ramsteind.service"        "$UNITDIR/ramsteind.service"
+install -m 0644 "$SRC/src/data/systemd/system/ramstein-update.service"  "$UNITDIR/ramstein-update.service"
+install -m 0644 "$SRC/src/data/systemd/system/ramstein-update.timer"    "$UNITDIR/ramstein-update.timer"
+install -m 0644 "$SRC/src/data/systemd/system/ramstein-autocalm.service" "$UNITDIR/ramstein-autocalm.service"
+install -m 0644 "$SRC/src/data/systemd/system/ramstein-autocalm.timer"   "$UNITDIR/ramstein-autocalm.timer"
 systemctl daemon-reload
 systemctl enable ramsteind.service
 # `enable --now` on an ALREADY-active unit is a no-op start — it would leave

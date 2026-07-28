@@ -32,7 +32,10 @@ import sutra_update  # noqa: E402
 
 REPO_SLUG = "asuramaya/RAMstein"
 PILL = "ramstein"
-_SRC_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# This file lives at src/bin/ramstein-update, two levels under the repo
+# root, so reaching root needs three dirname calls, not two — a level got
+# added when bin/ moved under src/ (REPO-STANDARD.md's tree pass).
+_SRC_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # .deb installs share/ under /usr; install.sh's source install defaults
 # PREFIX to /usr/local — both are real, so both are checked before falling
 # back to the repo-relative path for a dev checkout that's never been
@@ -40,12 +43,12 @@ _SRC_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VERSION_CANDIDATES = (
     "/usr/share/ramstein/VERSION",
     "/usr/local/share/ramstein/VERSION",
-    os.path.join(_SRC_DIR, "VERSION"),
+    os.path.join(_SRC_DIR, "packaging", "VERSION"),
 )
 ANCHOR_CANDIDATES = (
     "/usr/share/ramstein/allowed_signers",
     "/usr/local/share/ramstein/allowed_signers",
-    os.path.join(_SRC_DIR, "release-signing", "allowed_signers"),
+    os.path.join(_SRC_DIR, "packaging", "release-signing", "allowed_signers"),
 )
 
 

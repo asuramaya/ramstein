@@ -1,6 +1,7 @@
 name: signing-sync
-# Enforces RELEASE.md's sync-signers invariant: release-signing/allowed_signers
-# must always be either (a) empty — the pre-arming shipping state,
+# Enforces RELEASE.md's sync-signers invariant:
+# packaging/release-signing/allowed_signers must always be either (a) empty
+# — the pre-arming shipping state,
 # verification inert — or (b) exactly 4 well-formed lines. "Well-formed or
 # empty, never partial" is a CHECKED invariant here, not a convention.
 #
@@ -33,7 +34,7 @@ jobs:
           import re
           import sys
 
-          anchor = open("release-signing/allowed_signers").read()
+          anchor = open("packaging/release-signing/allowed_signers").read()
           lines = [ln for ln in anchor.split("\n")
                    if ln.strip() and not ln.strip().startswith("#")]
 

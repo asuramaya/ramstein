@@ -1,7 +1,7 @@
 # ramstein — the memory demon
-.PHONY: smoke attack install uninstall pill deb check-sutra sync-signers
+.PHONY: smoke attack check check-repo check-sutra install uninstall pill deb sync-signers
 
-VERSION := $(shell tr -d '[:space:]' < VERSION)
+VERSION := $(shell tr -d '[:space:]' < packaging/VERSION)
 DEBROOT := build/deb/ramstein_$(VERSION)_all
 DEBFILE := build/deb/ramstein_$(VERSION)_all.deb
 
@@ -21,8 +21,8 @@ smoke: check-sutra
 # with no .commit at all (an older vendor, from before the anchor existed)
 # reports freshness unknown rather than failing.
 check-sutra:
-	@for f in bin/sutra.py bin/sutra_update.py bin/sutra_xen.py \
-	          extension/ramstein@asuramaya/pill.js; do \
+	@for f in src/bin/sutra.py src/bin/sutra_update.py src/bin/sutra_xen.py \
+	          src/extension/ramstein@asuramaya/pill.js; do \
 	    vf="$${f%.py}"; vf="$${vf%.js}.version"; \
 	    cf="$${f%.py}"; cf="$${cf%.js}.commit"; \
 	    ver=$$(cut -d' ' -f1 "$$vf" 2>/dev/null); \
@@ -30,7 +30,7 @@ check-sutra:
 	    actual=$$(sha256sum "$$f" | cut -d' ' -f1); \
 	    if [ "$$sha" != "$$actual" ]; then \
 	        echo "check-sutra FAIL: $$f doesn't match $$vf" \
-	             "(hand-edited? re-vendor: bash ~/code/REPOS/sutra/vendor.sh bin extension/ramstein@asuramaya)"; \
+	             "(hand-edited? re-vendor: bash ~/code/REPOS/sutra/vendor.sh src/bin src/extension/ramstein@asuramaya)"; \
 	        exit 1; \
 	    fi; \
 	    echo "check-sutra: integrity ok ($$f, $$ver, sha256 $$sha)"; \
@@ -63,11 +63,22 @@ check-sutra:
 attack:
 	python3 tests/attack_socket.py
 
-# rebuild release-signing/allowed_signers from the canonical keys (see
-# docs/RELEASE-SIGNING.md — do NOT run casually; arm ONLY in the same act as
-# cutting the first signed release, per the sequencing rule there)
+# static checks, CI-equivalent. Family grammar: smoke attack check deb.
+check: check-sutra
+	python3 -m py_compile src/bin/ramsteind src/bin/ramstein src/bin/ramstein-healthcheck \
+	    src/bin/ramstein-update src/bin/sutra.py src/bin/sutra_update.py src/bin/sutra_xen.py
+	node --check "src/extension/ramstein@asuramaya/extension.js" "src/extension/ramstein@asuramaya/pill.js"
+	bash -n install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh
+	shellcheck install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh
+	groff -man -Tutf8 -ww src/data/man/man1/ramstein.1 > /dev/null
+	groff -t -man -Tutf8 -ww src/data/man/man8/ramsteind.8 > /dev/null
+	@echo "all static checks passed"
+
+# rebuild packaging/release-signing/allowed_signers from the canonical keys
+# (see docs/RELEASE-SIGNING.md — do NOT run casually; arm ONLY in the same
+# act as cutting the first signed release, per the sequencing rule there)
 sync-signers:
-	bash tools/sync-signers.sh
+	bash packaging/release-signing/sync-signers.sh
 
 # install.sh is root-only and never self-elevates (see its header comment for
 # why) — it fails with a clear message if you forget sudo, rather than quietly
@@ -89,7 +100,7 @@ uninstall:
 # the way X11's Alt+F2 r has one.
 pill:
 	mkdir -p $(HOME)/.local/share/gnome-shell/extensions
-	cp -r extension/ramstein@asuramaya $(HOME)/.local/share/gnome-shell/extensions/
+	cp -r src/extension/ramstein@asuramaya $(HOME)/.local/share/gnome-shell/extensions/
 	@echo "pill installed — now: gnome-extensions enable ramstein@asuramaya"
 	@echo "code changes after that need a log out/in to actually take effect"
 	@echo "(disable+enable only re-fires lifecycle hooks, doesn't re-import the JS)"
@@ -108,20 +119,20 @@ deb:
 	install -d -m 0755 $(DEBROOT)/usr/share/man/man8
 	install -d -m 0755 $(DEBROOT)/etc/ramstein
 	install -d -m 0755 $(DEBROOT)/lib/systemd/system
-	install -m 0755 bin/ramsteind bin/ramstein bin/ramstein-healthcheck bin/ramstein-update $(DEBROOT)/usr/bin/
-	install -m 0644 bin/sutra.py bin/sutra.version bin/sutra.commit \
-	    bin/sutra_update.py bin/sutra_update.version bin/sutra_update.commit \
-	    bin/sutra_xen.py bin/sutra_xen.version bin/sutra_xen.commit \
+	install -m 0755 src/bin/ramsteind src/bin/ramstein src/bin/ramstein-healthcheck src/bin/ramstein-update $(DEBROOT)/usr/bin/
+	install -m 0644 src/bin/sutra.py src/bin/sutra.version src/bin/sutra.commit \
+	    src/bin/sutra_update.py src/bin/sutra_update.version src/bin/sutra_update.commit \
+	    src/bin/sutra_xen.py src/bin/sutra_xen.version src/bin/sutra_xen.commit \
 	    $(DEBROOT)/usr/bin/
-	install -m 0644 VERSION $(DEBROOT)/usr/share/ramstein/VERSION
-	install -m 0644 release-signing/allowed_signers $(DEBROOT)/usr/share/ramstein/allowed_signers
-	install -m 0755 scripts/seed-owner-uid.py $(DEBROOT)/usr/share/ramstein/scripts/
-	install -m 0644 man/ramstein.1 $(DEBROOT)/usr/share/man/man1/ramstein.1
-	install -m 0644 man/ramsteind.8 $(DEBROOT)/usr/share/man/man8/ramsteind.8
-	install -m 0644 config/config.json $(DEBROOT)/etc/ramstein/config.json
-	install -m 0644 systemd/system/ramsteind.service systemd/system/ramstein-update.service \
-	    systemd/system/ramstein-update.timer systemd/system/ramstein-autocalm.service \
-	    systemd/system/ramstein-autocalm.timer $(DEBROOT)/lib/systemd/system/
+	install -m 0644 packaging/VERSION $(DEBROOT)/usr/share/ramstein/VERSION
+	install -m 0644 packaging/release-signing/allowed_signers $(DEBROOT)/usr/share/ramstein/allowed_signers
+	install -m 0755 packaging/seed-owner-uid.py $(DEBROOT)/usr/share/ramstein/scripts/
+	install -m 0644 src/data/man/man1/ramstein.1 $(DEBROOT)/usr/share/man/man1/ramstein.1
+	install -m 0644 src/data/man/man8/ramsteind.8 $(DEBROOT)/usr/share/man/man8/ramsteind.8
+	install -m 0644 src/data/config/config.json $(DEBROOT)/etc/ramstein/config.json
+	install -m 0644 src/data/systemd/system/ramsteind.service src/data/systemd/system/ramstein-update.service \
+	    src/data/systemd/system/ramstein-update.timer src/data/systemd/system/ramstein-autocalm.service \
+	    src/data/systemd/system/ramstein-autocalm.timer $(DEBROOT)/lib/systemd/system/
 	install -m 0755 packaging/deb/postinst $(DEBROOT)/DEBIAN/postinst
 	install -m 0755 packaging/deb/prerm $(DEBROOT)/DEBIAN/prerm
 	install -m 0755 packaging/deb/postrm $(DEBROOT)/DEBIAN/postrm
@@ -144,3 +155,57 @@ deb:
 	( cd build/deb && sha256sum "$$(basename $(DEBFILE))" > SHA256SUMS )
 	@echo "-- built $(DEBFILE)"
 	@command -v lintian >/dev/null 2>&1 && lintian $(DEBFILE) || echo "-- lintian not installed, skipping"
+
+# The family's structural gate (REPO-STANDARD.md §5), mechanical only: it
+# cannot judge whether a document is any good, only that the shape it's
+# supposed to have is actually there and nothing contradicts it. Copied from
+# coldspot, the family's reference implementation of this target, and
+# adapted to RAMstein's own file list.
+check-repo:
+	@fail=0; \
+	for f in README.md LICENSE Makefile install.sh uninstall.sh .gitignore .gitattributes \
+	         docs/USAGE.md docs/ARCHITECTURE.md docs/RELEASING.md; do \
+	    if [ ! -e "$$f" ]; then echo "check-repo FAIL: missing $$f"; fail=1; fi; \
+	done; \
+	if [ ! -e src/data/man/man1/ramstein.1 ] && ! grep -q 'man1/ramstein.1' docs/ARCHITECTURE.md 2>/dev/null; then \
+	    echo "check-repo FAIL: no src/data/man/man1/ramstein.1 and no exemption for it"; fail=1; \
+	fi; \
+	rows=$$(find . -maxdepth 1 -mindepth 1 ! -name .git ! -name build | wc -l); \
+	if [ "$$rows" -gt 12 ]; then \
+	    echo "check-repo FAIL: root has $$rows rows, standard caps it at 12"; fail=1; \
+	else \
+	    echo "check-repo: root row count ok ($$rows)"; \
+	fi; \
+	if ! grep -q '^## Map' README.md 2>/dev/null; then \
+	    echo "check-repo FAIL: README.md has no navigation block (## Map)"; fail=1; \
+	fi; \
+	for h in Troubleshooting "Repo Layout"; do \
+	    if grep -q "^## $$h" README.md 2>/dev/null; then \
+	        echo "check-repo FAIL: README.md carries a post-install heading ('$$h') that belongs in docs/USAGE.md"; fail=1; \
+	    fi; \
+	done; \
+	if [ ! -f packaging/VERSION ]; then \
+	    echo "check-repo FAIL: no packaging/VERSION"; fail=1; \
+	fi; \
+	if grep -rn "VERSION[[:space:]]*=[[:space:]]*['\"][0-9]" \
+	    src/bin/ramsteind src/bin/ramstein src/bin/ramstein-healthcheck src/bin/ramstein-update \
+	    install.sh uninstall.sh packaging/release-signing/sync-signers.sh packaging/seed-owner-uid.py \
+	    "src/extension/ramstein@asuramaya/extension.js" 2>/dev/null; then \
+	    echo "check-repo FAIL: a literal version string exists outside packaging/VERSION"; fail=1; \
+	fi; \
+	if grep -v '^[[:space:]]*#' .github/workflows/release.yml 2>/dev/null | grep -q -- '--generate-notes'; then \
+	    echo "check-repo FAIL: release.yml still uses --generate-notes, not --notes-file"; fail=1; \
+	fi; \
+	stray=$$(find docs -name '*.md' -not -path '*/.*' | while read -r f; do git ls-files --error-unmatch "$$f" >/dev/null 2>&1 || echo "$$f"; done); \
+	if [ -n "$$stray" ]; then \
+	    echo "check-repo FAIL: untracked *.md under docs/: $$stray"; fail=1; \
+	fi; \
+	spec=$$(find . -name '*-SPEC.md' -not -path './.git/*'); \
+	if [ -n "$$spec" ]; then \
+	    echo "check-repo FAIL: *-SPEC.md left in the repo (specs belong in the seat's office): $$spec"; fail=1; \
+	fi; \
+	if [ -f docs/ARCHITECTURE.md ] && grep -q '^## Standard exemptions' docs/ARCHITECTURE.md; then \
+	    bad=$$(awk '/^## Standard exemptions/{f=1;next} f && /^\|/ && !/^\| *Item *\|/ && !/^\|---/{ n=gsub(/\|/,"|"); if (n<3) print }' docs/ARCHITECTURE.md); \
+	    if [ -n "$$bad" ]; then echo "check-repo FAIL: exemptions table has a row missing a column"; fail=1; fi; \
+	fi; \
+	if [ "$$fail" -eq 0 ]; then echo "check-repo: all mechanical checks passed"; else exit 1; fi

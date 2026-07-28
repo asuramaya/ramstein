@@ -17,7 +17,7 @@ EOF
 
 # M3 fixtures: a fake `systemctl` (always reports oomd active, for the
 # coexistence check + advise rule 5) and a fake cgroup root (RAMSTEIN_
-# CGROUP_ROOT is only ever honored unprivileged — see bin/ramsteind) so
+# CGROUP_ROOT is only ever honored unprivileged — see src/bin/ramsteind) so
 # `calm --high` has somewhere writable to land instead of the real,
 # unwritable /sys/fs/cgroup.
 mkdir -p "$RD/fakebin" "$RD/fake_cgroup"
@@ -30,7 +30,7 @@ chmod +x "$RD/fakebin/systemctl"
 
 PATH="$RD/fakebin:$PATH" RAMSTEIN_RUNTIME_DIR=$RD RAMSTEIN_STATE_DIR=$RD/state \
     RAMSTEIN_CGROUP_ROOT=$RD/fake_cgroup \
-    python3 bin/ramsteind --config "$RD/config.json" &
+    python3 src/bin/ramsteind --config "$RD/config.json" &
 DPID=$!
 
 for _ in $(seq 1 40); do
@@ -89,9 +89,9 @@ assert ask(b'{"cmd":"ping"}\n')["ok"] is True, "daemon died after abuse"
 print("socket ok: ping, status, hostile input survived")
 PY
 
-RAMSTEIN_RUNTIME_DIR=$RD python3 bin/ramstein status | grep -q "available" \
+RAMSTEIN_RUNTIME_DIR=$RD python3 src/bin/ramstein status | grep -q "available" \
     || { echo "SMOKE FAIL: CLI status empty"; exit 1; }
-RAMSTEIN_RUNTIME_DIR=$RD python3 bin/ramstein status --json | python3 -c \
+RAMSTEIN_RUNTIME_DIR=$RD python3 src/bin/ramstein status --json | python3 -c \
     "import json,sys; json.load(sys.stdin)" \
     || { echo "SMOKE FAIL: CLI json invalid"; exit 1; }
 
@@ -261,9 +261,9 @@ print(f"zombies ok: pid {zpid} cleared after reap")
 PY
 
 # M2 CLI verbs end-to-end (human + json output)
-RAMSTEIN_RUNTIME_DIR=$RD python3 bin/ramstein top | grep -q "PROC" \
+RAMSTEIN_RUNTIME_DIR=$RD python3 src/bin/ramstein top | grep -q "PROC" \
     || { echo "SMOKE FAIL: CLI top empty"; exit 1; }
-RAMSTEIN_RUNTIME_DIR=$RD python3 bin/ramstein blame --since 1m --json | python3 -c \
+RAMSTEIN_RUNTIME_DIR=$RD python3 src/bin/ramstein blame --since 1m --json | python3 -c \
     "import json,sys; json.load(sys.stdin)" \
     || { echo "SMOKE FAIL: CLI blame json invalid"; exit 1; }
 
@@ -275,13 +275,13 @@ import sys
 import time
 from importlib.machinery import SourceFileLoader
 
-# bin/ramsteind has no .py suffix, so spec_from_file_location can't infer a
+# src/bin/ramsteind has no .py suffix, so spec_from_file_location can't infer a
 # loader on its own — hand it one explicitly. It now does `import sutra`,
-# a sibling module in bin/ — put that dir on sys.path so it resolves the
-# same way it does when the daemon is run normally (python3 bin/ramsteind
+# a sibling module in src/bin/ — put that dir on sys.path so it resolves the
+# same way it does when the daemon is run normally (python3 src/bin/ramsteind
 # puts the script's own directory on sys.path[0] automatically).
-sys.path.insert(0, "bin")
-loader = SourceFileLoader("ramsteind_perf", "bin/ramsteind")
+sys.path.insert(0, "src/bin")
+loader = SourceFileLoader("ramsteind_perf", "src/bin/ramsteind")
 spec = importlib.util.spec_from_loader(loader.name, loader)
 mod = importlib.util.module_from_spec(spec)
 loader.exec_module(mod)
@@ -475,7 +475,7 @@ PY
 python3 -c "import time; time.sleep(30)" &
 KFIXPID=$!
 sleep 1.5
-if RAMSTEIN_RUNTIME_DIR=$RD python3 bin/ramstein calm "$KFIXPID" --kill \
+if RAMSTEIN_RUNTIME_DIR=$RD python3 src/bin/ramstein calm "$KFIXPID" --kill \
         < /dev/null > "$RD/kill_out" 2>&1; then
     echo "SMOKE FAIL: --kill succeeded without a TTY"; cat "$RD/kill_out"; exit 1
 fi
@@ -487,9 +487,9 @@ echo "kill gate ok: CLI refused --kill with no TTY, fixture untouched"
 kill "$KFIXPID" 2>/dev/null || true
 
 # calm/oom/advise CLI verbs end-to-end (human + json output)
-RAMSTEIN_RUNTIME_DIR=$RD python3 bin/ramstein oom | grep -q "who dies first" \
+RAMSTEIN_RUNTIME_DIR=$RD python3 src/bin/ramstein oom | grep -q "who dies first" \
     || { echo "SMOKE FAIL: CLI oom empty"; exit 1; }
-RAMSTEIN_RUNTIME_DIR=$RD python3 bin/ramstein advise --json | python3 -c \
+RAMSTEIN_RUNTIME_DIR=$RD python3 src/bin/ramstein advise --json | python3 -c \
     "import json,sys; json.load(sys.stdin)" \
     || { echo "SMOKE FAIL: CLI advise json invalid"; exit 1; }
 
@@ -531,8 +531,8 @@ import importlib.util
 # same reason the real daemon/smoke.sh always set this before invocation.
 os.environ["RAMSTEIN_STATE_DIR"] = os.path.join(sys.argv[1], "swapstorm_state")
 
-sys.path.insert(0, "bin")
-loader = SourceFileLoader("ramsteind_swapstorm", "bin/ramsteind")
+sys.path.insert(0, "src/bin")
+loader = SourceFileLoader("ramsteind_swapstorm", "src/bin/ramsteind")
 spec = importlib.util.spec_from_loader(loader.name, loader)
 mod = importlib.util.module_from_spec(spec)
 loader.exec_module(mod)
@@ -645,8 +645,8 @@ rd = sys.argv[1]
 os.environ["RAMSTEIN_STATE_DIR"] = os.path.join(rd, "autocalm_state")
 os.environ["RAMSTEIN_CGROUP_ROOT"] = os.path.join(rd, "autocalm_fake_cgroup")
 
-sys.path.insert(0, "bin")
-loader = SourceFileLoader("ramsteind_autocalm", "bin/ramsteind")
+sys.path.insert(0, "src/bin")
+loader = SourceFileLoader("ramsteind_autocalm", "src/bin/ramsteind")
 spec = importlib.util.spec_from_loader(loader.name, loader)
 mod = importlib.util.module_from_spec(spec)
 loader.exec_module(mod)
@@ -769,7 +769,7 @@ PY
 # (smoke runs unprivileged, and there's no existing precedent for exercising
 # install.sh as root in this suite) — but a real bug two sibling pills each
 # independently hit: vendor sutra, forget to ship it, `import sutra` only
-# fails on a real fresh machine, never in a dev checkout where bin/sutra.py
+# fails on a real fresh machine, never in a dev checkout where src/bin/sutra.py
 # already sits right next to the binary being run.
 for f in sutra.py sutra_update.py sutra_xen.py; do
     grep -q "$f" install.sh \
@@ -781,7 +781,7 @@ echo "install.sh ok: explicitly ships sutra.py + sutra_update.py + sutra_xen.py"
 # Builds and inspects only — never installed.
 make deb > /tmp/ramstein-deb-build.log 2>&1 \
     || { echo "SMOKE FAIL: make deb failed"; cat /tmp/ramstein-deb-build.log; exit 1; }
-DEBFILE="build/deb/ramstein_$(tr -d '[:space:]' < VERSION)_all.deb"
+DEBFILE="build/deb/ramstein_$(tr -d '[:space:]' < packaging/VERSION)_all.deb"
 [ -f "$DEBFILE" ] || { echo "SMOKE FAIL: $DEBFILE not built"; exit 1; }
 CONTENTS=$(dpkg-deb --contents "$DEBFILE")
 for want in usr/bin/ramsteind usr/bin/ramstein usr/bin/ramstein-healthcheck \

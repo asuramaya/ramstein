@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 # ramstein postinst — shares the config-seed logic with install.sh via
-# /usr/share/ramstein/scripts/seed-owner-uid.py (packaged from scripts/ in
+# /usr/share/ramstein/scripts/seed-owner-uid.py (packaged from packaging/ in
 # the source tree) so the two installers can't drift apart.
 set -e
 

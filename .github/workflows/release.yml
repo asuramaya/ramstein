@@ -16,7 +16,7 @@ jobs:
       - name: Verify tag matches VERSION, and ramsteind actually resolves it
         run: |
           tag="${GITHUB_REF_NAME#v}"
-          file="$(tr -d '[:space:]' < VERSION)"
+          file="$(tr -d '[:space:]' < packaging/VERSION)"
           echo "tag=${tag} VERSION=${file}"
           if [ "${tag}" != "${file}" ]; then
             echo "::error::tag ${tag} does not match VERSION ${file}"
@@ -26,7 +26,7 @@ jobs:
           # docs/ARCHITECTURE.md): it reads the same VERSION file this
           # checkout ships. Prove that live, from a fresh checkout, rather
           # than grepping for a constant that no longer exists.
-          daemon="$(cd bin && python3 -c '
+          daemon="$(cd src/bin && python3 -c '
           import importlib.util, sys
           from importlib.machinery import SourceFileLoader
           sys.path.insert(0, ".")
@@ -36,9 +36,9 @@ jobs:
           loader.exec_module(mod)
           print(mod.VERSION)
           ')"
-          echo "bin/ramsteind resolves VERSION to: ${daemon}"
+          echo "src/bin/ramsteind resolves VERSION to: ${daemon}"
           if [ "${file}" != "${daemon}" ]; then
-            echo "::error::VERSION ${file} does not match what bin/ramsteind actually resolves (${daemon})"
+            echo "::error::VERSION ${file} does not match what src/bin/ramsteind actually resolves (${daemon})"
             exit 1
           fi
 
@@ -51,7 +51,7 @@ jobs:
           # --prefix=ramstein/: every tarball extracts to exactly one named
           # directory, never bare into the caller's CWD.
           git archive --format=tar.gz --prefix=ramstein/ -o ramstein.tar.gz HEAD
-          debfile="build/deb/ramstein_$(tr -d '[:space:]' < VERSION)_all.deb"
+          debfile="build/deb/ramstein_$(tr -d '[:space:]' < packaging/VERSION)_all.deb"
           cp "${debfile}" .
           cp build/deb/SHA256SUMS .
           sha256sum ramstein.tar.gz >> SHA256SUMS
@@ -64,31 +64,31 @@ jobs:
         run: |
           # Format-agnostic: grabs the section starting at the first `## `
           # heading whose text contains the tag's version, up to (not
-          # including) the next `## ` heading. Notes come from CHANGELOG.md,
-          # never --generate-notes: a human wrote that entry, and a commit
-          # dump is not release notes. A missing section refuses the
-          # release outright, so a forgotten CHANGELOG entry is loud rather
-          # than silent (see docs/RELEASING.md).
+          # including) the next `## ` heading. Notes come from
+          # docs/CHANGELOG.md, never --generate-notes: a human wrote that
+          # entry, and a commit dump is not release notes. A missing section
+          # refuses the release outright, so a forgotten CHANGELOG entry is
+          # loud rather than silent (see docs/RELEASING.md).
           ver="${GITHUB_REF_NAME#v}"
-          awk -v v="$ver" 'BEGIN{f=0} /^## / { if(f) exit; if(index($0,v)){f=1;print;next} } f{print}' CHANGELOG.md > RELEASE_NOTES.md
+          awk -v v="$ver" 'BEGIN{f=0} /^## / { if(f) exit; if(index($0,v)){f=1;print;next} } f{print}' docs/CHANGELOG.md > RELEASE_NOTES.md
           echo "--- extracted release notes ($(wc -l < RELEASE_NOTES.md) lines) ---"
           cat RELEASE_NOTES.md
           if [ ! -s RELEASE_NOTES.md ]; then
-            echo "::error::no CHANGELOG.md section for ${ver}; add one before tagging"
+            echo "::error::no docs/CHANGELOG.md section for ${ver}; add one before tagging"
             exit 1
           fi
 
       # No signing step here, deliberately: ramstein-update and (once RAMstein
       # gains a verified-release bootstrap) install.sh trust an SSH signature
       # (ssh-keygen -Y verify) against a key pinned INSIDE the client
-      # (release-signing/allowed_signers, docs/RELEASE-SIGNING.md), precisely
-      # so this CI (or the GitHub account behind it) is not the trust root. A
-      # secret/hardware key living in Actions secrets would let anyone who
-      # compromises the account or the workflow sign whatever they just
-      # pushed — that defeats the entire scheme. The release ships UNSIGNED
-      # from here; the operator signs the published SHA256SUMS bytes BY HAND,
-      # offline, with the physical FIDO2 key, and runs `gh release upload
-      # <tag> SHA256SUMS.sig --clobber` after.
+      # (packaging/release-signing/allowed_signers, docs/RELEASE-SIGNING.md),
+      # precisely so this CI (or the GitHub account behind it) is not the
+      # trust root. A secret/hardware key living in Actions secrets would let
+      # anyone who compromises the account or the workflow sign whatever they
+      # just pushed — that defeats the entire scheme. The release ships
+      # UNSIGNED from here; the operator signs the published SHA256SUMS bytes
+      # BY HAND, offline, with the physical FIDO2 key, and runs `gh release
+      # upload <tag> SHA256SUMS.sig --clobber` after.
 
       - name: Create or update GitHub release
         env:
@@ -96,7 +96,7 @@ jobs:
         run: |
           # Unsigned assets only. Verifiers fail closed until the operator
           # uploads a detached signature out of band (see comment above).
-          debfile="build/deb/ramstein_$(tr -d '[:space:]' < VERSION)_all.deb"
+          debfile="build/deb/ramstein_$(tr -d '[:space:]' < packaging/VERSION)_all.deb"
           assets=("$(basename "${debfile}")" ramstein.tar.gz SHA256SUMS)
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber

@@ -37,6 +37,17 @@ ramstein calm firefox --nice 10
 See [docs/USAGE.md](docs/USAGE.md) for the full verb reference, or
 `man ramstein`.
 
+## Map
+
+| | |
+|---|---|
+| Use it | [docs/USAGE.md](docs/USAGE.md), or `man ramstein` / `man 8 ramsteind` |
+| Change it | [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) |
+| Understand how it's built | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| Cut a release | [docs/RELEASING.md](docs/RELEASING.md) |
+| See what changed | [docs/CHANGELOG.md](docs/CHANGELOG.md) |
+| Report a vulnerability | [.github/SECURITY.md](.github/SECURITY.md) |
+
 ## Install
 
 Two deliberate steps, split by privilege (family doctrine: root installs the
