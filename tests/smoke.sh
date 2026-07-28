@@ -284,6 +284,21 @@ spec = importlib.util.spec_from_loader(loader.name, loader)
 mod = importlib.util.module_from_spec(spec)
 loader.exec_module(mod)
 
+# First-class assertion, not just an inferred side effect of the daemon not
+# crashing: the sutra bootstrap must resolve to the REAL vendored copy at
+# src/share/ramstein/lib/sutra.py, not silently succeed via some other
+# sutra.py already importable on this machine. The initial src/data/lib/
+# staging mistake (caught only by actually running the daemon, never by
+# reading the preamble) would have passed every other check in this file
+# right up until a real install with nothing else on sys.path.
+import os as _os
+_expected = _os.path.realpath("src/share/ramstein/lib/sutra.py")
+_actual = _os.path.realpath(mod.sutra.__file__)
+assert _actual == _expected, (
+    f"sutra bootstrap resolved to {_actual}, expected {_expected} "
+    f"(BOOTSTRAP.md's fixed path arithmetic, not wherever it happened to find one)")
+del _os, _expected, _actual
+
 t0 = time.time()
 n = len(list(mod._read_procs()))
 dt = time.time() - t0
