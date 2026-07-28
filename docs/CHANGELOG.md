@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.10.0 — RS-STD-1: the family repo standard
+Structural only, no daemon/CLI/pill behavior changed. Adopted the family's REPO-STANDARD.md
+in three passes (alfred's order, mail #1581), landing the same twelve-row root kast and
+coldspot already reached.
+
+- **Pass 1 (docs).** Wrote docs/ARCHITECTURE.md, docs/USAGE.md, docs/RELEASING.md. PLAN.md
+  and the four tracked *-SPEC.md files graduated into ARCHITECTURE.md (the durable design
+  half) and moved out to the seat's own office (the order half, now dead prose); the
+  untracked V2-SPEC.md moved the same way. Fixed docs/RELEASE-SIGNING.md's stale "unarmed"
+  claim: the anchor has carried all 4 canonical keys since commit 89acdc2, and this release
+  is the first to actually ship it. README split along the standard's R1 rule: the old
+  post-install verb table and milestone-status paragraph are gone, replaced by a "why not
+  just top or earlyoom" pitch a stranger can use before installing.
+- **Pass 2 (truth).** Collapsed the one real duplicate version constant: ramsteind's own
+  hardcoded VERSION literal now reads the same installed-path VERSION file ramstein-update
+  already searches, closing the drift class that left the 0.6.1 pill footer a release
+  behind. release.yml's tag check now proves the daemon actually resolves the tagged
+  version (a live SourceFileLoader import) instead of grepping a literal that no longer
+  exists. Dropped release.yml's --generate-notes fallback for a thin CHANGELOG extraction;
+  a missing section now refuses the release outright.
+- **Pass 3 (tree).** bin/, extension/, systemd/, config/ moved under src/ (systemd and
+  config into src/data/); man/ into src/data/man/{man1,man8}/; release-signing/,
+  sync-signers.sh, seed-owner-uid.py, packages.txt, VERSION under packaging/; CHANGELOG.md
+  into docs/; the three community files into .github/. No installed path changed, verified
+  via byte-identical deb contents and two live install.sh install-over-installed runs
+  against a real daemon. Added make check and make check-repo, the family's structural
+  gate, copied from coldspot. Added .gitattributes: RAMstein had none, so CI/dev files were
+  shipping inside every release tarball; a real git archive now confirms they don't.
+
+Found while trying to complete the deb-layout half of the install-over-installed test:
+every pill vendors sutra.py into the same shared bin directory under the same name, so any
+two pills installed together collide (a .deb install refuses outright; an install.sh
+install would silently overwrite). Confirmed universal across the family and worse than it
+looked from inside this repo alone: installed copies on a real machine can already be
+running different sutra commits with no anchor to detect it (alfred, decision 3e44bd95).
+Not this release's fix: sutra publishes a shared install convention first, then every pill
+adopts it in a follow-up pass alfred is sequencing.
+
 ## 0.9.0 — Wave B: the family backbone, and the first release pipeline
 RAMstein was the last daemon pill still on the 0.1.0-era sutra vendor
 (alfred's order, mail #1232). Six milestones, closing the gap:
