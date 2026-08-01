@@ -59,13 +59,14 @@ Rebuilds `packaging/release-signing/allowed_signers` from all 4 canonical pubkey
 `KEY_HOME=/path/to/asuramaya-master`). Always a full rebuild, never an
 append. Refuses to run unless it finds exactly 4 canonical keys.
 
-Unlike kast/phanspeed, there is no embedded `RELEASE_ALLOWED_SIGNERS` twin
-inside `install.sh` to keep in sync: RAMstein's `install.sh` has no
-curl-pipe bootstrap at all — it deliberately only ever runs from a local
-checkout (see its own header comment), so there is nothing to verify
-before a vendored `sutra_update.py` already exists to delegate to. Should
-RAMstein ever grow a verified-release bootstrap, that convergence work
-would land then, not speculatively here.
+Also rebuilds `install.sh`'s embedded `RELEASE_ALLOWED_SIGNERS` twin,
+byte-for-byte, from the same in-memory content — added alongside v0.11.1's
+curl-pipe-bash bootstrap (DM #2913): `curl -fsSL .../install.sh | sudo bash`
+fetches only that one file over the network, so the trust anchor has to
+travel embedded in the script itself rather than be read from the sibling
+`allowed_signers` file it can't see yet. CI's `signing-sync` check fails the
+build if the two ever drift, so never hand-edit either — always
+`make sync-signers`.
 
 **Sequencing rule (do not skip):** `make sync-signers` populates the
 anchor. Run it ONLY in the same act as cutting a signed release: arming it

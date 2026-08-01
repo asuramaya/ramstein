@@ -20,6 +20,53 @@ SHAREDIR="$PREFIX/share/ramstein"
 UNITDIR="/etc/systemd/system"
 CONFDIR="/etc/ramstein"
 
+# principal = WHO (RAMstein's stable identity); namespace = WHAT-FOR (what
+# this signature authorizes). Never conflate the two — see ~/code/REPOS/RELEASE.md.
+REPO_SLUG="asuramaya/RAMstein"
+SIGN_PRINCIPAL="ramstein"
+SIGN_NAMESPACE="ramstein-release"
+
+# Trust anchor for the curl-pipe-bash bootstrap below, EMBEDDED directly:
+# `curl -fsSL .../install.sh | sudo bash` fetches ONLY this file — not the
+# sibling release-signing/ directory — so the anchor has to travel embedded
+# in whichever copy of this script is currently executing, not be read from
+# a file that hasn't been fetched yet (that would mean trusting the very
+# release being verified). Kept in sync with
+# packaging/release-signing/allowed_signers by `make sync-signers` — never
+# hand-edit this. Single-quoted deliberately: the value can span multiple
+# lines (one per pinned key) and must never be shell-interpolated.
+RELEASE_ALLOWED_SIGNERS='ramstein namespaces="ramstein-release,pills-tag" sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIAvqlv848gk9uzM40ZsFZTQeXsQKpxYaK4Fi8ubNl1H7AAAAFnNzaDphc3VyYW1heWEtbWFzdGVyLTE= ra-master-1
+ramstein namespaces="ramstein-release,pills-tag" sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIFJBKAsk6b4YR2UH/UZ1Rk24PxepTYNkF7zflo01AmlZAAAAFnNzaDphc3VyYW1heWEtbWFzdGVyLTI= ra-master-2
+ramstein namespaces="ramstein-release,pills-tag" sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIHTVqgo3ARbpTq04YlQksobfGIbBAw21nbE6HyeCPgxBAAAAFnNzaDphc3VyYW1heWEtbWFzdGVyLTM= ra-master-3
+ramstein namespaces="ramstein-release,pills-tag" sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIP15ZeSJYWryHN2WEHDlJbWk/vA+j5JFgb9RSzT1SHveAAAAFnNzaDphc3VyYW1heWEtbWFzdGVyLTQ= ra-master-4
+'
+
+# Has a real key been provisioned, or is this still the empty placeholder?
+has_signing_key() {
+  [[ -n "${RELEASE_ALLOWED_SIGNERS// /}" ]]
+}
+
+# True/false: does the detached signature in $2 (a file path) verify $1 (a
+# file path, the exact bytes that were signed) against the pinned key(s) in
+# $3 (an allowed_signers path), for principal $4 and namespace $5? Principal
+# is WHO (RAMstein's identity); namespace is WHAT-FOR (what this signature
+# authorizes) — a signature made for a different purpose, or by a principal
+# not pinned in allowed_signers, must not verify here.
+verify_signature() {
+  local data_file="$1" sig_file="$2" signers="$3" principal="$4" ns="$5"
+  ssh-keygen -Y verify -f "${signers}" -I "${principal}" -n "${ns}" -s "${sig_file}" \
+    < "${data_file}" >/dev/null 2>&1
+}
+
+# tests/test_signing.sh sources this file (with RAMSTEIN_INSTALL_SOURCED=1) to
+# reach has_signing_key/verify_signature directly, without running an actual
+# install — everything above this point only ever DEFINES functions/vars, so
+# returning here before the root check keeps sourcing side-effect-free.
+if [[ "${RAMSTEIN_INSTALL_SOURCED:-0}" == "1" ]]; then
+  # shellcheck disable=SC2317
+  return 0 2>/dev/null || exit 0
+fi
+
 # ---- root, checked FIRST, before anything else --------------------------
 # Fail fast and plainly rather than self-elevating.
 if [[ $EUID -ne 0 ]]; then
@@ -31,15 +78,67 @@ EOF
   exit 1
 fi
 
-# No verified-release bootstrap yet: RAMstein has no published releases, so a
-# `curl | sudo bash` one-liner could only ever fetch UNVERIFIED main-branch
-# code — and the family rule is fail-closed: never install what can't be
-# verified. Until the first release ships (with checksums, coldspot-style),
-# this installer only runs from a checkout, next to the files it installs.
+# Verified-release bootstrap (docs/RELEASE-SIGNING.md): v0.11.1 was
+# RAMstein's first release published with SHA256SUMS (2026-08-01), so
+# `curl -fsSL .../install.sh | sudo bash` — running with no sibling files
+# next to it — now has something real to verify against, instead of only
+# ever being able to fetch unverified main-branch code. Fetches the
+# published .deb + SHA256SUMS (+ SHA256SUMS.sig once a key is provisioned)
+# and dpkg -i's it — the .deb's own postinst does everything the rest of
+# this script does for a checkout install (config seed, systemd
+# enable+start), so nothing else needs to run afterward. Fails closed at
+# every step: no SHA256SUMS, a checksum mismatch, or (once a key is pinned)
+# a missing/invalid signature all abort rather than proceed.
+bootstrap_from_release() {
+  command -v curl >/dev/null 2>&1 || { echo "curl is required for remote install" >&2; exit 1; }
+  command -v dpkg >/dev/null 2>&1 || {
+    echo "dpkg not found — this quick-install path needs a Debian/Ubuntu" >&2
+    echo "system. Clone the repo and run install.sh from a checkout instead." >&2
+    exit 1
+  }
+
+  local tmp; tmp="$(mktemp -d)"
+  trap 'rm -rf "${tmp}"' EXIT
+  local base="https://github.com/${REPO_SLUG}/releases/latest/download"
+
+  echo "== fetching latest RAMstein release =="
+  curl -fsSL "${base}/SHA256SUMS" -o "${tmp}/SHA256SUMS" \
+    || { echo "could not fetch the release checksum manifest (SHA256SUMS) — refusing to install unverified." >&2; exit 1; }
+  local debname
+  debname="$(awk '$2 ~ /_all\.deb$/ { n = $2; sub(/^\*/, "", n); print n; exit }' "${tmp}/SHA256SUMS")"
+  [[ -n "${debname}" ]] || { echo "SHA256SUMS has no .deb entry — aborting." >&2; exit 1; }
+  curl -fsSL "${base}/${debname}" -o "${tmp}/${debname}" \
+    || { echo "deb download failed" >&2; exit 1; }
+
+  local want got
+  want="$(awk -v n="${debname}" '$2 == n || $2 == "*"n { print $1; exit }' "${tmp}/SHA256SUMS")"
+  got="$(sha256sum "${tmp}/${debname}" | cut -d' ' -f1)"
+  [[ "${want}" == "${got}" ]] || { echo "CHECKSUM MISMATCH for ${debname} — aborting." >&2; exit 1; }
+  echo "sha256 verified."
+
+  if has_signing_key; then
+    curl -fsSL "${base}/SHA256SUMS.sig" -o "${tmp}/SHA256SUMS.sig" \
+      || { echo "signing key is pinned but the release has no SHA256SUMS.sig — refusing to install unsigned." >&2; exit 1; }
+    printf '%s\n' "${RELEASE_ALLOWED_SIGNERS}" > "${tmp}/allowed_signers"
+    verify_signature "${tmp}/SHA256SUMS" "${tmp}/SHA256SUMS.sig" "${tmp}/allowed_signers" \
+      "${SIGN_PRINCIPAL}" "${SIGN_NAMESPACE}" \
+      || { echo "SIGNATURE VERIFICATION FAILED — aborting." >&2; exit 1; }
+    echo "signature verified."
+  else
+    echo "warning: no release-signing key provisioned yet (see docs/RELEASE-SIGNING.md) — proceeding on SHA256 alone." >&2
+  fi
+
+  dpkg -i "${tmp}/${debname}"
+  echo
+  echo ">>> step 2 — the GNOME pill (per-account, as yourself, no sudo): <<<"
+  echo "    this quick-install path doesn't package the pill yet — clone the"
+  echo "    repo and run 'make pill' from a checkout for the Quick Settings"
+  echo "    extension (gnome-extensions enable ramstein@asuramaya afterward)."
+}
+
 [[ -f "$SRC/src/bin/ramsteind" ]] || {
-  echo "run install.sh from a RAMstein checkout:" >&2
-  echo "  git clone https://github.com/asuramaya/RAMstein && cd RAMstein && sudo ./install.sh" >&2
-  exit 1
+  bootstrap_from_release
+  exit 0
 }
 
 # The one thing that needs to know about a human account: status.json and the

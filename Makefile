@@ -25,6 +25,7 @@ include src/share/ramstein/lib/sutra.mk
 
 smoke: check-sutra
 	bash tests/smoke.sh
+	bash tests/test_signing.sh
 
 # the thorough adversarial pass (full cmd surface + oversized/garbage/
 # invalid-utf8/nested/unknown/rapid-reconnect/half-open-stall); smoke.sh
@@ -37,8 +38,8 @@ check: check-sutra check-vendored-path-all
 	python3 -m py_compile src/bin/ramsteind src/bin/ramstein src/bin/ramstein-healthcheck \
 	    src/bin/ramstein-update src/share/ramstein/lib/sutra.py src/share/ramstein/lib/sutra_update.py src/share/ramstein/lib/sutra_xen.py
 	node --check "src/extension/ramstein@asuramaya/extension.js" "src/extension/ramstein@asuramaya/pill.js"
-	bash -n install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh
-	shellcheck install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh
+	bash -n install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh tests/test_signing.sh
+	shellcheck install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh tests/test_signing.sh
 	groff -man -Tutf8 -ww src/data/man/man1/ramstein.1 > /dev/null
 	groff -t -man -Tutf8 -ww src/data/man/man8/ramsteind.8 > /dev/null
 	@echo "all static checks passed"

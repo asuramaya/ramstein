@@ -19,8 +19,8 @@ jobs:
     uses: asuramaya/sutra/.github/workflows/pill-ci.yml@149b553b75467813748165401706ce6b50ca44d6
     with:
       python-files: "src/bin/ramsteind src/bin/ramstein src/bin/ramstein-healthcheck src/bin/ramstein-update src/share/ramstein/lib/sutra.py src/share/ramstein/lib/sutra_update.py src/share/ramstein/lib/sutra_xen.py"
-      shell-files: "install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh"
-      shellcheck-files: "install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh"
+      shell-files: "install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh tests/test_signing.sh"
+      shellcheck-files: "install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh tests/test_signing.sh"
       has-extension: true
       extension-js: "src/extension/ramstein@asuramaya/extension.js"
       extension-metadata: "src/extension/ramstein@asuramaya/metadata.json"
@@ -42,6 +42,9 @@ jobs:
       # now pill-ci.yml's own default (msg 2783) — kept explicit here so the
       # reason stays on record rather than riding on an upstream default.
       run-check-version: false
+      # run-signing-verify stays at its default (false): test_signing.sh is
+      # already covered by run-smoke — make smoke's own recipe runs it
+      # (DM #2913) — running it a second time here would be redundant.
 
   # Genuinely pill-specific, per pill-ci.yml's own header ("stays as a
   # sibling job in the calling pill's own ci.yml"). pill.js's own
