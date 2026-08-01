@@ -136,6 +136,19 @@ present) reads the `.commit` anchor and asks canonical git whether it is an exac
 (an ancestor of current HEAD, a stale but honest vendor, warns only), or drift (not an ancestor
 at all, a corrupted anchor or a rewritten canonical history, hard fails).
 
+RAMstein was the family's pilot (alfred, DM #2716) for vendoring the *recipe* the same way as the
+code: `src/share/ramstein/lib/sutra.mk`, included from the root `Makefile` (`PILL := ramstein`),
+supplies `check-sutra` itself, the canonical tracked-files row count (`check-repo` references
+`SUTRA_ROOT_ROWS` rather than re-deriving it), and `check-vendored-path` (loads a binary as a real
+module and asks Python what it actually imported, rather than checking that a file merely exists
+at the path the bootstrap preamble's own arithmetic predicts — the latter is a layout check, not a
+resolution check, and passes on the exact regression it's meant to catch). Two things sutra.mk
+doesn't cover, kept as small pill-side supplements: `make check-pill-js` (its own
+integrity/freshness pair, since sutra.mk's `check-sutra` loops only the three `.py` modules) and
+`make check-vendored-path-all` (loops `check-vendored-path` across all four binaries that carry
+the bootstrap preamble — `ramsteind`, `ramstein`, `ramstein-healthcheck`, `ramstein-update` —
+since sutra.mk's own target validates one binary per invocation).
+
 The vendored copies live in their own private, package-owned directory rather than beside the
 binaries (BOOTSTRAP.md, ruling `3e44bd95`). Every pill vendoring `sutra.py` under the same
 filename into the same shared bin directory (`/usr/bin` via `.deb`, `/usr/local/bin` via

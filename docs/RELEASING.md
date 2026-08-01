@@ -9,8 +9,9 @@ the signing key never goes near CI.
 
 ## 1. Prepare
 
-Bump `packaging/VERSION`. It is the one version constant, and `release.yml` asserts it matches
-the tag and `ramsteind`'s own internal VERSION constant.
+Bump `packaging/VERSION`. It is the one version constant — `ramsteind` has no literal of its own
+to drift, it resolves `VERSION` from this same file at runtime — and `release.yml` asserts the tag,
+`packaging/VERSION`, and what `ramsteind` actually resolves all agree, live, from a fresh checkout.
 
 Write the `docs/CHANGELOG.md` entry for the release. Small, focused releases are easier to sign
 off on than a pile of unrelated changes.
@@ -18,7 +19,7 @@ off on than a pile of unrelated changes.
 Run the checks:
 
 ```
-make check             # lint, py_compile, node --check, man rendering, check-sutra
+make check             # lint, py_compile, node --check, man rendering, check-sutra, check-vendored-path-all
 make smoke             # boot the daemon against fixtures, assert status.json shape
 make attack            # fuzz the control socket adversarially, no root
 ```

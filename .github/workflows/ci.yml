@@ -6,36 +6,50 @@ on:
   pull_request:
 
 jobs:
-  static-checks:
+  # The family's shared CI core (sutra.mk's sibling layer — see
+  # docs/BOOTSTRAP.md). Pinned to a commit SHA, not @main and not a tag,
+  # per pill-ci.yml's own header: sutra cuts no tagged release yet, and a
+  # floating @main ref would move every adopting pill's CI the instant this
+  # file changes, with no per-pill review step.
+  shared:
+    uses: asuramaya/sutra/.github/workflows/pill-ci.yml@10fbdaab91c6b718bf9a2a003d2738c7d32f9a4d
+    with:
+      python-files: "src/bin/ramsteind src/bin/ramstein src/bin/ramstein-healthcheck src/bin/ramstein-update src/share/ramstein/lib/sutra.py src/share/ramstein/lib/sutra_update.py src/share/ramstein/lib/sutra_xen.py"
+      shell-files: "install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh"
+      has-extension: true
+      extension-js: "src/extension/ramstein@asuramaya/extension.js"
+      extension-metadata: "src/extension/ramstein@asuramaya/metadata.json"
+      man-pages: "src/data/man/man1/ramstein.1 src/data/man/man8/ramsteind.8"
+      # RAMstein has no per-file VERSION constant to check: Pass 2 (RS-STD-1)
+      # deliberately removed the old per-binary literal in favor of a single
+      # packaging/VERSION source of truth, read live at runtime — the exact
+      # opposite of the per-file-version-constant convention check-version.sh
+      # enforces upstream, and check-repo's own "no literal version string
+      # outside packaging/VERSION" rule holds the line on it. Not a stopgap;
+      # a real convention mismatch. See DM #2716's report for detail.
+      run-check-version: false
+
+  # Genuinely pill-specific, per pill-ci.yml's own header ("stays as a
+  # sibling job in the calling pill's own ci.yml"): shellcheck (pill-ci.yml
+  # runs `bash -n` only, no shellcheck step at all), and the two guards
+  # sutra.mk doesn't cover end-to-end for a multi-binary pill — pill.js's
+  # own integrity/freshness (sutra.mk's check-sutra loops only the three
+  # vendored .py modules) and the checkout-run resolution check across all
+  # four binaries that carry the bootstrap preamble (sutra.mk's
+  # check-vendored-path validates one SUTRA_CHECK_BIN per invocation; the
+  # Makefile's check-vendored-path-all loops it — see Makefile comment).
+  ramstein-specific:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-
-      - name: Python compiles
-        run: python3 -m py_compile src/bin/ramsteind src/bin/ramstein src/bin/ramstein-healthcheck src/bin/ramstein-update src/share/ramstein/lib/sutra.py src/share/ramstein/lib/sutra_update.py src/share/ramstein/lib/sutra_xen.py
-
-      - name: Extension JS compiles
-        run: node --check "src/extension/ramstein@asuramaya/extension.js" "src/extension/ramstein@asuramaya/pill.js"
-
-      - name: Shell scripts parse
-        run: bash -n install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh
+        with:
+          fetch-depth: 0
 
       - name: Shellcheck
         run: shellcheck install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh
 
-      - name: check-sutra (vendored copy integrity)
-        run: make check-sutra
+      - name: Vendored pill.js (integrity + freshness)
+        run: make check-pill-js
 
-      - name: Smoke (real daemon, real /proc, hostile socket input)
-        run: make smoke
-
-      - name: Attack (full cmd surface + oversized/garbage/invalid-utf8/nested/unknown/rapid-reconnect/half-open-stall)
-        run: make attack
-
-      - name: Man pages render without warnings
-        run: |
-          groff -man -Tutf8 -ww src/data/man/man1/ramstein.1 > /dev/null
-          groff -t -man -Tutf8 -ww src/data/man/man8/ramsteind.8 > /dev/null
-
-      - name: Repo structure gate (REPO-STANDARD.md)
-        run: make check-repo
+      - name: Vendored-path resolution (all four binaries)
+        run: make check-vendored-path-all
