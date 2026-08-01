@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.11.1 — sutra.mk / pill-ci.yml adoption
+Structural only, no daemon/CLI/pill behavior changed. RAMstein piloted the family's shared
+recipe layer ahead of the other four pills, so they could copy this diff rather than a
+description of it (alfred's order, DM #2716).
+
+- Vendored `sutra.mk` (the Makefile fragment sutra now publishes alongside `sutra.py`/
+  `sutra_update.py`/`sutra_xen.py`) and replaced the hand-written `check-sutra` target and
+  `check-repo`'s row-count logic with it. Found and reported upstream: the original loop never
+  covered `pill.js` (a gap for 3 of 5 pills), `check-vendored-path` validated only one binary
+  per call (RAMstein has four), `pill-ci.yml` shellchecked nothing, `run-check-version`
+  defaulted on with no pill actually using it, and `SUTRA_CHECK_ARGS` defaulting to `--help`
+  made `make check` place a real (harmless, read-only) call against the live daemon socket on
+  every run. All five folded upstream into sutra 0.11.0/0.11.1.
+- Adopted `pill-ci.yml` (sutra's shared reusable CI workflow), pinned by commit SHA. Split
+  RAMstein's CI into the shared job plus a thin `ramstein-specific` sibling for the one thing
+  sutra.mk still can't do package-agnostically: looping the resolution check across all four
+  binaries.
+- Re-vendored to 0.11.1 (DM #2783) once the four findings above landed upstream, deleting the
+  two hand-rolled pilot supplements (`check-pill-js`, `check-vendored-path-all` as a
+  hand-written target) now that sutra.mk covers both natively via `SUTRA_EXT_DIR`/
+  `SUTRA_CHECK_BINS`. Verified directly, not just via green exit code, that the pill.js
+  integrity check upstream's fix depends on actually executes rather than silently
+  no-op'ing — the exact defect class this family of fixes exists to catch.
+- Caught and fixed, before either report cycle closed: the pilot's first commit never set
+  `run-attack` in `pill-ci.yml`'s `with:` block (defaults to `false`), so CI's adversarial fuzz
+  pass silently stopped running the moment the pilot landed — invisible in both a passing local
+  `make attack` and a green job-level CI summary, found only by reading per-step status off the
+  GitHub API directly.
+
+Verified: `make check`, `make smoke`, `make attack` all green on the real repo; CI green on
+the tagged commit, checked per-step, not by summary alone.
+
 ## 0.11.0 — the sutra install-path adoption
 Behavior-preserving for status.json/the control socket, but a real fix for a real collision.
 Every pill vendors `sutra.py` byte-identical, but every pill's installer used to drop that copy
