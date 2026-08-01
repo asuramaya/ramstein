@@ -142,12 +142,16 @@ supplies `check-sutra` itself, the canonical tracked-files row count (`check-rep
 `SUTRA_ROOT_ROWS` rather than re-deriving it), and `check-vendored-path` (loads a binary as a real
 module and asks Python what it actually imported, rather than checking that a file merely exists
 at the path the bootstrap preamble's own arithmetic predicts — the latter is a layout check, not a
-resolution check, and passes on the exact regression it's meant to catch). Two things sutra.mk
-doesn't cover, kept as small pill-side supplements: `make check-pill-js` (its own
-integrity/freshness pair, since sutra.mk's `check-sutra` loops only the three `.py` modules) and
-`make check-vendored-path-all` (loops `check-vendored-path` across all four binaries that carry
-the bootstrap preamble — `ramsteind`, `ramstein`, `ramstein-healthcheck`, `ramstein-update` —
-since sutra.mk's own target validates one binary per invocation).
+resolution check, and passes on the exact regression it's meant to catch). The pilot found four
+gaps sutra.mk didn't cover; all four folded upstream at 0.11.0/0.11.1 (msg 2783) rather than
+staying pill-side supplements — `SUTRA_EXT_DIR := src/extension/ramstein@asuramaya` opts
+`check-sutra` into also checking `pill.js` (was a separate `check-pill-js` target here), and
+`SUTRA_CHECK_BINS := ramsteind ramstein ramstein-healthcheck ramstein-update:sutra_update` is the
+native form of what was a hand-rolled `check-vendored-path-all` (`ramstein-update` binds
+`sutra_update`, not `sutra`, hence the `:module` suffix on that one entry). Re-vendoring folded
+a real defect too: 0.11.0's first `SUTRA_EXT_DIR` fix tested the variable at the Make level but
+read it back at the shell level (never exported), so it silently checked nothing while exiting 0 —
+worth remembering next time a green run is trusted without reading what it actually printed.
 
 The vendored copies live in their own private, package-owned directory rather than beside the
 binaries (BOOTSTRAP.md, ruling `3e44bd95`). Every pill vendoring `sutra.py` under the same

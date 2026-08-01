@@ -11,11 +11,16 @@ jobs:
   # per pill-ci.yml's own header: sutra cuts no tagged release yet, and a
   # floating @main ref would move every adopting pill's CI the instant this
   # file changes, with no per-pill review step.
+  #
+  # 0.11.1 (msg 2783) folded the raw shellcheck step in here too, via
+  # shellcheck-files — was a sibling-job step below, deleted now that
+  # pill-ci.yml carries it as a real, parameterized step.
   shared:
-    uses: asuramaya/sutra/.github/workflows/pill-ci.yml@10fbdaab91c6b718bf9a2a003d2738c7d32f9a4d
+    uses: asuramaya/sutra/.github/workflows/pill-ci.yml@149b553b75467813748165401706ce6b50ca44d6
     with:
       python-files: "src/bin/ramsteind src/bin/ramstein src/bin/ramstein-healthcheck src/bin/ramstein-update src/share/ramstein/lib/sutra.py src/share/ramstein/lib/sutra_update.py src/share/ramstein/lib/sutra_xen.py"
       shell-files: "install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh"
+      shellcheck-files: "install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh"
       has-extension: true
       extension-js: "src/extension/ramstein@asuramaya/extension.js"
       extension-metadata: "src/extension/ramstein@asuramaya/metadata.json"
@@ -25,31 +30,26 @@ jobs:
       # packaging/VERSION source of truth, read live at runtime — the exact
       # opposite of the per-file-version-constant convention check-version.sh
       # enforces upstream, and check-repo's own "no literal version string
-      # outside packaging/VERSION" rule holds the line on it. Not a stopgap;
-      # a real convention mismatch. See DM #2716's report for detail.
+      # outside packaging/VERSION" rule holds the line on it. This is also
+      # now pill-ci.yml's own default (msg 2783) — kept explicit here so the
+      # reason stays on record rather than riding on an upstream default.
       run-check-version: false
 
   # Genuinely pill-specific, per pill-ci.yml's own header ("stays as a
-  # sibling job in the calling pill's own ci.yml"): shellcheck (pill-ci.yml
-  # runs `bash -n` only, no shellcheck step at all), and the two guards
-  # sutra.mk doesn't cover end-to-end for a multi-binary pill — pill.js's
-  # own integrity/freshness (sutra.mk's check-sutra loops only the three
-  # vendored .py modules) and the checkout-run resolution check across all
-  # four binaries that carry the bootstrap preamble (sutra.mk's
-  # check-vendored-path validates one SUTRA_CHECK_BIN per invocation; the
-  # Makefile's check-vendored-path-all loops it — see Makefile comment).
+  # sibling job in the calling pill's own ci.yml"). pill.js's own
+  # integrity/freshness folded into check-sutra itself at 0.11.1
+  # (SUTRA_EXT_DIR, set in the Makefile) and shellcheck moved into the
+  # shared job above, so this now covers exactly one thing sutra.mk still
+  # can't: the checkout-run resolution check across all four binaries that
+  # carry the bootstrap preamble. sutra.mk's check-vendored-path validates
+  # one SUTRA_CHECK_BIN per invocation; check-vendored-path-all (native as
+  # of 0.11.1, driven by the Makefile's SUTRA_CHECK_BINS list) loops it.
   ramstein-specific:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-
-      - name: Shellcheck
-        run: shellcheck install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh
-
-      - name: Vendored pill.js (integrity + freshness)
-        run: make check-pill-js
 
       - name: Vendored-path resolution (all four binaries)
         run: make check-vendored-path-all

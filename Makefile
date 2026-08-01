@@ -1,5 +1,5 @@
 # ramstein — the memory demon
-.PHONY: smoke attack check check-repo check-pill-js check-vendored-path-all install uninstall pill deb sync-signers
+.PHONY: smoke attack check check-repo install uninstall pill deb sync-signers
 
 VERSION := $(shell tr -d '[:space:]' < packaging/VERSION)
 DEBROOT := build/deb/ramstein_$(VERSION)_all
@@ -7,69 +7,24 @@ DEBFILE := build/deb/ramstein_$(VERSION)_all.deb
 
 # The family's shared recipe layer (sutra.mk, vendored like code under its
 # own .version/.commit anchor — see docs/BOOTSTRAP.md and the file's own
-# header). Supplies check-sutra (integrity+freshness for the three vendored
-# .py modules), SUTRA_ROOT_ROWS (the canonical tracked-files row count used
-# below in check-repo), and check-vendored-path (the checkout-run resolution
-# guard). PILL must be set before the include; everything else in sutra.mk
-# resolves relative to its own vendored location, not this Makefile's.
+# header). PILL, SUTRA_EXT_DIR and SUTRA_CHECK_BINS must all be set before
+# the include; everything else in sutra.mk resolves relative to its own
+# vendored location, not this Makefile's.
+#
+# 0.11.1 folded RAMstein's own pilot supplements upstream (msg 2783):
+# SUTRA_EXT_DIR opts check-sutra into also checking pill.js (was a separate
+# check-pill-js target here, same integrity+freshness shape, now deleted —
+# sutra.mk's own check-sutra covers it). SUTRA_CHECK_BINS is the native
+# form of what was a hand-rolled check-vendored-path-all here (four
+# `$(MAKE)` calls, one per binary) — same "bin" / "bin:module" shape,
+# sutra.mk now owns the loop.
 PILL := ramstein
+SUTRA_EXT_DIR := src/extension/ramstein@asuramaya
+SUTRA_CHECK_BINS := src/bin/ramsteind src/bin/ramstein src/bin/ramstein-healthcheck src/bin/ramstein-update:sutra_update
 include src/share/ramstein/lib/sutra.mk
 
-smoke: check-sutra check-pill-js
+smoke: check-sutra
 	bash tests/smoke.sh
-
-# sutra.mk's check-sutra covers only the three vendored .py modules —
-# BOOTSTRAP.md's own escape hatch for a pill that also vendors pill.js
-# ("extend the for mod in... line") never made it into sutra.mk's
-# generalized form. Kept here as a small pill-side supplement, same
-# integrity+freshness shape as check-sutra, one file, pending a fix
-# upstream (flagged to alfred — ByeByte and phanspeed check pill.js today
-# too and would silently lose the guard on a verbatim adopt, same as this
-# repo would have).
-check-pill-js:
-	@f="src/extension/ramstein@asuramaya/pill.js"; ver="$${f%.js}.version"; cmt="$${f%.js}.commit"; \
-	sha=$$(awk '{print $$NF}' "$$ver"); \
-	actual=$$(sha256sum "$$f" | cut -d' ' -f1); \
-	if [ "$$sha" != "$$actual" ]; then \
-	    echo "check-pill-js FAIL: $$f doesn't match $$ver" \
-	         "(hand-edited? re-vendor: bash ~/code/REPOS/sutra/vendor.sh src/share/ramstein/lib src/extension/ramstein@asuramaya)"; \
-	    exit 1; \
-	fi; \
-	echo "check-pill-js: integrity ok ($$f, sha256 $$sha)"; \
-	canon="$$HOME/code/REPOS/sutra"; \
-	if [ -d "$$canon/.git" ]; then \
-	    if [ ! -f "$$cmt" ]; then \
-	        echo "check-pill-js: freshness unknown ($$f has no .commit anchor, an older vendor)"; \
-	    else \
-	        recorded=$$(cat "$$cmt"); \
-	        filehead=$$(git -C "$$canon" log -1 --format=%H -- pill.js); \
-	        if git -C "$$canon" merge-base --is-ancestor "$$filehead" "$$recorded" 2>/dev/null; then \
-	            echo "check-pill-js: freshness ok (vendored from $$recorded, at or after its own head $$filehead)"; \
-	        elif git -C "$$canon" merge-base --is-ancestor "$$recorded" "$$filehead" 2>/dev/null; then \
-	            echo "check-pill-js: LAG (vendored from $$recorded, canonical has since moved to" \
-	                 "$$filehead) -- warn, not a failure"; \
-	        else \
-	            echo "check-pill-js FAIL: DRIFT ($$f's vendored commit $$recorded is not in" \
-	                 "canonical's history at $$canon) -- re-vendor"; \
-	            exit 1; \
-	        fi; \
-	    fi; \
-	else \
-	    echo "check-pill-js: canonical sutra checkout not present, freshness skipped"; \
-	fi
-
-# sutra.mk's check-vendored-path validates one SUTRA_CHECK_BIN per
-# invocation; RAMstein carries the bootstrap preamble in all four binaries
-# (the reason alfred named this repo pilot — "if the shared artifacts
-# survive your repo the easy ones are safe"), so loop it rather than prove
-# only the default (src/bin/ramstein) and leave the other three unchecked.
-# ramstein-update binds sutra_update, not sutra — SUTRA_CHECK_MODULE is set
-# explicitly for that one; the other three take sutra.mk's own default.
-check-vendored-path-all:
-	@$(MAKE) check-vendored-path SUTRA_CHECK_BIN=src/bin/ramsteind
-	@$(MAKE) check-vendored-path SUTRA_CHECK_BIN=src/bin/ramstein
-	@$(MAKE) check-vendored-path SUTRA_CHECK_BIN=src/bin/ramstein-healthcheck
-	@$(MAKE) check-vendored-path SUTRA_CHECK_BIN=src/bin/ramstein-update SUTRA_CHECK_MODULE=sutra_update
 
 # the thorough adversarial pass (full cmd surface + oversized/garbage/
 # invalid-utf8/nested/unknown/rapid-reconnect/half-open-stall); smoke.sh
@@ -78,7 +33,7 @@ attack:
 	python3 tests/attack_socket.py
 
 # static checks, CI-equivalent. Family grammar: smoke attack check deb.
-check: check-sutra check-pill-js check-vendored-path-all
+check: check-sutra check-vendored-path-all
 	python3 -m py_compile src/bin/ramsteind src/bin/ramstein src/bin/ramstein-healthcheck \
 	    src/bin/ramstein-update src/share/ramstein/lib/sutra.py src/share/ramstein/lib/sutra_update.py src/share/ramstein/lib/sutra_xen.py
 	node --check "src/extension/ramstein@asuramaya/extension.js" "src/extension/ramstein@asuramaya/pill.js"
