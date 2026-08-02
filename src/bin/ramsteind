@@ -639,7 +639,18 @@ def _oomd_has_enrolled_cgroups():
     one of the two monitored-cgroup sections (nothing else follows them in
     the dump) — and fail CLOSED (False, no confirmed backstop, RAMstein
     stays engaged) whenever that header itself isn't found at all, e.g. an
-    unrecognized future dump format."""
+    unrecognized future dump format.
+
+    ASSUMPTION THIS RESTS ON (alfred's review, DM #3210): the two Monitored
+    CGroups sections are LAST in the dump, nothing follows them today. A
+    full section-boundary parser would be more brittle than the thing it
+    protects, so this doesn't build one — but if a future systemd version
+    ever appends a new section AFTER them, this regresses to fail-open
+    silently (a "\tPath: " line in that new section would be inside the
+    tail we scan). Stated here so a successor can check it against a real
+    dump before trusting this function on a new systemd version, rather
+    than inheriting an assumption that only ever lived in this author's
+    head."""
     try:
         r = subprocess.run(["oomctl"], capture_output=True, text=True,
                             timeout=2)

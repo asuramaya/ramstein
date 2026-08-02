@@ -15,6 +15,7 @@ Run as: python3 tests/test_oom_coexist.py
 import importlib.machinery
 import importlib.util
 import os
+import shutil
 import stat
 import sys
 import tempfile
@@ -99,7 +100,22 @@ FIXTURE_EOF
 def run_case(tmp, active_units, oomctl_stdout, no_oomctl=False):
     d = _fakebin(tmp, active_units, oomctl_stdout, no_oomctl)
     old_path = os.environ.get("PATH", "")
-    os.environ["PATH"] = d + os.pathsep + old_path
+    if no_oomctl:
+        # A missing oomctl must mean genuinely unreachable anywhere on
+        # PATH -- omitting it from the fake dir alone isn't enough, since
+        # old_path's fallback would still resolve the box's REAL oomctl
+        # (this bit a real run: it silently passed only because the real
+        # system's oomctl happened to report "unenrolled" too, until an
+        # earlier systemd-oomd restart in this same session changed that
+        # and exposed the gap). The fake `systemctl` script still needs
+        # bash reachable for its own shebang to run -- it uses only bash
+        # builtins otherwise -- so symlink just that, nothing else.
+        shell_dir = tempfile.mkdtemp(dir=tmp)
+        os.symlink(shutil.which("bash"), os.path.join(shell_dir, "bash"))
+        new_path = d + os.pathsep + shell_dir
+    else:
+        new_path = d + os.pathsep + old_path
+    os.environ["PATH"] = new_path
     try:
         return ramsteind._coexisting_oom_fighter()
     finally:
