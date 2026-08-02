@@ -92,6 +92,17 @@ jobs:
       - name: Install under the real hardened unit
         run: sudo dpkg -i build/deb/ramstein_*_all.deb
 
+      # Window standardized at 30s across the family (alfred, DM #3110):
+      # the negative control that proved this check works (see ef6394d's
+      # commit message) measured the actual failure mode -- 4 restarts
+      # within 5s, 6 within 15s, against RestartSec=5 -- so 30s gives six
+      # observations of a loop that announces itself in the first five
+      # seconds. SCOPE, so nobody later mistakes it for total coverage:
+      # this window catches IMMEDIATE-DEATH failures -- bad ExecStart,
+      # seccomp SIGSYS, a missing capability -- the class actually shipped
+      # three times today. It does NOT catch a daemon that runs fine for
+      # two minutes and then dies on its first poll-loop tick; that is a
+      # different failure needing a different detector.
       - name: Poll ActiveState/NRestarts over 30s (not a one-shot is-active)
         run: |
           # Individual -p queries, not a single comma-list --value call:
@@ -126,11 +137,10 @@ jobs:
       # paths, not just carry the right ExecStart text, to be trusted.
       # These two are Type=oneshot: `systemctl start` blocks until they
       # finish, so Result reflects the real outcome, not just that the
-      # process launched. The two .timer units have no ExecStart of their
-      # own to break (only OnBootSec/OnUnitActiveSec) -- they just schedule
-      # these same services by systemd's default name-matching convention,
-      # so testing the services they trigger IS testing the timers'
-      # only meaningful failure mode.
+      # process launched. The .timer units have no ExecStart of their own
+      # to break (only OnBootSec/OnUnitActiveSec) -- testing the services
+      # covers their EXECUTION path, but not their own separate failure
+      # mode (see the next step: a timer can fail to ever fire at all).
       - name: Run the oneshot units to completion (not just check ExecStart text)
         run: |
           for u in ramstein-autocalm.service ramstein-update.service; do
@@ -144,3 +154,35 @@ jobs:
             fi
           done
           echo "both oneshot units completed successfully"
+
+      # A timer has its own failure mode starting the service directly
+      # cannot reach (alfred, DM #3110): a malformed OnCalendar/OnBootSec,
+      # or a Unit= naming a service that doesn't exist, produces a timer
+      # that loads and silently never triggers -- RAMstein's timers rely
+      # on systemd's default name-matching convention (foo.timer ->
+      # foo.service) rather than an explicit Unit=, which is correct today
+      # and exactly the kind of implicit coupling that breaks silently the
+      # day one side gets renamed. Two instant checks, no waiting for a
+      # real schedule to fire: `systemd-analyze verify` catches a Unit=
+      # pointing at nothing; `start` (transient, NOT `enable` -- these
+      # ship disabled by family convention and must stay that way after
+      # this check) + `list-timers --all` proves the schedule actually
+      # resolves to a real NEXT time against the right service. Confirmed
+      # locally first: list-timers --all shows NOTHING for a disabled-but-
+      # loaded timer in this systemd version, so `start` before listing is
+      # required, not optional -- `stop` after restores the as-shipped state.
+      - name: Timer units resolve (schedule + Unit= target, not just syntax)
+        run: |
+          sudo systemd-analyze verify ramstein-autocalm.timer ramstein-update.timer
+          sudo systemctl start ramstein-autocalm.timer ramstein-update.timer
+          listing="$(systemctl list-timers --all)"
+          echo "$listing"
+          for t in ramstein-autocalm.timer ramstein-update.timer; do
+            echo "$listing" | grep -q "$t" || {
+              echo "FAIL: $t did not resolve to a scheduled entry" >&2
+              sudo systemctl stop ramstein-autocalm.timer ramstein-update.timer
+              exit 1
+            }
+          done
+          sudo systemctl stop ramstein-autocalm.timer ramstein-update.timer
+          echo "both timers resolve to a real schedule and the correct service"
