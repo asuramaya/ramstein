@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Fulcrum-standard negative-control test for ramsteind's
-_coexisting_oom_fighter()/_oomd_has_enrolled_cgroups(): systemd-oomd being
+_coexisting_oom_fighter()/_oomd_monitored_sections(): systemd-oomd being
 `is-active` does not mean it is actually enrolled on any cgroup (found
 2026-08-02 -- a real machine at 100% swap, above oomd's own Swap Used
 Limit, with both Monitored CGroups sections empty). Builds fake systemctl/
@@ -65,6 +65,35 @@ SPURIOUS_PATH_DUMP = UNENROLLED_DUMP.replace(
     "\tPath: /not/a/real/enrollment (hypothetical future diagnostic field)\n",
 )
 
+# REAL, LIVE-CAPTURED (2026-08-02, `oomctl` on the operator's own machine
+# after verb #1 shipped): pressure enrolled from the earlier restart,
+# swap genuinely still unenrolled. This is the exact dump that made
+# `ramstein oomd status` falsely report swap protection -- alfred found
+# it live (DM #3250): a prior version of the swap check anchored only on
+# "Swap Monitored CGroups:" and read to EOF, which ALSO contains the
+# entire Memory Pressure section that follows it, so this Path: line
+# (pressure's, not swap's) satisfied a query asking specifically about
+# swap. Not invented -- this exact text came off the real box.
+LIVE_PRESSURE_ONLY_DUMP = """Dry Run: no
+Swap Used Limit: 90.00%
+Default Memory Pressure Limit: 60.00%
+Default Memory Pressure Duration: 20s
+System Context:
+\tMemory: Used: 22.9G, Total: 61.2G
+\tSwap: Used: 1.1G, Total: 7.9G
+Swap Monitored CGroups:
+Memory Pressure Monitored CGroups:
+\tPath: /user.slice/user-1000.slice/user@1000.service
+\t\tMemory Pressure Limit: 50.00%
+\t\tMemory Pressure Duration: 20s
+\t\tPressure: Avg10: 0.00, Avg60: 0.00, Avg300: 0.00, Total: 185ms
+\t\tCurrent Memory Usage: 36.9G
+\t\tMemory Min: 0B
+\t\tMemory Low: 0B
+\t\tPgscan: 36095277
+\t\tLast Pgscan: 36095277
+"""
+
 
 def _write_exec(path, body):
     with open(path, "w") as f:
@@ -122,6 +151,23 @@ def run_case(tmp, active_units, oomctl_stdout, no_oomctl=False):
         os.environ["PATH"] = old_path
 
 
+def run_sections_case(tmp, oomctl_stdout):
+    """Only oomctl matters for _oomd_monitored_sections -- no systemctl
+    fake needed."""
+    d = tempfile.mkdtemp(dir=tmp)
+    _write_exec(os.path.join(d, "oomctl"), f"""#!/usr/bin/env bash
+cat <<'FIXTURE_EOF'
+{oomctl_stdout}
+FIXTURE_EOF
+""")
+    old_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = d + os.pathsep + old_path
+    try:
+        return ramsteind._oomd_monitored_sections()
+    finally:
+        os.environ["PATH"] = old_path
+
+
 def main():
     fails = []
     with tempfile.TemporaryDirectory() as tmp:
@@ -162,6 +208,31 @@ def main():
             fails.append(
                 f"a Path: line outside the Monitored CGroups sections wrongly "
                 f"counted as enrollment (fails OPEN instead of CLOSED): {got!r}")
+
+        # THE SWAP-VS-PRESSURE CASE (alfred's review, DM #3250, real
+        # live capture): pressure enrolled, swap genuinely empty. Each
+        # section must be judged on its OWN Path: lines -- a predicate
+        # that scoops "everything after the swap header to EOF" also
+        # scoops the entire pressure section that follows it, and would
+        # wrongly report swap enrolled here. This is the exact dump that
+        # made `ramstein oomd status` lie on the operator's own machine.
+        sections = run_sections_case(tmp, LIVE_PRESSURE_ONLY_DUMP)
+        if sections["swap"]:
+            fails.append(
+                f"swap reported enrolled from a dump where only pressure is"
+                f" -- the section-boundary bug alfred found live: {sections!r}")
+        if not sections["pressure"]:
+            fails.append(f"pressure not detected in a dump where it clearly"
+                          f" is enrolled: {sections!r}")
+
+        # The BROAD question (_coexisting_oom_fighter) must still say yes
+        # against this same dump -- pressure alone is a real backstop,
+        # just not the swap-specific one `oomd status` asks about.
+        got = run_case(tmp, {"systemd-oomd"}, LIVE_PRESSURE_ONLY_DUMP)
+        if got != "systemd-oomd":
+            fails.append(
+                f"pressure-only enrollment should still count for the broad"
+                f" coexistence question: {got!r}")
 
     if fails:
         print("OOM COEXIST TEST FAILED:")

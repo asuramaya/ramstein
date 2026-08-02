@@ -627,61 +627,70 @@ NICE_MIN, NICE_MAX = 0, 19                # calm only ever LOWERS priority
 LEDGER_PATH = os.path.join(STATE_DIR, "ledger.jsonl")
 
 
-def _oomd_has_enrolled_cgroups():
-    """systemd-oomd being active only means the service is running — it
-    still needs to be ENROLLED on at least one cgroup (ManagedOOMSwap=kill
-    or ManagedOOMMemoryPressure=kill, e.g. via the stock user@.service/
-    root-slice drop-ins) to actually act on anything. A machine can run
-    systemd-oomd at 100% swap, above its own Swap Used Limit, watching
-    nothing (confirmed live, 2026-08-02 — oomctl's Swap/Memory Pressure
-    Monitored CGroups sections both empty despite systemd-oomd active).
-    `oomctl`'s dump prints "\tPath: <cgroup>\n" once per enrolled cgroup
-    under each "...Monitored CGroups:" header (systemd src/oom/oomd-util.c,
-    oomd_dump_swap_cgroup_context/oomd_dump_memory_pressure_cgroup_context)
-    and nothing at all when a section's hashmap is empty. An UNANCHORED
-    substring check for "\tPath: " fails OPEN: any future oomctl section
-    that happens to emit a tab-indented "Path: " line elsewhere in the dump
-    (a new diagnostic block, a dry-run target) would make this return True
-    and RAMstein would stand down on the strength of a coincidence, not a
-    real enrollment (alfred's review, DM #3204). So anchor to text AFTER
-    the "Swap Monitored CGroups:" header — everything from there to EOF is
-    one of the two monitored-cgroup sections (nothing else follows them in
-    the dump) — and fail CLOSED (False, no confirmed backstop, RAMstein
-    stays engaged) whenever that header itself isn't found at all, e.g. an
-    unrecognized future dump format.
+_OOMD_SWAP_HEADER = "Swap Monitored CGroups:\n"
+_OOMD_PRESSURE_HEADER = "Memory Pressure Monitored CGroups:\n"
 
-    ASSUMPTION THIS RESTS ON (alfred's review, DM #3210): the two Monitored
-    CGroups sections are LAST in the dump, nothing follows them today. A
-    full section-boundary parser would be more brittle than the thing it
-    protects, so this doesn't build one — but if a future systemd version
-    ever appends a new section AFTER them, this regresses to fail-open
-    silently (a "\tPath: " line in that new section would be inside the
-    tail we scan). Stated here so a successor can check it against a real
-    dump before trusting this function on a new systemd version, rather
-    than inheriting an assumption that only ever lived in this author's
-    head."""
+
+def _oomd_monitored_sections():
+    """One oomctl call, returns {"swap": bool, "pressure": bool} — whether
+    EACH section has at least one enrolled cgroup, bounded on BOTH ends.
+    systemd-oomd being active only means the service is running — it
+    still needs to be ENROLLED on at least one cgroup (ManagedOOMSwap=kill
+    or ManagedOOMMemoryPressure=kill) to actually act on anything. A
+    machine can run systemd-oomd at 100% swap, above its own Swap Used
+    Limit, watching nothing (confirmed live, 2026-08-02). `oomctl`'s dump
+    prints "\tPath: <cgroup>\n" once per enrolled cgroup under each
+    "...Monitored CGroups:" header (systemd src/oom/oomd-util.c) and
+    nothing when a section's hashmap is empty.
+
+    A PRIOR VERSION anchored only on the START of "Swap Monitored
+    CGroups:" and read to EOF — correct for "is ANY oomd enrollment
+    present" (_coexisting_oom_fighter's actual question), WRONG once
+    reused for "is SWAP specifically enrolled" (the new oomd-enroll
+    verb's question): the tail-to-EOF scoop also contains the entire
+    Memory Pressure section that follows it, so a pressure-only Path:
+    line satisfied a query asking about swap. Found live on the
+    operator's own machine (alfred, DM #3250) the same day this verb
+    shipped: RAMstein reported swap protection that did not exist — the
+    exact failure class this whole night's work exists to catch, one
+    layer up, in the tool built to catch it. Fixed by bounding swap's
+    tail at the pressure header (which follows it in the dump) instead
+    of running to EOF; pressure's own tail is already exact since
+    nothing follows IT. One predicate, two ends, both sections in one
+    call — no caller may ask a section-blind question again."""
     try:
         r = subprocess.run(["oomctl"], capture_output=True, text=True,
                             timeout=2)
     except (OSError, subprocess.SubprocessError):
-        return False
+        return {"swap": False, "pressure": False}
     if r.returncode != 0:
-        return False
-    _, _, after_swap_header = r.stdout.partition("Swap Monitored CGroups:\n")
-    return "\tPath: " in after_swap_header
+        return {"swap": False, "pressure": False}
+    _, _, after_swap = r.stdout.partition(_OOMD_SWAP_HEADER)
+    swap_section = after_swap.split(_OOMD_PRESSURE_HEADER, 1)[0]
+    _, _, pressure_section = r.stdout.partition(_OOMD_PRESSURE_HEADER)
+    return {"swap": "\tPath: " in swap_section,
+            "pressure": "\tPath: " in pressure_section}
+
+
+def _oomd_swap_enrolled():
+    return _oomd_monitored_sections()["swap"]
 
 
 def _coexisting_oom_fighter():
     """Read-only: is systemd-oomd or earlyoom already fighting OOM here?
     earlyoom has no enrollment concept — active means watching system-wide
     swap/memory unconditionally. systemd-oomd needs the extra enrollment
-    check (see _oomd_has_enrolled_cgroups) or a merely-running-but-unenrolled
-    oomd would wrongly tell RAMstein a backstop exists and stand down."""
+    check — EITHER section counts, this is deliberately the broad
+    question (see _oomd_monitored_sections) — or a merely-running-but-
+    unenrolled oomd would wrongly tell RAMstein a backstop exists and
+    stand down."""
     try:
         r = subprocess.run(["systemctl", "is-active", "systemd-oomd"],
                            capture_output=True, text=True, timeout=2)
-        if r.stdout.strip() == "active" and _oomd_has_enrolled_cgroups():
-            return "systemd-oomd"
+        if r.stdout.strip() == "active":
+            sections = _oomd_monitored_sections()
+            if sections["swap"] or sections["pressure"]:
+                return "systemd-oomd"
     except (OSError, subprocess.SubprocessError):
         pass
     try:
@@ -1368,7 +1377,13 @@ def _oomd_apply_enrollment(write):
                              f"{(r.stderr or r.stdout).strip()}"}
 
     time.sleep(1)  # let oomd finish its own startup re-discovery
-    enrolled = _oomd_has_enrolled_cgroups()
+    # SWAP-specific, not _coexisting_oom_fighter's broad either-section
+    # question — this verb enrolls ManagedOOMSwap=kill, so its own
+    # acceptance test must measure the swap section alone, or a machine
+    # with pressure already enrolled (every real machine, once verb #1's
+    # own restart populates it) would report swap-protected when it is
+    # not (alfred, DM #3250 — found live on the operator's machine).
+    enrolled = _oomd_swap_enrolled()
     moved = enrolled if write else not enrolled
     result = {"ok": moved, "wrote": write, "dropin": dropin,
               "measured_enrolled": enrolled}
@@ -1378,7 +1393,7 @@ def _oomd_apply_enrollment(write):
         # was written, what was measured, and that they disagree.
         result["error"] = (
             f"{'wrote' if write else 'removed'} {dropin} and restarted "
-            f"systemd-oomd, but _oomd_has_enrolled_cgroups() still reports "
+            f"systemd-oomd, but its Swap Monitored CGroups still reports "
             f"{'enrolled' if enrolled else 'not enrolled'} — the file "
             f"changed, the world didn't. Refusing to report success.")
     return result
@@ -1407,7 +1422,10 @@ def do_oomd_disenroll():
 
 def query_oomd_status(get_status):
     return {
-        "enrolled": _oomd_has_enrolled_cgroups(),
+        # SWAP-specific — see _oomd_swap_enrolled's docstring on
+        # _oomd_monitored_sections (alfred, DM #3250): this verb is about
+        # swap protection, not "is oomd doing anything at all".
+        "enrolled": _oomd_swap_enrolled(),
         "ramstein_dropin_present": os.path.exists(_oomd_enroll_dropin_path()),
         "preflight_would_refuse": _oomd_enroll_preflight(get_status),
     }

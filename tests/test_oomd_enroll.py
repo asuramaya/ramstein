@@ -63,6 +63,22 @@ ENROLLED_DUMP = UNENROLLED_DUMP.replace(
     "\t\tSwap Usage: 4.0K\n",
 )
 
+# REAL, LIVE-CAPTURED (2026-08-02, same as test_oom_coexist.py): pressure
+# enrolled, swap genuinely empty -- the exact dump that made `ramstein
+# oomd status` lie on the operator's own machine (alfred, DM #3250).
+LIVE_PRESSURE_ONLY_DUMP = """Dry Run: no
+Swap Used Limit: 90.00%
+Default Memory Pressure Limit: 60.00%
+Default Memory Pressure Duration: 20s
+System Context:
+\tMemory: Used: 22.9G, Total: 61.2G
+\tSwap: Used: 1.1G, Total: 7.9G
+Swap Monitored CGroups:
+Memory Pressure Monitored CGroups:
+\tPath: /user.slice/user-1000.slice/user@1000.service
+\t\tMemory Pressure Limit: 50.00%
+"""
+
 
 def _write_exec(path, body):
     with open(path, "w") as f:
@@ -121,13 +137,18 @@ FIXTURE_EOF
     return fails
 
 
-def _fake_systemd_pair(tmp, dropin_path, marker_path, always_unenrolled=False):
+def _fake_systemd_pair(tmp, dropin_path, marker_path, always_unenrolled=False,
+                        stuck_dump=None):
     """systemctl: is-active/daemon-reload succeed; `restart systemd-oomd`
     re-syncs marker_path to match whether dropin_path currently exists --
     modeling oomd re-discovering reality on restart, not a one-way flag.
     oomctl reports enrolled iff the marker exists, UNLESS always_
     unenrolled -- simulating a restart that doesn't actually fix anything
-    (the world-didn't-move case ruling 41b72476 exists to catch)."""
+    (the world-didn't-move case ruling 41b72476 exists to catch) -- or
+    stuck_dump, which pins oomctl to an EXACT fixed dump regardless of
+    the marker (for LIVE_PRESSURE_ONLY_DUMP: pressure enrolled from
+    something else entirely, swap never budges no matter what this verb
+    does -- alfred's DM #3250 real-world case)."""
     d = tempfile.mkdtemp(dir=tmp)
     _write_exec(os.path.join(d, "systemctl"), f"""#!/usr/bin/env bash
 if [ "$1" = "is-active" ]; then
@@ -143,7 +164,13 @@ if [ "$1" = "restart" ] && [ "$2" = "systemd-oomd" ]; then
 fi
 exit 1
 """)
-    if always_unenrolled:
+    if stuck_dump is not None:
+        _write_exec(os.path.join(d, "oomctl"), f"""#!/usr/bin/env bash
+cat <<'FIXTURE_EOF'
+{stuck_dump}
+FIXTURE_EOF
+""")
+    elif always_unenrolled:
         _write_exec(os.path.join(d, "oomctl"), f"""#!/usr/bin/env bash
 cat <<'FIXTURE_EOF'
 {UNENROLLED_DUMP}
@@ -258,6 +285,50 @@ def test_honest_failure_when_world_does_not_move(tmp):
     return fails
 
 
+def test_honest_failure_with_pressure_already_enrolled(tmp):
+    """THE REAL-WORLD CASE (alfred, DM #3250, found live on the operator's
+    own machine after verb #1 shipped): memory-pressure already enrolled
+    from something else entirely, swap never budges no matter what this
+    verb does. A prior version's re-verify used a predicate that scooped
+    BOTH sections once anchored past "Swap Monitored CGroups:", so the
+    pressure entry alone satisfied it and the verb reported success on a
+    machine with zero actual swap protection -- the exact failure this
+    whole night's work exists to catch, in the tool built to catch it.
+    Must report FAILURE, not be fooled by an unrelated section."""
+    fails = []
+    systemd_root = tempfile.mkdtemp(dir=tmp)
+    dropin = os.path.join(systemd_root, ramsteind._OOMD_ENROLL_DROPIN_REL)
+    marker = os.path.join(tmp, "oomd-enrolled-marker-pressure-only")
+    fakebin = _fake_systemd_pair(tmp, dropin, marker,
+                                  stuck_dump=LIVE_PRESSURE_ONLY_DUMP)
+
+    old_path, old_root = os.environ.get("PATH", ""), os.environ.get("RAMSTEIN_SYSTEMD_ROOT")
+    os.environ["PATH"] = fakebin + os.pathsep + old_path
+    os.environ["RAMSTEIN_SYSTEMD_ROOT"] = systemd_root
+    try:
+        result = ramsteind.do_oomd_enroll(lambda: _fake_status(50, 50))
+        if result.get("ok"):
+            fails.append(
+                f"pressure being enrolled fooled the swap-specific re-verify"
+                f" into reporting success: {result!r}")
+        status = ramsteind.query_oomd_status(lambda: _fake_status(50, 50))
+        if status["enrolled"]:
+            fails.append(f"query_oomd_status also fooled by the pressure"
+                          f" section: {status!r}")
+        # the broad coexistence question is a SEPARATE, correct concern --
+        # pressure alone is a real backstop, just not this verb's backstop
+        if ramsteind._coexisting_oom_fighter() != "systemd-oomd":
+            fails.append("pressure-only enrollment should still count for"
+                          " the broad coexistence question")
+    finally:
+        os.environ["PATH"] = old_path
+        if old_root is None:
+            os.environ.pop("RAMSTEIN_SYSTEMD_ROOT", None)
+        else:
+            os.environ["RAMSTEIN_SYSTEMD_ROOT"] = old_root
+    return fails
+
+
 def test_disenroll(tmp):
     fails = []
     systemd_root = tempfile.mkdtemp(dir=tmp)
@@ -300,6 +371,8 @@ def main():
             ("enroll success", test_enroll_success),
             ("preflight refusal blocks the write", test_preflight_refusal_blocks_the_write),
             ("honest failure when the world doesn't move", test_honest_failure_when_world_does_not_move),
+            ("honest failure with pressure already enrolled (real-world case)",
+             test_honest_failure_with_pressure_already_enrolled),
             ("disenroll", test_disenroll),
         ]:
             fails = fn(tmp)
