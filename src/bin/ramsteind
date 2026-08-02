@@ -1494,6 +1494,167 @@ def query_oomd_status(get_status):
     }
 
 
+# --- layer 3, verb #2: vm.swappiness ----------------------------------------
+# Approved table (decision f8e7cc5a): SEGMENT presets, CHEAP, PERSISTENT.
+# The pill's SEGMENT is a small named-stance set; the daemon/CLI take the
+# raw kernel value (0-200 — modern kernels accept up to 200 for MGLRU) since
+# the CLI is for agents and experts and the pill maps its chip labels onto
+# concrete numbers, not the other way around. First (cheapest) of the three
+# verbs alfred sequenced tonight, per his own "swappiness first, swap-size
+# second, zram last" ordering.
+
+SWAPPINESS_MIN, SWAPPINESS_MAX = 0, 200
+_SWAPPINESS_DROPIN_REL = "sysctl.d/90-ramstein-swappiness.conf"
+_SWAPPINESS_PROC_PATH = "/proc/sys/vm/swappiness"
+
+
+def _sysctl_root():
+    # Mirrors _cgroup_root()/_systemd_root()'s exact safety pattern: an env
+    # override is honored ONLY when running unprivileged.
+    root = os.environ.get("RAMSTEIN_SYSCTL_ROOT")
+    if root and os.getuid() != 0:
+        return root
+    return "/etc"
+
+
+def _swappiness_dropin_path():
+    return os.path.join(_sysctl_root(), _SWAPPINESS_DROPIN_REL)
+
+
+def _swappiness_dropin_body(value):
+    return f"vm.swappiness = {value}\n"
+
+
+def _swappiness_proc_path():
+    # /proc/sys/vm/swappiness is a live kernel interface, not a plain
+    # writable tree — tests need their OWN fake file to read/write instead
+    # of the real one, same override-only-when-unprivileged rule as
+    # _cgroup_root(). Reading/writing this path directly (what sysctl(8)
+    # itself does under the hood for a single scalar key) is simpler and
+    # more testable than shelling out to `sysctl -w`, and the kernel
+    # enforces its own accepted range on the write() syscall either way.
+    root = os.environ.get("RAMSTEIN_PROC_SWAPPINESS")
+    if root and os.getuid() != 0:
+        return root
+    return _SWAPPINESS_PROC_PATH
+
+
+def _read_swappiness():
+    try:
+        with open(_swappiness_proc_path()) as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _write_swappiness_live(value):
+    try:
+        with open(_swappiness_proc_path(), "w") as f:
+            f.write(str(value))
+    except OSError as exc:
+        return f"write to {_swappiness_proc_path()} failed: {exc.strerror}"
+    return None
+
+
+SWAPPINESS_PRIOR_PATH = os.path.join(STATE_DIR, "swappiness_prior.json")
+
+
+def _swappiness_prior_read():
+    try:
+        with open(SWAPPINESS_PRIOR_PATH) as f:
+            return json.load(f).get("prior")
+    except (OSError, ValueError):
+        return None
+
+
+def _swappiness_prior_write_once(value):
+    """Ledger the value from BEFORE RAMstein's first change — idempotent:
+    a second or third `set` must never overwrite the true original with
+    an intermediate RAMstein-chosen value, or `reset` would restore to
+    the wrong number. Cleared by a successful reset (see
+    do_swappiness_reset) so a later first-change re-ledgers fresh instead
+    of a `reset` years later snapping back to a long-stale number."""
+    if _swappiness_prior_read() is not None:
+        return
+    os.makedirs(STATE_DIR, exist_ok=True)
+    sutra.write_status(SWAPPINESS_PRIOR_PATH, {"prior": value}, owner=None)
+
+
+def do_swappiness_set(value):
+    if not SWAPPINESS_MIN <= value <= SWAPPINESS_MAX:
+        return {"error": f"value must be in {SWAPPINESS_MIN}..{SWAPPINESS_MAX}"}
+    current = _read_swappiness()
+    if current is None:
+        return {"error": "could not read the current vm.swappiness"}
+    _swappiness_prior_write_once(current)
+
+    dropin = _swappiness_dropin_path()
+    try:
+        os.makedirs(os.path.dirname(dropin), exist_ok=True)
+        with open(dropin, "w") as f:
+            f.write(_swappiness_dropin_body(value))
+    except OSError as exc:
+        return {"ok": False, "error": f"drop-in write failed: {exc.strerror}"}
+
+    live_err = _write_swappiness_live(value)
+    measured = _read_swappiness()
+    moved = measured == value
+    result = {"ok": moved, "dropin": dropin, "requested": value,
+              "measured": measured, "prior": _swappiness_prior_read()}
+    if not moved:
+        # ruling 41b72476: the pill's own observation must move, or this
+        # reports failure — a written drop-in with an unmoved live value
+        # is not success, it's a change that only takes effect on reboot
+        result["error"] = live_err or (
+            f"wrote {value} but the kernel now reports {measured!r} —"
+            f" refusing to report success")
+    _ledger_write({"ts": time.time(), "verb": "swappiness_set", "pid": None,
+                   "comm": None, "arg": str(value),
+                   "result": "ok" if result["ok"] else "error",
+                   "detail": result.get("error")})
+    return result
+
+
+def do_swappiness_reset():
+    prior = _swappiness_prior_read()
+    if prior is None:
+        return {"error": "nothing to reset — RAMstein has never changed"
+                          " vm.swappiness on this machine"}
+    dropin = _swappiness_dropin_path()
+    try:
+        if os.path.exists(dropin):
+            os.remove(dropin)
+    except OSError as exc:
+        return {"ok": False, "error": f"drop-in removal failed: {exc.strerror}"}
+
+    live_err = _write_swappiness_live(prior)
+    measured = _read_swappiness()
+    moved = measured == prior
+    result = {"ok": moved, "restored_to": prior, "measured": measured}
+    if not moved:
+        result["error"] = live_err or (
+            f"removed the drop-in but the kernel now reports {measured!r},"
+            f" expected {prior!r} — refusing to report success")
+    else:
+        try:
+            os.remove(SWAPPINESS_PRIOR_PATH)
+        except OSError:
+            pass
+    _ledger_write({"ts": time.time(), "verb": "swappiness_reset", "pid": None,
+                   "comm": None, "arg": str(prior),
+                   "result": "ok" if result["ok"] else "error",
+                   "detail": result.get("error")})
+    return result
+
+
+def query_swappiness_status():
+    return {
+        "current": _read_swappiness(),
+        "ramstein_dropin_present": os.path.exists(_swappiness_dropin_path()),
+        "prior": _swappiness_prior_read(),
+    }
+
+
 # --- control socket ---------------------------------------------------------
 # The security seam (SO_PEERCRED-gated, bounded reads, hostile-input framing,
 # the listen(64) backlog M4's attack suite demanded) lives in
@@ -1590,6 +1751,18 @@ def _make_dispatch(cfg, get_status, autocalm_state, config_path):
             if action == "disenroll":
                 return do_oomd_disenroll()
             raise ValueError("unknown oomd action")
+        if cmd == "swappiness":
+            action = req.get("action")
+            if action == "status":
+                return query_swappiness_status()
+            if action == "set":
+                value = req.get("value")
+                if not isinstance(value, int):
+                    raise ValueError("value must be an int")
+                return do_swappiness_set(value)
+            if action == "reset":
+                return do_swappiness_reset()
+            raise ValueError("unknown swappiness action")
         return None  # unknown -> sutra frames {"error": "unknown command"}
     return dispatch
 

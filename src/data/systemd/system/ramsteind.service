@@ -27,7 +27,14 @@ ProtectSystem=strict
 # a real systemd container, confirmed the write landed on disk, restarted
 # the unit for real, and confirmed `autocalm status` still read armed=true
 # with no re-arm — same for the dry/false direction.
-ReadWritePaths=/run/ramstein /var/lib/ramstein /sys/fs/cgroup /etc/ramstein
+# /proc/sys/vm/swappiness carries the swappiness verb's live apply, and
+# /etc/sysctl.d its persistent drop-in (90-ramstein-swappiness.conf) —
+# same ProtectKernelTunables/ProtectSystem carve-out shape as /sys/fs/
+# cgroup and /etc/ramstein above, found the same way: read the unit's own
+# hardening directives before assuming a new verb's write path is covered,
+# rather than discover it live when the verb is first called for real.
+ReadWritePaths=/run/ramstein /var/lib/ramstein /sys/fs/cgroup /etc/ramstein \
+                /proc/sys/vm/swappiness /etc/sysctl.d
 # Everything M0 reads lives under /proc — nothing in $HOME matters to any
 # verb through M3 (calm/kill touch /proc + /sys/fs/cgroup, never $HOME).
 ProtectHome=yes

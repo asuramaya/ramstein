@@ -81,6 +81,25 @@ Every place RAMstein mentions another OOM-fighter — `advise`'s coexist line, a
 (pressure only, not swap)`. Pressure-only coverage protects none of the scenario RAMstein exists
 for; a bare "systemd-oomd is active" would read identically whether swap was covered or not.
 
+## Swappiness
+
+```
+ramstein swappiness status      # current vm.swappiness, RAMstein drop-in state, ledgered prior
+ramstein swappiness set N       # 0-200, applies immediately, persists across reboot (TTY confirm)
+ramstein swappiness reset       # restore the value from before RAMstein's first change
+```
+
+`set` writes a `sysctl.d` drop-in (`/etc/sysctl.d/90-ramstein-swappiness.conf`) for reboot survival
+and applies the value to the live kernel in the same call — no service to restart, no reload to
+wait on. The value from *before* RAMstein's very first change is ledgered once and never
+overwritten by a later `set`, so `reset` always restores the true original rather than whatever
+RAMstein last chose. Every write re-measures `/proc/sys/vm/swappiness` before reporting success,
+same discipline as `oomd enroll`: a drop-in that was written but didn't move the live value is a
+failure, not a partial success.
+
+Swap file size (`swap-size`) and zram (`zram`) are the next two layer-3 verbs on the same table
+(decision f8e7cc5a) — not yet built.
+
 ## The GNOME pill
 
 `make pill` (as yourself, no sudo) installs the Quick Settings tile: available memory and

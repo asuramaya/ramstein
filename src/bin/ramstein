@@ -477,6 +477,61 @@ def cmd_oomd(argv):
     sys.exit("ramstein: oomd needs one of status | enroll | disenroll")
 
 
+def cmd_swappiness(argv):
+    """Layer 3, verb #2: vm.swappiness. Persisted via a sysctl.d drop-in
+    and applied live immediately -- no restart, no daemon to notice a
+    config reload. SEGMENT-shaped for the pill (a small named-stance
+    set); the CLI takes the raw kernel value (0-200) since it's for
+    agents and experts, not the pill's chip labels."""
+    sub = argv[0] if argv else "status"
+    rest = argv[1:]
+
+    if sub == "status":
+        doc = request_or_die({"cmd": "swappiness", "action": "status"})
+        if "--json" in rest:
+            print(json.dumps(doc, indent=2))
+            return
+        present = "present" if doc["ramstein_dropin_present"] else "absent"
+        print(f"vm.swappiness: {doc['current']} (RAMstein drop-in {present})")
+        if doc.get("prior") is not None:
+            print(f"  prior value (before RAMstein first changed it):"
+                  f" {doc['prior']} -- `ramstein swappiness reset` restores it")
+        return
+
+    if sub == "set":
+        # parse-only here; the daemon owns the real range (0-200) and its
+        # error comes back through request_or_die same as any other verb —
+        # the CLI doesn't duplicate a range it doesn't enforce
+        if not rest or not rest[0].lstrip("-").isdigit():
+            sys.exit("ramstein: swappiness set needs an integer value")
+        value = int(rest[0])
+        if not sys.stdin.isatty():
+            sys.exit("ramstein: swappiness set refuses a non-interactive TTY")
+        print(f"Setting vm.swappiness to {value} -- persists across reboot")
+        print("(sysctl.d drop-in) and applies immediately, no restart needed.")
+        try:
+            typed = input("type 'set' to confirm: ").strip()
+        except EOFError:
+            typed = ""
+        if typed != "set":
+            sys.exit("ramstein: swappiness set not confirmed")
+        doc = request_or_die({"cmd": "swappiness", "action": "set", "value": value})
+        if not doc.get("ok"):
+            sys.exit(f"ramstein: swappiness set failed: {doc.get('error', doc)}")
+        print(f"vm.swappiness -> {doc['measured']} confirmed live"
+              f" (prior value {doc['prior']} ledgered for `swappiness reset`).")
+        return
+
+    if sub == "reset":
+        doc = request_or_die({"cmd": "swappiness", "action": "reset"})
+        if not doc.get("ok"):
+            sys.exit(f"ramstein: swappiness reset failed: {doc.get('error', doc)}")
+        print(f"vm.swappiness restored to {doc['restored_to']} and confirmed live.")
+        return
+
+    sys.exit("ramstein: swappiness needs one of status | set N | reset")
+
+
 def cmd_update(argv):
     """Delegate straight to ramstein-update (execvp — its exit code becomes
     ours). `ramstein update --check --json` is the pill's UpdateSurface
@@ -511,6 +566,7 @@ verbs:
                                    renice, squeeze, release, or kill a process
   autocalm status|arm|dry|run     unattended calm: arm/disarm, or run one cycle
   oomd status|enroll|disenroll    layer-3: enroll this session in systemd-oomd's swap-kill protection
+  swappiness status|set N|reset   layer-3: vm.swappiness, persisted + applied live (0-200)
   update [--check]                check for / delegate to ramstein-update
 
 --json applies to any read verb for machine-readable output.
@@ -541,7 +597,8 @@ def main():
     verbs = {"status": cmd_status, "top": cmd_top, "blame": cmd_blame,
              "swap": cmd_swap, "zombies": cmd_zombies, "oom": cmd_oom,
              "advise": cmd_advise, "calm": cmd_calm, "autocalm": cmd_autocalm,
-             "oomd": cmd_oomd, "update": cmd_update}
+             "oomd": cmd_oomd, "swappiness": cmd_swappiness,
+             "update": cmd_update}
     if verb in verbs:
         verbs[verb](rest)
     elif verb in PLANNED:

@@ -193,6 +193,41 @@ and confirms the machine is back to its default (unenrolled unless
 something else independently enrolled it).
 .RE
 .TP
+.BI swappiness " status|set N|reset"
+.IR vm.swappiness ,
+persisted and applied live \(em no service to restart. Writes a
+.BR sysctl.d (5)
+drop\-in
+.RI ( /etc/sysctl.d/90\-ramstein\-swappiness.conf )
+for reboot survival and the live kernel value in the same call.
+.RS
+.TP
+.B status
+Current live value, whether RAMstein's drop\-in is present, and the
+ledgered pre\-RAMstein value if one has been set.
+.TP
+.BI set " N"
+.I N
+is 0\(en200. Requires a real TTY and typing
+.B set
+to confirm. Ledgers the value from
+.I before
+RAMstein's first change \(em never overwritten by a later
+.BR set ,
+so
+.B reset
+always restores the true original. Re\-measures
+.I /proc/sys/vm/swappiness
+before reporting success; a drop\-in written without the live value
+moving is a failure, not a partial success.
+.TP
+.B reset
+Restores the ledgered pre\-RAMstein value and removes the drop\-in.
+Errors cleanly if RAMstein has never changed
+.I vm.swappiness
+on this machine.
+.RE
+.TP
 .BI update " [\-\-check] [\-\-json]"
 Delegates straight to
 .BR ramstein\-update (1)

@@ -31,7 +31,10 @@ fails = []
 RD = tempfile.mkdtemp(prefix="ramstein-attack-")
 atexit.register(shutil.rmtree, RD, ignore_errors=True)
 os.makedirs(os.path.join(RD, "fake_cgroup"), exist_ok=True)
+os.makedirs(os.path.join(RD, "fake_sysctl"), exist_ok=True)
 os.makedirs(os.path.join(RD, "fakebin"), exist_ok=True)
+with open(os.path.join(RD, "fake_proc_swappiness"), "w") as f:
+    f.write("60")
 with open(os.path.join(RD, "fakebin", "systemctl"), "w") as f:
     f.write('#!/usr/bin/env bash\n[ "$1" = "is-active" ] && '
             '{ echo "active"; exit 0; }\nexit 1\n')
@@ -45,6 +48,8 @@ env["PATH"] = os.path.join(RD, "fakebin") + os.pathsep + env.get("PATH", "")
 env["RAMSTEIN_RUNTIME_DIR"] = RD
 env["RAMSTEIN_STATE_DIR"] = os.path.join(RD, "state")
 env["RAMSTEIN_CGROUP_ROOT"] = os.path.join(RD, "fake_cgroup")
+env["RAMSTEIN_SYSCTL_ROOT"] = os.path.join(RD, "fake_sysctl")
+env["RAMSTEIN_PROC_SWAPPINESS"] = os.path.join(RD, "fake_proc_swappiness")
 proc = subprocess.Popen(
     [sys.executable, os.path.join(HERE, "src", "bin", "ramsteind"),
      "--config", os.path.join(RD, "config.json")],
@@ -165,6 +170,19 @@ HOSTILE = [
     {"cmd": "oomd"}, {"cmd": "oomd", "action": "wat"},
     {"cmd": "oomd", "action": None}, {"cmd": "oomd", "action": 123},
     {"cmd": "oomd", "action": "status", "extra": "garbage"},
+    # swappiness against the fake proc/sysctl fixtures above (not a real
+    # path) -- both hostile shapes AND legitimate-looking values here,
+    # since range validation (do_swappiness_set) and negative-number/type
+    # rejection are exactly what this suite exists to fuzz.
+    {"cmd": "swappiness"}, {"cmd": "swappiness", "action": "wat"},
+    {"cmd": "swappiness", "action": None}, {"cmd": "swappiness", "action": 123},
+    {"cmd": "swappiness", "action": "set"},
+    {"cmd": "swappiness", "action": "set", "value": "60"},
+    {"cmd": "swappiness", "action": "set", "value": None},
+    {"cmd": "swappiness", "action": "set", "value": -1},
+    {"cmd": "swappiness", "action": "set", "value": 99999},
+    {"cmd": "swappiness", "action": "set", "value": 3.5},
+    {"cmd": "swappiness", "action": "status", "extra": "garbage"},
     {"cmd": "wat"}, {"cmd": 123}, {"cmd": None}, {}, {"cmd": []},
 ]
 for msg in HOSTILE:
