@@ -101,9 +101,18 @@ deb:
 	install -m 0644 src/data/man/man1/ramstein.1 $(DEBROOT)/usr/share/man/man1/ramstein.1
 	install -m 0644 src/data/man/man8/ramsteind.8 $(DEBROOT)/usr/share/man/man8/ramsteind.8
 	install -m 0644 src/data/config/config.json $(DEBROOT)/etc/ramstein/config.json
-	install -m 0644 src/data/systemd/system/ramsteind.service src/data/systemd/system/ramstein-update.service \
-	    src/data/systemd/system/ramstein-update.timer src/data/systemd/system/ramstein-autocalm.service \
-	    src/data/systemd/system/ramstein-autocalm.timer $(DEBROOT)/lib/systemd/system/
+	# rewriting /usr/local/bin -> /usr/bin: the source units hardcode
+	# install.sh's source-install prefix, but this target installs binaries
+	# under /usr, not /usr/local (two lines up). Shipped verbatim until now
+	# (found 2026-08-02, alfred diffing the published v0.11.1 .deb): dpkg
+	# succeeds, ExecStart points at a binary the package never installs,
+	# the daemon dies 203/EXEC, and postinst's `|| true` swallows it
+	# silently. coldspot's build-deb.sh established this exact fix first.
+	for u in ramsteind.service ramstein-update.service ramstein-update.timer \
+	         ramstein-autocalm.service ramstein-autocalm.timer; do \
+	    sed 's#/usr/local/bin#/usr/bin#g' src/data/systemd/system/$$u \
+	        > $(DEBROOT)/lib/systemd/system/$$u; \
+	done
 	install -m 0755 packaging/deb/postinst $(DEBROOT)/DEBIAN/postinst
 	install -m 0755 packaging/deb/prerm $(DEBROOT)/DEBIAN/prerm
 	install -m 0755 packaging/deb/postrm $(DEBROOT)/DEBIAN/postrm

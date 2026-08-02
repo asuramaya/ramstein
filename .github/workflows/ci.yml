@@ -64,3 +64,49 @@ jobs:
 
       - name: Vendored-path resolution (all four binaries)
         run: make check-vendored-path-all
+
+  # Found 2026-08-02 (alfred, diffing the published v0.11.1 .deb against its
+  # own unit files): every pill in this family ships a hardened systemd
+  # unit and none had ever actually STARTED one in a test — CI always ran
+  # the raw binary directly. RAMstein's .deb shipped ExecStart=/usr/local/
+  # bin/... (install.sh's prefix) while installing binaries to /usr/bin
+  # (fixed in the deb: target, this same commit): dpkg succeeded, the
+  # daemon died 203/EXEC, postinst's `|| true` swallowed it silently.
+  # Undetectable from a raw-binary test no matter how thorough, since the
+  # raw binary never goes near the unit file — only installing the actual
+  # .deb and starting the actual unit exercises that path. GitHub's
+  # ubuntu-latest runners are full VMs with systemd as PID 1 (not
+  # containers), unlike a sandboxed dev environment, so this can run for
+  # real rather than assume the hardening/paths are correct on paper.
+  # Polls NRestarts over a window rather than checking is-active once: a
+  # crash loop under Restart=on-failure can read "active" between
+  # failures (ByeByte's same-day fanotify SIGSYS showed exactly this).
+  systemd-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build the .deb
+        run: make deb
+
+      - name: Install under the real hardened unit
+        run: sudo dpkg -i build/deb/ramstein_*_all.deb
+
+      - name: Poll ActiveState/NRestarts over 30s (not a one-shot is-active)
+        run: |
+          for i in $(seq 1 6); do
+            read -r active substate restarts mainpid <<< "$(systemctl show ramsteind.service -p ActiveState,SubState,NRestarts,MainPID --value | tr '\n' ' ')"
+            echo "t+$((i * 5))s: active=$active sub=$substate restarts=$restarts pid=$mainpid"
+            if [ "$active" != "active" ] || [ "$restarts" != "0" ]; then
+              echo "FAIL: ramsteind.service is '$active/$substate' with $restarts restart(s)" >&2
+              sudo journalctl -u ramsteind.service --no-pager -n 50 >&2
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "ramsteind.service stable: active, 0 restarts, over 30s"
+
+      - name: Real healthcheck + real status query
+        run: |
+          ramstein-healthcheck
+          ramstein status
