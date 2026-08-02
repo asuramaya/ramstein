@@ -119,3 +119,28 @@ jobs:
         run: |
           ramstein-healthcheck
           ramstein status
+
+      # Operator ruling relayed via alfred (DM #3098): covering only
+      # ramsteind isn't enough -- ByeByte's equivalent oneshot units
+      # (update/sweep) needed to actually COMPLETE under their corrected
+      # paths, not just carry the right ExecStart text, to be trusted.
+      # These two are Type=oneshot: `systemctl start` blocks until they
+      # finish, so Result reflects the real outcome, not just that the
+      # process launched. The two .timer units have no ExecStart of their
+      # own to break (only OnBootSec/OnUnitActiveSec) -- they just schedule
+      # these same services by systemd's default name-matching convention,
+      # so testing the services they trigger IS testing the timers'
+      # only meaningful failure mode.
+      - name: Run the oneshot units to completion (not just check ExecStart text)
+        run: |
+          for u in ramstein-autocalm.service ramstein-update.service; do
+            sudo systemctl start "$u" || true
+            result="$(systemctl show "$u" -p Result --value)"
+            echo "$u: Result=$result"
+            if [ "$result" != "success" ]; then
+              echo "FAIL: $u did not complete successfully (Result=$result)" >&2
+              sudo journalctl -u "$u" --no-pager -n 30 >&2
+              exit 1
+            fi
+          done
+          echo "both oneshot units completed successfully"
