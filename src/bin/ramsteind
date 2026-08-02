@@ -618,16 +618,47 @@ NICE_MIN, NICE_MAX = 0, 19                # calm only ever LOWERS priority
 LEDGER_PATH = os.path.join(STATE_DIR, "ledger.jsonl")
 
 
+def _oomd_has_enrolled_cgroups():
+    """systemd-oomd being active only means the service is running — it
+    still needs to be ENROLLED on at least one cgroup (ManagedOOMSwap=kill
+    or ManagedOOMMemoryPressure=kill, e.g. via the stock user@.service/
+    root-slice drop-ins) to actually act on anything. A machine can run
+    systemd-oomd at 100% swap, above its own Swap Used Limit, watching
+    nothing (confirmed live, 2026-08-02 — oomctl's Swap/Memory Pressure
+    Monitored CGroups sections both empty despite systemd-oomd active).
+    `oomctl`'s dump prints "\tPath: <cgroup>\n" once per enrolled cgroup
+    under each "...Monitored CGroups:" header (systemd src/oom/oomd-util.c,
+    oomd_dump_swap_cgroup_context/oomd_dump_memory_pressure_cgroup_context)
+    and nothing at all when a section's hashmap is empty — so a substring
+    check for that literal is enough without parsing sections apart."""
+    try:
+        r = subprocess.run(["oomctl"], capture_output=True, text=True,
+                            timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0 and "\tPath: " in r.stdout
+
+
 def _coexisting_oom_fighter():
-    """Read-only: is systemd-oomd or earlyoom already fighting OOM here?"""
-    for unit in ("systemd-oomd", "earlyoom"):
-        try:
-            r = subprocess.run(["systemctl", "is-active", unit],
-                               capture_output=True, text=True, timeout=2)
-        except (OSError, subprocess.SubprocessError):
-            continue
+    """Read-only: is systemd-oomd or earlyoom already fighting OOM here?
+    earlyoom has no enrollment concept — active means watching system-wide
+    swap/memory unconditionally. systemd-oomd needs the extra enrollment
+    check (see _oomd_has_enrolled_cgroups) or a merely-running-but-unenrolled
+    oomd would wrongly tell RAMstein a backstop exists and stand down."""
+    try:
+        r = subprocess.run(["systemctl", "is-active", "systemd-oomd"],
+                           capture_output=True, text=True, timeout=2)
+        if r.stdout.strip() == "active" and _oomd_has_enrolled_cgroups():
+            return "systemd-oomd"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        r = subprocess.run(["systemctl", "is-active", "earlyoom"],
+                           capture_output=True, text=True, timeout=2)
         if r.stdout.strip() == "active":
-            return unit
+            return "earlyoom"
+    except (OSError, subprocess.SubprocessError):
+        pass
     return None
 
 
