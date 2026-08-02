@@ -15,8 +15,10 @@ harness's own spawned fixture processes, never anything else on the box.
 
 Run as your normal user:  python3 tests/attack_socket.py
 """
+import atexit
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -27,6 +29,7 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 fails = []
 
 RD = tempfile.mkdtemp(prefix="ramstein-attack-")
+atexit.register(shutil.rmtree, RD, ignore_errors=True)
 os.makedirs(os.path.join(RD, "fake_cgroup"), exist_ok=True)
 os.makedirs(os.path.join(RD, "fakebin"), exist_ok=True)
 with open(os.path.join(RD, "fakebin", "systemctl"), "w") as f:
@@ -307,6 +310,7 @@ print(f"   half-open client isolated, daemon alive throughout: "
 # with a config fixed at its own startup.
 print("== hostile policy config (auto_calm_*) ==")
 RD2 = tempfile.mkdtemp(prefix="ramstein-attack-cfg-")
+atexit.register(shutil.rmtree, RD2, ignore_errors=True)
 os.makedirs(os.path.join(RD2, "state"), exist_ok=True)
 with open(os.path.join(RD2, "config.json"), "w") as f:
     json.dump({
