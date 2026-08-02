@@ -12,7 +12,7 @@ ramstein blame [--since 10m] # what grew in RSS
 ramstein swap                # who's parked in swap
 ramstein zombies             # defunct processes and their parent
 ramstein oom                 # risk snapshot + who the kernel would kill first
-ramstein advise               # nudges: leaks, swap pressure, zombies, ETA
+ramstein advise               # nudges: leaks, swap pressure, zombies, ETA, shared memory
 ```
 
 ## Calming a process down

@@ -54,7 +54,9 @@ Read-only.
 .TP
 .B advise
 One-line nudges: sustained pressure, a fast RSS grower, swap over half
-full, unreaped zombies, another OOM-fighter active, ETA under an hour.
+full, unreaped zombies, another OOM-fighter active, ETA under an hour,
+shared memory (tmpfs/dev/shm) over
+.IR advise_shmem_pct .
 .TP
 .BI calm " target " "[\-\-high SIZE|\-\-release|\-\-nice N|\-\-kill]"
 The gentle levers, and the one ungentle one.

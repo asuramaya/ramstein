@@ -47,7 +47,7 @@ assert doc["daemon"]["version"], "no daemon version"
 for key in ("pid", "poll_interval"):
     assert key in doc["daemon"], f"daemon missing {key}"
 m = doc["memory"]
-for key in ("total", "available", "swap_total", "swap_free", "psi",
+for key in ("total", "available", "swap_total", "swap_free", "shmem", "psi",
             "burn_bps", "eta_oom_seconds", "state"):
     assert key in m, f"memory missing {key}"
 for key in ("some_avg10", "some_avg60", "some_avg300",

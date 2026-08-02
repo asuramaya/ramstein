@@ -94,6 +94,12 @@ DEFAULTS = {
     "zombie_advise_min": 3,    # V2.M1: a parent needs this many unreaped
                                # children before advise names it — a lone
                                # stray zombie about to be reaped is noise
+    "advise_shmem_pct": 15.0,  # Shmem (tmpfs/dev/shm/SysV+POSIX shm, machine-
+                               # wide per /proc/meminfo — NOT scoped to /tmp
+                               # alone, see the shmem advise rule) above this
+                               # % of total RAM is worth naming: correctly
+                               # excluded from MemAvailable, so it never shows
+                               # up as "the problem" anywhere else on the card
     # V2.M2: auto-calm — the master switch. Even fully armed (see
     # auto_calm_armed below) and even with the opt-in systemd timer
     # enabled, a cycle does nothing unless this is also true. Kill is
@@ -150,6 +156,7 @@ CLAMPS = {
     "swap_storm_eta_minutes": (0.1, 1440.0),
     "swap_storm_hysteresis_polls": (1, 60),
     "zombie_advise_min": (1, 100000),
+    "advise_shmem_pct": (0.0, 100.0),
     "auto_calm_psi_some": (0.0, 100.0),
     "auto_calm_psi_full": (0.0, 100.0),
     "auto_calm_nice": (0, 19),         # NICE_MIN/NICE_MAX — calm only lowers
@@ -168,7 +175,7 @@ def load_config(path):
 
 # --- polling ----------------------------------------------------------------
 
-MEMINFO_KEYS = ("MemTotal", "MemAvailable", "SwapTotal", "SwapFree")
+MEMINFO_KEYS = ("MemTotal", "MemAvailable", "SwapTotal", "SwapFree", "Shmem")
 PSI_KEYS = ("some_avg10", "some_avg60", "some_avg300",
             "full_avg10", "full_avg60", "full_avg300")
 
@@ -210,6 +217,7 @@ def poll_memory(state, cfg, now):
     avail = mi.get("MemAvailable", 0)
     swap_total = mi.get("SwapTotal", 0)
     swap_free = mi.get("SwapFree", 0)
+    shmem = mi.get("Shmem", 0)
     psi = read_psi()
 
     prev = state.get("mem")
@@ -231,6 +239,7 @@ def poll_memory(state, cfg, now):
         "available": avail,
         "swap_total": swap_total,
         "swap_free": swap_free,
+        "shmem": shmem,
         "psi": psi,
         "burn_bps": round(ewma, 1),
         "eta_oom_seconds": None if eta is None else int(eta),
@@ -913,6 +922,27 @@ def query_advise(cfg, get_status):
         if eta is not None and eta < 3600:
             lines.append({"rule": "eta", "text":
                 f"OOM ETA {eta}s — see `ramstein oom` for kill candidates"})
+
+    # rule 7: shared memory (tmpfs/dev/shm/SysV+POSIX shm) is correctly
+    # excluded from MemAvailable — the kernel can't reclaim it without
+    # something actually deleting/freeing it — so it never shows up as
+    # "the problem" anywhere else on this card even when it is the single
+    # largest reclaimable block of RAM on the machine. Deliberately
+    # SYSTEM-WIDE wording, not "/tmp": /proc/meminfo's Shmem sums every
+    # tmpfs mount plus SysV/POSIX shared memory into one number, which is
+    # NOT the same figure a /tmp-scoped tool (e.g. ByeByte's `why`) would
+    # show for that one mount — two pills, two correctly different scopes
+    # for the same underlying bytes, not a mismatch (Werner, DM #3228).
+    if mem and mem.get("total"):
+        shmem = mem.get("shmem", 0)
+        shmem_pct = 100.0 * shmem / mem["total"]
+        if shmem_pct > cfg["advise_shmem_pct"]:
+            lines.append({"rule": "shmem", "text":
+                f"{shmem / 1024**3:.1f}G ({shmem_pct:.0f}% of RAM) is shared"
+                f" memory across the system (tmpfs/dev/shm/shared-memory"
+                f" segments) — correctly excluded from available memory,"
+                f" but some of it may be safely deletable; a disk-focused"
+                f" pill (e.g. ByeByte) can show what's actually in it"})
 
     return {"lines": lines}
 
