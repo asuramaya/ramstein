@@ -52,6 +52,18 @@ ENROLLED_DUMP = UNENROLLED_DUMP.replace(
     "\t\tSwap Usage: 4.0K\n",
 )
 
+# Alfred's review finding (DM #3204): an UNANCHORED "\tPath: " substring
+# check fails OPEN -- any future oomctl section that happens to emit a
+# tab-indented "Path: " line outside the two real Monitored CGroups
+# sections would make it return True. Simulates a hypothetical future
+# diagnostic field doing exactly that, BEFORE the real anchor header --
+# both monitored sections stay genuinely, actually empty.
+SPURIOUS_PATH_DUMP = UNENROLLED_DUMP.replace(
+    "System Context:\n",
+    "System Context:\n"
+    "\tPath: /not/a/real/enrollment (hypothetical future diagnostic field)\n",
+)
+
 
 def _write_exec(path, body):
     with open(path, "w") as f:
@@ -125,6 +137,15 @@ def main():
         got = run_case(tmp, {"systemd-oomd"}, None, no_oomctl=True)
         if got is not None:
             fails.append(f"missing oomctl binary wrongly reported a fighter: {got!r}")
+
+        # THE FAIL-OPEN CASE (alfred's review, DM #3204): a "Path: " line
+        # outside the two real monitored sections must NOT be mistaken for
+        # enrollment. An unanchored substring check gets this wrong.
+        got = run_case(tmp, {"systemd-oomd"}, SPURIOUS_PATH_DUMP)
+        if got is not None:
+            fails.append(
+                f"a Path: line outside the Monitored CGroups sections wrongly "
+                f"counted as enrollment (fails OPEN instead of CLOSED): {got!r}")
 
     if fails:
         print("OOM COEXIST TEST FAILED:")
