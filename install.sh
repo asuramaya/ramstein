@@ -224,6 +224,15 @@ fi
 
 # 3. systemd: daemon (+ updater/autocalm units, installed but NOT enabled)
 echo "-- systemd units + enabling"
+# ramsteind.service's ReadWritePaths carves out user@.service.d for oomd
+# enroll's drop-in write — but ReadWritePaths needs the target to already
+# EXIST at unit start (unlike StateDirectory=/RuntimeDirectory=, it does
+# not create anything), and a fresh Ubuntu install has no reason to have
+# created this override directory yet. Found by testing oomd enroll
+# against a from-scratch container install rather than trusting the unit
+# file's own comments: a missing target here doesn't just fail the write,
+# it fails the WHOLE UNIT at startup (226/NAMESPACE, daemon crash-loops).
+install -d -m 0755 /etc/systemd/system/user@.service.d
 install -m 0644 "$SRC/src/data/systemd/system/ramsteind.service"        "$UNITDIR/ramsteind.service"
 install -m 0644 "$SRC/src/data/systemd/system/ramstein-update.service"  "$UNITDIR/ramstein-update.service"
 install -m 0644 "$SRC/src/data/systemd/system/ramstein-update.timer"    "$UNITDIR/ramstein-update.timer"

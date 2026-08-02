@@ -33,8 +33,23 @@ ProtectSystem=strict
 # cgroup and /etc/ramstein above, found the same way: read the unit's own
 # hardening directives before assuming a new verb's write path is covered,
 # rather than discover it live when the verb is first called for real.
+#
+# /etc/systemd/system/user@.service.d WAS MISSING despite oomd enroll
+# already shipping and being described as "verified live" — that claim
+# was about the swap-enrollment MECHANISM (source-confirmed, oomctl
+# re-measured), never about this write path specifically. Found while
+# checking swap-size's own upcoming ReadWritePaths needs, by testing the
+# ALREADY-SHIPPED oomd enroll against a from-scratch container install of
+# this exact unit rather than assuming past testing covered it: enroll
+# failed with "Read-only file system" on the drop-in write, caught
+# cleanly (no crash, an honest {"ok": false} — the try/except around the
+# write did its job), but silently wrong on every fresh install of this
+# hardening pass until now. Scoped to the one directory the verb writes,
+# not all of /etc/systemd/system, for the same reason every other entry
+# here is a single path rather than its whole parent.
 ReadWritePaths=/run/ramstein /var/lib/ramstein /sys/fs/cgroup /etc/ramstein \
-                /proc/sys/vm/swappiness /etc/sysctl.d
+                /proc/sys/vm/swappiness /etc/sysctl.d \
+                /etc/systemd/system/user@.service.d
 # Everything M0 reads lives under /proc — nothing in $HOME matters to any
 # verb through M3 (calm/kill touch /proc + /sys/fs/cgroup, never $HOME).
 ProtectHome=yes

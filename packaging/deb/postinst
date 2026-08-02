@@ -18,6 +18,12 @@ case "$1" in
       OWNER_UID="${SUDO_UID:-1000}"
       python3 "$SEED" "$CONFIG" "$CONFIG" "$OWNER_UID"
     fi
+    # ReadWritePaths carves out user@.service.d for oomd enroll's drop-in,
+    # but needs the target to already EXIST at unit start (it doesn't
+    # create anything, unlike StateDirectory=/RuntimeDirectory=) -- a
+    # missing target fails the WHOLE unit (226/NAMESPACE), not just the
+    # write. install.sh carries the same step; see its comment there.
+    mkdir -p /etc/systemd/system/user@.service.d
     systemctl daemon-reload >/dev/null 2>&1 || true
     systemctl enable ramsteind.service >/dev/null 2>&1 || true
     if systemctl is-active --quiet ramsteind.service 2>/dev/null; then
