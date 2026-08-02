@@ -94,8 +94,17 @@ jobs:
 
       - name: Poll ActiveState/NRestarts over 30s (not a one-shot is-active)
         run: |
+          # Individual -p queries, not a single comma-list --value call:
+          # `systemctl show -p A,B,C,D --value` does NOT preserve the
+          # requested order (it returned MainPID,NRestarts,ActiveState,
+          # SubState here, not the ActiveState,SubState,NRestarts,MainPID
+          # asked for) -- caught by this very step on its first real run,
+          # positional `read` silently mis-assigned every field.
           for i in $(seq 1 6); do
-            read -r active substate restarts mainpid <<< "$(systemctl show ramsteind.service -p ActiveState,SubState,NRestarts,MainPID --value | tr '\n' ' ')"
+            active="$(systemctl show ramsteind.service -p ActiveState --value)"
+            substate="$(systemctl show ramsteind.service -p SubState --value)"
+            restarts="$(systemctl show ramsteind.service -p NRestarts --value)"
+            mainpid="$(systemctl show ramsteind.service -p MainPID --value)"
             echo "t+$((i * 5))s: active=$active sub=$substate restarts=$restarts pid=$mainpid"
             if [ "$active" != "active" ] || [ "$restarts" != "0" ]; then
               echo "FAIL: ramsteind.service is '$active/$substate' with $restarts restart(s)" >&2
