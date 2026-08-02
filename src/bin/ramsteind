@@ -1188,6 +1188,178 @@ def query_autocalm_status(cfg, autocalm_state, get_status):
     }
 
 
+# --- V2.M3: oomd swap-enrollment — layer 3's first verb, built to ruling
+# 41b72476 (a layer-3 verb succeeds when the pill's own OBSERVATION of the
+# world changes, never merely when a file is written). Found live 2026-08-02
+# (DM #3207/#3209/#3212): Ubuntu ships user@.service with
+# ManagedOOMMemoryPressure=kill but nothing anywhere sets ManagedOOMSwap=
+# kill — the exact scenario RAMstein exists for (sustained swap pressure)
+# has zero stock coverage. This verb closes that gap the way systemd
+# itself would: a new override drop-in, nothing hand-edited, undone the
+# same way it was done.
+
+_OOMD_ENROLL_DROPIN_REL = "user@.service.d/50-ramstein-oomd-enroll.conf"
+_OOMD_ENROLL_DROPIN_BODY = "[Service]\nManagedOOMSwap=kill\n"
+
+
+def _systemd_root():
+    # Mirrors _cgroup_root()'s exact safety pattern: an env override is
+    # honored ONLY when running unprivileged — a root daemon must never
+    # let an environment variable redirect where it writes real systemd
+    # unit files (config-can't-weaken-safety doctrine, applied to env).
+    # Tests run as an unprivileged user and use this to point at a fake,
+    # writable systemd tree instead of the real /etc/systemd/system —
+    # and even a test that forgets to set it can't do real damage: an
+    # unprivileged process can't write there anyway, it just fails clean.
+    root = os.environ.get("RAMSTEIN_SYSTEMD_ROOT")
+    if root and os.getuid() != 0:
+        return root
+    return "/etc/systemd/system"
+
+
+def _oomd_enroll_dropin_path():
+    return os.path.join(_systemd_root(), _OOMD_ENROLL_DROPIN_REL)
+
+
+def _oomd_swap_used_limit_percent():
+    """systemd-oomd's own LIVE SwapUsedLimit, read from oomctl rather than
+    hardcoded — so _oomd_enroll_preflight can never drift from the
+    daemon's actual running policy. Falls back to systemd's own compiled
+    default (90%, confirmed against a stock install with no oomd.conf.d
+    overrides, 2026-08-02) if oomctl is unreachable or the line isn't
+    found — the conservative direction: a wrong-but-lower assumed limit
+    only ever makes the pre-flight refuse MORE readily, never less."""
+    try:
+        r = subprocess.run(["oomctl"], capture_output=True, text=True,
+                            timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        return 90.0
+    if r.returncode != 0:
+        return 90.0
+    for line in r.stdout.splitlines():
+        if line.startswith("Swap Used Limit:"):
+            try:
+                return float(line.split(":", 1)[1].strip().rstrip("%"))
+            except ValueError:
+                break
+    return 90.0
+
+
+def _oomd_enroll_preflight(get_status):
+    """Refuse enrollment — naming the remedy, never a bare denial (alfred's
+    ruling: a refusal that names a better action is a redirect, not a
+    wall) — if systemd-oomd's own swap-kill trigger condition ALREADY
+    holds. Confirmed against systemd's own source (oomd-manager.c's
+    monitor_swap_contexts_handler) and oomd.conf(5)'s SwapUsedLimit=: a
+    CONJUNCTION — mem-used% AND swap-used% BOTH over the limit — with NO
+    duration/hysteresis at all (unlike memory-pressure's
+    ManagedOOMMemoryPressureDurationSec): it acts on the very next poll
+    cycle. Enrolling while this already holds hands victim selection to
+    oomd with zero time to react; RAMstein's own `oom` verb (surface
+    candidates, human picks) is strictly better in that exact moment —
+    same outcome, chosen target, no race. Per this conjunction, the
+    refusal will almost never actually fire on a healthy machine — that
+    is correct for a failsafe, not a sign it needs a richer UX.
+    Returns None if safe to proceed, else a human-readable refusal."""
+    doc = get_status()
+    mem = doc.get("memory") if isinstance(doc, dict) else None
+    if not mem or not mem.get("total"):
+        return "no status yet — wait for the sampler, then retry"
+    swap_total, swap_free = mem.get("swap_total"), mem.get("swap_free")
+    if not swap_total:
+        return ("no swap configured on this machine — there is nothing for"
+                " swap-kill protection to watch")
+    mem_used_pct = 100.0 * (1 - mem["available"] / mem["total"])
+    swap_used_pct = 100.0 * (1 - swap_free / swap_total)
+    limit = _oomd_swap_used_limit_percent()
+    if mem_used_pct > limit and swap_used_pct > limit:
+        return (
+            f"refusing: memory ({mem_used_pct:.0f}% used) and swap"
+            f" ({swap_used_pct:.0f}% used) are BOTH already past"
+            f" systemd-oomd's own {limit:.0f}% trigger — enrolling now"
+            f" would hand victim selection to oomd with no time to react."
+            f" See `ramstein oom` for kill candidates and choose one"
+            f" yourself first, or free memory, then retry enrollment.")
+    return None
+
+
+def _oomd_apply_enrollment(write):
+    """Shared by enroll/disenroll: daemon-reload + restart systemd-oomd —
+    the two steps proven necessary this session (a config-only write, or
+    daemon-reload alone, does not make oomd re-discover units; only its
+    own process restarting does) — then re-verify with the SAME detector
+    built this morning as this afternoon's acceptance test (ruling
+    41b72476) rather than trust the write. `write` is True for enroll
+    (create the drop-in first), False for disenroll (remove it first)."""
+    dropin = _oomd_enroll_dropin_path()
+    try:
+        if write:
+            os.makedirs(os.path.dirname(dropin), exist_ok=True)
+            with open(dropin, "w") as f:
+                f.write(_OOMD_ENROLL_DROPIN_BODY)
+        elif os.path.exists(dropin):
+            os.remove(dropin)
+    except OSError as exc:
+        return {"ok": False, "error": f"drop-in write failed: {exc.strerror}"}
+
+    for step in (["systemctl", "daemon-reload"],
+                 ["systemctl", "restart", "systemd-oomd"]):
+        try:
+            r = subprocess.run(step, capture_output=True, text=True,
+                               timeout=10)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {"ok": False, "error": f"{' '.join(step)} failed: {exc}"}
+        if r.returncode != 0:
+            return {"ok": False,
+                    "error": f"{' '.join(step)} exited {r.returncode}: "
+                             f"{(r.stderr or r.stdout).strip()}"}
+
+    time.sleep(1)  # let oomd finish its own startup re-discovery
+    enrolled = _oomd_has_enrolled_cgroups()
+    moved = enrolled if write else not enrolled
+    result = {"ok": moved, "wrote": write, "dropin": dropin,
+              "measured_enrolled": enrolled}
+    if not moved:
+        # Ruling 41b72476: a verb succeeds when the pill's own observation
+        # changes, never merely because a file was written — name what
+        # was written, what was measured, and that they disagree.
+        result["error"] = (
+            f"{'wrote' if write else 'removed'} {dropin} and restarted "
+            f"systemd-oomd, but _oomd_has_enrolled_cgroups() still reports "
+            f"{'enrolled' if enrolled else 'not enrolled'} — the file "
+            f"changed, the world didn't. Refusing to report success.")
+    return result
+
+
+def do_oomd_enroll(get_status):
+    refusal = _oomd_enroll_preflight(get_status)
+    if refusal:
+        return {"ok": False, "error": refusal}
+    result = _oomd_apply_enrollment(write=True)
+    _ledger_write({"ts": time.time(), "verb": "oomd_enroll", "pid": None,
+                   "comm": None, "arg": "user@.service ManagedOOMSwap=kill",
+                   "result": "ok" if result["ok"] else "error",
+                   "detail": result.get("error")})
+    return result
+
+
+def do_oomd_disenroll():
+    result = _oomd_apply_enrollment(write=False)
+    _ledger_write({"ts": time.time(), "verb": "oomd_disenroll", "pid": None,
+                   "comm": None, "arg": "user@.service ManagedOOMSwap=kill",
+                   "result": "ok" if result["ok"] else "error",
+                   "detail": result.get("error")})
+    return result
+
+
+def query_oomd_status(get_status):
+    return {
+        "enrolled": _oomd_has_enrolled_cgroups(),
+        "ramstein_dropin_present": os.path.exists(_oomd_enroll_dropin_path()),
+        "preflight_would_refuse": _oomd_enroll_preflight(get_status),
+    }
+
+
 # --- control socket ---------------------------------------------------------
 # The security seam (SO_PEERCRED-gated, bounded reads, hostile-input framing,
 # the listen(64) backlog M4's attack suite demanded) lives in
@@ -1275,6 +1447,15 @@ def _make_dispatch(cfg, get_status, autocalm_state, config_path):
             if action == "run":
                 return do_autocalm_run(cfg, get_status, autocalm_state)
             raise ValueError("unknown autocalm action")
+        if cmd == "oomd":
+            action = req.get("action")
+            if action == "status":
+                return query_oomd_status(get_status)
+            if action == "enroll":
+                return do_oomd_enroll(get_status)
+            if action == "disenroll":
+                return do_oomd_disenroll()
+            raise ValueError("unknown oomd action")
         return None  # unknown -> sutra frames {"error": "unknown command"}
     return dispatch
 

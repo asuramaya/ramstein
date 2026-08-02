@@ -141,6 +141,51 @@ calls periodically once enabled). Useful on demand to see what a cycle
 would do.
 .RE
 .TP
+.BI oomd " status|enroll|disenroll"
+Enrolls this session into
+.BR systemd-oomd (8)'s
+swap\-kill protection. Ubuntu ships
+.B systemd-oomd
+configured to act on memory
+.I pressure
+for your session but never on sustained
+.I swap
+exhaustion \(em the scenario
+.B ramstein
+exists for has zero stock coverage until this is run. Writes a drop\-in
+.RI ( ManagedOOMSwap=kill ),
+never a hand edit; undone the same way it was done.
+.RS
+.TP
+.B status
+Whether systemd\-oomd is actually watching this session right now, not
+merely configured to.
+.TP
+.B enroll
+Writes the drop\-in, restarts
+.B systemd-oomd
+(required for it to notice \(em proven necessary, a config reload alone
+does not trigger re\-discovery of already\-running units), then
+re\-measures before ever reporting success. Requires a real TTY and
+typing
+.B enroll
+to confirm. Refuses outright, naming the remedy, if memory
+.I and
+swap are already both past systemd\-oomd's own trigger threshold \(em
+enrolling in that moment would hand process selection to a kill with no
+grace period, when
+.B ramstein oom
+can show the same candidates for you to choose from instead. This
+refusal is a compiled\-in invariant; it will rarely fire on a healthy
+machine, which is correct.
+.TP
+.B disenroll
+Removes the drop\-in, restarts
+.B systemd-oomd,
+and confirms the machine is back to its default (unenrolled unless
+something else independently enrolled it).
+.RE
+.TP
 .BI update " [\-\-check] [\-\-json]"
 Delegates straight to
 .BR ramstein\-update (1)

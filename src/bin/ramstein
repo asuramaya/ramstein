@@ -422,6 +422,61 @@ def cmd_autocalm(argv):
     sys.exit("ramstein: autocalm needs one of status | arm | dry | run")
 
 
+def cmd_oomd(argv):
+    """Layer 3's first verb (ruling 41b72476): enroll this session into
+    systemd-oomd's swap-kill protection, which Ubuntu ships configured
+    for memory pressure but never for swap — the exact scenario RAMstein
+    exists for. `enroll` writes a drop-in, restarts systemd-oomd (proven
+    necessary — a config write alone doesn't make it re-discover units),
+    and re-measures with the real detector before ever claiming success."""
+    sub = argv[0] if argv else "status"
+    rest = argv[1:]
+
+    if sub == "status":
+        doc = request_or_die({"cmd": "oomd", "action": "status"})
+        if "--json" in rest:
+            print(json.dumps(doc, indent=2))
+            return
+        print(f"oomd swap-kill protection: "
+              f"{'ENROLLED' if doc['enrolled'] else 'not enrolled'}"
+              f" (RAMstein's own drop-in "
+              f"{'present' if doc['ramstein_dropin_present'] else 'absent'})")
+        if doc.get("preflight_would_refuse"):
+            print(f"  ! enrolling right now would refuse:"
+                  f" {doc['preflight_would_refuse']}")
+        return
+
+    if sub == "enroll":
+        if not sys.stdin.isatty():
+            sys.exit("ramstein: oomd enroll refuses a non-interactive TTY")
+        print("Enrolling asks systemd-oomd to SIGKILL a process in your")
+        print("session if swap AND memory both stay critically full at")
+        print("once — the exact scenario RAMstein exists to catch, which")
+        print("Ubuntu ships configured for memory pressure but NOT for")
+        print("swap. This restarts systemd-oomd (required for it to")
+        print("notice the change) and writes a drop-in that survives")
+        print("reboot; undo any time with `ramstein oomd disenroll`.")
+        try:
+            typed = input("type 'enroll' to confirm: ").strip()
+        except EOFError:
+            typed = ""
+        if typed != "enroll":
+            sys.exit("ramstein: oomd enroll not confirmed")
+        request_or_die({"cmd": "oomd", "action": "enroll"})
+        print("oomd swap-kill protection ENROLLED and confirmed live"
+              " (re-measured, not just written).")
+        return
+
+    if sub == "disenroll":
+        request_or_die({"cmd": "oomd", "action": "disenroll"})
+        print("oomd swap-kill protection removed and confirmed live —"
+              " restored to this machine's default (unenrolled unless"
+              " something else enrolls it).")
+        return
+
+    sys.exit("ramstein: oomd needs one of status | enroll | disenroll")
+
+
 def cmd_update(argv):
     """Delegate straight to ramstein-update (execvp — its exit code becomes
     ours). `ramstein update --check --json` is the pill's UpdateSurface
@@ -455,6 +510,7 @@ verbs:
   calm <pid|comm> --high SIZE|--release|--nice N|--kill
                                    renice, squeeze, release, or kill a process
   autocalm status|arm|dry|run     unattended calm: arm/disarm, or run one cycle
+  oomd status|enroll|disenroll    layer-3: enroll this session in systemd-oomd's swap-kill protection
   update [--check]                check for / delegate to ramstein-update
 
 --json applies to any read verb for machine-readable output.
@@ -485,7 +541,7 @@ def main():
     verbs = {"status": cmd_status, "top": cmd_top, "blame": cmd_blame,
              "swap": cmd_swap, "zombies": cmd_zombies, "oom": cmd_oom,
              "advise": cmd_advise, "calm": cmd_calm, "autocalm": cmd_autocalm,
-             "update": cmd_update}
+             "oomd": cmd_oomd, "update": cmd_update}
     if verb in verbs:
         verbs[verb](rest)
     elif verb in PLANNED:

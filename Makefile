@@ -27,6 +27,7 @@ smoke: check-sutra
 	bash tests/smoke.sh
 	bash tests/test_signing.sh
 	python3 tests/test_oom_coexist.py
+	python3 tests/test_oomd_enroll.py
 
 # the thorough adversarial pass (full cmd surface + oversized/garbage/
 # invalid-utf8/nested/unknown/rapid-reconnect/half-open-stall); smoke.sh

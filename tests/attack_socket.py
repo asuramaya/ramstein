@@ -158,6 +158,13 @@ HOSTILE = [
     {"cmd": "autocalm", "action": None}, {"cmd": "autocalm", "action": 123},
     {"cmd": "autocalm", "action": "run", "extra": "garbage"},
     {"cmd": "autocalm", "action": "arm", "extra": [1, 2, 3]},
+    # status only, not enroll/disenroll — those are exercised for real
+    # (with a proper fake systemd root) in tests/test_oomd_enroll.py;
+    # here it's just the socket's hostile-shape handling under fuzz,
+    # same bar as every other command.
+    {"cmd": "oomd"}, {"cmd": "oomd", "action": "wat"},
+    {"cmd": "oomd", "action": None}, {"cmd": "oomd", "action": 123},
+    {"cmd": "oomd", "action": "status", "extra": "garbage"},
     {"cmd": "wat"}, {"cmd": 123}, {"cmd": None}, {}, {"cmd": []},
 ]
 for msg in HOSTILE:

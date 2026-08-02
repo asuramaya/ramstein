@@ -51,6 +51,30 @@ with `ramstein autocalm dry`. The `ramstein-autocalm.timer` unit still ships ins
 enabled, so you flip on the timer yourself once you want the whole loop live:
 `sudo systemctl enable --now ramstein-autocalm.timer`.
 
+## OOM daemon enrollment
+
+Ubuntu ships `systemd-oomd` configured to kill on memory *pressure* for your session, but not on
+sustained *swap* exhaustion — the exact scenario RAMstein exists for has zero stock coverage.
+`ramstein oomd enroll` closes that gap the way systemd itself would: a drop-in, not a hand edit.
+
+```
+ramstein oomd status      # is systemd-oomd actually watching this session right now
+ramstein oomd enroll      # write the drop-in, restart systemd-oomd, confirm it's real (TTY confirm required)
+ramstein oomd disenroll   # remove it, restart systemd-oomd, confirm the machine is back to its default
+```
+
+`enroll` refuses outright — naming the remedy, not just declining — if memory *and* swap are both
+already past systemd-oomd's own trigger threshold: enrolling in that exact moment would hand
+process selection to a kill with no grace period, when `ramstein oom` can show you the same
+candidates and let you choose instead. This refusal is a compiled-in invariant, not something a
+flag can skip — it will rarely fire on a healthy machine, which is correct.
+
+`enroll` restarts `systemd-oomd` itself (proven necessary — it only discovers newly-configured
+units on its own process startup, not on a plain config reload) and then re-measures with the
+same detector RAMstein already uses to judge whether a real backstop exists, rather than trust
+the file it just wrote. If the restart doesn't actually change what's being watched, it says so
+plainly instead of reporting success.
+
 ## The GNOME pill
 
 `make pill` (as yourself, no sudo) installs the Quick Settings tile: available memory and
