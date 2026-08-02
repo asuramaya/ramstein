@@ -110,8 +110,12 @@ unreaped children, `advise` names the actual culprit instead of just a count.
 Auto-calm arms the existing `calm` machinery to act on its own, and it is deliberately built as
 three independent gates that all have to be true before anything real happens: the config master
 switch (`auto_calm_enabled`, off by default), the runtime armed state (toggled only by `ramstein
-autocalm arm`/`dry`, and always reset to disarmed on daemon restart, the same discipline the kill
-gate uses against a remembered confirmation surviving a process boundary), and the
+autocalm arm`/`dry`, config-persisted as `auto_calm_armed` so it survives a daemon restart once
+armed — this was runtime-only, always resetting to disarmed, through v0.11.1; that shape modeled
+itself on the kill gate's fresh-confirmation-every-time discipline, which is right for kill
+(irreversible) and was wrong here, since renice and a `memory.high` squeeze are both reversible.
+The TTY confirmation on the first `arm` is unchanged and is the actual consent gate; only the
+amnesia on restart was the defect, fixed per DM #3074/#3079/#3080), and the
 `ramstein-autocalm.timer` unit being manually enabled. The response is graduated and stops well
 short of killing: renice the current top RSS grower, then, if that is not enough, a cgroup
 `memory.high` squeeze to a configured percentage of the target's current RSS, always at least

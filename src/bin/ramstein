@@ -326,6 +326,20 @@ def cmd_calm(argv):
              "--nice N | --kill")
 
 
+def _print_live_triggers(live):
+    """Which of do_autocalm_run's own trigger conditions can this kernel/
+    config actually satisfy right now? PSI needs CONFIG_PSI; swap-storm
+    needs configured swap. Surfaced so arming isn't a leap of faith on a
+    machine where one or both are structurally dead (DM #3079/#3083:
+    "must see what it thought and why," applied to capability)."""
+    psi_live, swap_live = live.get("psi"), live.get("swap_storm")
+    print(f"  live triggers: PSI {'live' if psi_live else 'UNAVAILABLE (no CONFIG_PSI on this kernel)'}"
+          f", swap-storm {'live' if swap_live else 'UNAVAILABLE (no swap configured)'}")
+    if not psi_live and not swap_live:
+        print("  ! neither is live — armed, this machine can compute every"
+              " cycle but can never actually trigger")
+
+
 def cmd_autocalm(argv):
     sub = argv[0] if argv else "status"
     rest = argv[1:]
@@ -345,6 +359,8 @@ def cmd_autocalm(argv):
               + (" or swap storm" if p["use_swap_storm"] else ""))
         print(f"  steps: {steps}  (nice={p['nice']}, squeeze to"
               f" {p['squeeze_pct']:.0f}% rss, cooldown {p['cooldown_seconds']:.0f}s)")
+        if doc.get("live_triggers"):
+            _print_live_triggers(doc["live_triggers"])
         if doc.get("last_action_ts"):
             age = human_eta(int(time.time() - doc["last_action_ts"])).lstrip("~") or "0s"
             r = doc["last_result"] or {}
@@ -355,8 +371,10 @@ def cmd_autocalm(argv):
         return
 
     if sub == "dry":
-        request_or_die({"cmd": "autocalm", "action": "dry"})
+        doc = request_or_die({"cmd": "autocalm", "action": "dry"})
         print("auto-calm disarmed — back to dry-run (computes + notifies, never acts)")
+        if doc.get("persist_warning"):
+            print(f"! {doc['persist_warning']}")
         return
 
     if sub == "arm":
@@ -366,16 +384,24 @@ def cmd_autocalm(argv):
         print("renice the top memory grower and/or squeeze its cgroup")
         print("memory.high — without asking you first. It will NEVER kill")
         print("anything: kill stays a human verb with a TTY confirm, forever.")
+        print("This choice persists across daemon restarts — consent doesn't")
+        print("expire on its own; disarm any time with `ramstein autocalm dry`.")
+        status = request_or_die({"cmd": "autocalm", "action": "status"})
+        if status.get("live_triggers"):
+            _print_live_triggers(status["live_triggers"])
         try:
             typed = input("type 'arm' to confirm: ").strip()
         except EOFError:
             typed = ""
         if typed != "arm":
             sys.exit("ramstein: autocalm arm not confirmed")
-        request_or_die({"cmd": "autocalm", "action": "arm"})
-        print("auto-calm ARMED — it will act for real on its next triggered cycle")
+        doc = request_or_die({"cmd": "autocalm", "action": "arm"})
+        print("auto-calm ARMED — it will act for real on its next triggered cycle,")
+        print("and stays armed across restarts until you run `ramstein autocalm dry`")
         print("(still needs auto_calm_enabled=true in config, and the"
               " ramstein-autocalm.timer to actually be enabled)")
+        if doc.get("persist_warning"):
+            print(f"! {doc['persist_warning']}")
         return
 
     if sub == "run":
@@ -413,10 +439,49 @@ def cmd_update(argv):
         sys.exit(f"cannot run {binary}: {e}")
 
 
+USAGE = """\
+ramstein — verb CLI over the ramsteind control socket
+
+usage: ramstein [verb] [args...]
+
+verbs:
+  status                          available memory, PSI, burn rate, ETA-to-OOM (default)
+  top [--swap] [--limit N]        biggest RSS (or --swap) consumers
+  swap [--limit N]                processes parked in swap
+  blame [--since T] [--limit N]   RSS movers since T (30s / 10m / 2h / 1d / YYYY-MM-DD)
+  zombies                         unreaped zombie processes, grouped by parent
+  oom                             who dies first, by oom_score
+  advise                          rule-based notices (pressure/growth/swap/zombies/...)
+  calm <pid|comm> --high SIZE|--release|--nice N|--kill
+                                   renice, squeeze, release, or kill a process
+  autocalm status|arm|dry|run     unattended calm: arm/disarm, or run one cycle
+  update [--check]                check for / delegate to ramstein-update
+
+--json applies to any read verb for machine-readable output.
+man ramstein / man 8 ramsteind for the full reference.
+"""
+
+
 def main():
     argv = sys.argv[1:]
-    verb = argv[0] if argv and not argv[0].startswith("-") else "status"
-    rest = argv[1:] if argv and not argv[0].startswith("-") else argv
+    # Every unrecognized flag used to fall through to the default verb
+    # (status) with a live socket call — the exact SUTRA_CHECK_ARGS hazard
+    # class (sutra.mk 0.11.1's own fix, this same session): `ramstein --help`
+    # silently paged the live daemon instead of printing usage. --json alone
+    # is the one legitimate bare-flag shorthand (`ramstein --json` ==
+    # `ramstein status --json`, cmd_status's only recognized flag) and is
+    # allow-listed explicitly rather than accepting any dash-token as "must
+    # be flags for status."
+    if argv and argv[0] in ("-h", "--help"):
+        print(USAGE, end="")
+        return
+    if argv and argv[0] == "--json":
+        cmd_status(argv)
+        return
+    if argv and argv[0].startswith("-"):
+        sys.exit(f"ramstein: unknown option '{argv[0]}' (try --help)")
+    verb = argv[0] if argv else "status"
+    rest = argv[1:] if argv else []
     verbs = {"status": cmd_status, "top": cmd_top, "blame": cmd_blame,
              "swap": cmd_swap, "zombies": cmd_zombies, "oom": cmd_oom,
              "advise": cmd_advise, "calm": cmd_calm, "autocalm": cmd_autocalm,

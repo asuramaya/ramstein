@@ -2,8 +2,9 @@
 Description=ramstein auto-calm cycle (opt-in — NOT enabled by default)
 
 # The third of auto-calm's three consent gates — the other two are
-# auto_calm_enabled=true in config and `ramstein autocalm arm` (which
-# always resets to disarmed on every daemon restart). Even with both of
+# auto_calm_enabled=true in config and `ramstein autocalm arm` (config-
+# persisted as of DM #3074/#3079/#3080; survives a daemon restart once
+# armed, disarm any time with `ramstein autocalm dry`). Even with both of
 # those satisfied, nothing runs on a schedule until this is deliberately
 # turned on:
 #   sudo systemctl enable --now ramstein-autocalm.timer

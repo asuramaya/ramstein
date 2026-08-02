@@ -106,8 +106,10 @@ Arms
 to act on its own, on a timer \(em never kill. Three independent gates,
 all required before it acts for real: config
 .RI ( auto_calm_enabled ,
-off by default), the runtime armed state below (always resets to
-disarmed/dry-run on every daemon restart), and the
+off by default), the runtime armed state below (config\-persisted \(em
+survives a daemon restart once armed, disarm any time with
+.BR "autocalm dry" ),
+and the
 .B ramstein\-autocalm.timer
 unit being manually enabled
 .RI ( systemctl " " enable " " \-\-now ).
@@ -125,9 +127,12 @@ squeeze on the top RSS grower). Requires a real TTY and typing
 to confirm \(em lighter than
 .BR \-\-kill 's
 gate since every autocalm step is reversible, but never a bare flag.
+Persists across daemon restarts once confirmed; consent does not expire
+on its own.
 .TP
 .B dry
 Back to disarmed \(em cycles keep computing and notifying, never acting.
+Also persists across restarts.
 .TP
 .B run
 Runs one check-and-maybe-act cycle immediately (what

@@ -235,9 +235,17 @@ config
 off by default), the runtime armed state (toggled only by
 .BR ramstein (1)'s
 .I autocalm arm / dry
-\(em armed always resets to disarmed/dry-run on every daemon restart, the
-same discipline as the kill gate never trusting a remembered confirmation
-across a process boundary), and
+\(em config\-persisted
+.RI ( auto_calm_armed ),
+surviving a daemon restart once armed: renice and a cgroup
+.I memory.high
+squeeze are both reversible, unlike kill, so the TTY confirmation on the
+first
+.I arm
+is the consent gate, not something a restart makes you repeat; disarm any
+time with
+.IR "autocalm dry" ),
+and
 .B ramstein\-autocalm.timer
 being manually enabled (installed, not enabled, same as
 .BR ramstein\-update.timer ).

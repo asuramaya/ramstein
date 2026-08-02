@@ -265,9 +265,10 @@ daily update CHECK is off by default (it's notify-only, never installs). Opt in:
   sudo systemctl enable --now ramstein-update.timer
 
 auto-calm is off by default and stays off across THREE separate gates —
-config (auto_calm_enabled), runtime (ramstein autocalm arm, always resets
-to dry-run on restart), and this timer. It only ever renices/squeezes; kill
-always stays a human verb with a TTY confirm. Opt in, once all three matter:
+config (auto_calm_enabled), runtime (ramstein autocalm arm — persists
+across restarts once armed, disarm any time with ramstein autocalm dry),
+and this timer. It only ever renices/squeezes; kill always stays a human
+verb with a TTY confirm. Opt in, once all three matter:
   ramstein autocalm arm && sudo systemctl enable --now ramstein-autocalm.timer
 
 >>> step 2 — the GNOME pill (per-account, as yourself, no sudo): <<<

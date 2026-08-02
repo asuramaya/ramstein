@@ -94,12 +94,25 @@ DEFAULTS = {
     "zombie_advise_min": 3,    # V2.M1: a parent needs this many unreaped
                                # children before advise names it — a lone
                                # stray zombie about to be reaped is noise
-    # V2.M2: auto-calm — the master switch. Even fully armed (see the
-    # `ramstein autocalm arm` runtime toggle, which always resets to
-    # disarmed/dry-run on every daemon restart) and even with the opt-in
-    # systemd timer enabled, a cycle does nothing unless this is also true.
-    # Kill is never in scope, at any setting — see do_autocalm_run.
+    # V2.M2: auto-calm — the master switch. Even fully armed (see
+    # auto_calm_armed below) and even with the opt-in systemd timer
+    # enabled, a cycle does nothing unless this is also true. Kill is
+    # never in scope, at any setting — see do_autocalm_run.
     "auto_calm_enabled": False,
+    # Config-persisted, not runtime-only: `ramstein autocalm arm`/`dry`
+    # write this back to config.json (see _persist_auto_calm_armed) AND
+    # flip the daemon's live autocalm_state in the same act, so a restart
+    # inherits the operator's last choice instead of amnesia-ing back to
+    # dry-run every time. Was in-memory-only through 0.11.1 (alfred's
+    # design-brief arc, DM #3074/#3079/#3080): that shape modeled itself on
+    # the kill gate's fresh-confirmation-every-time discipline, which is
+    # right for kill (irreversible) and wrong here — renice and memory.high
+    # squeeze are both mild and reversible (do_calm's --release un-does the
+    # squeeze), so consent that expires is a correction away from being
+    # right, not a weakening to remove it. The TTY confirmation on the
+    # FIRST `arm` stays exactly as strict as before; only the "forgets on
+    # every restart" part was the bug.
+    "auto_calm_armed": False,
     "auto_calm_psi_some": 20.0,   # a HIGHER bar than warn_psi_some (10.0) —
                                    # taking action earns a stricter threshold
                                    # than just lighting the pill WARN
@@ -624,6 +637,35 @@ def _ledger_write(entry):
         f.write(json.dumps(entry, separators=(",", ":")) + "\n")
 
 
+def _persist_auto_calm_armed(config_path, armed):
+    """`ramstein autocalm arm`/`dry`'s durability half — the persistence fix
+    (DM #3074/#3079/#3080). Edits ONLY the one key, on the RAW file (not
+    the merged/clamped `cfg` dict, which is full of defaults the operator
+    never actually chose) so nothing else in an operator-tuned config.json
+    gets silently rewritten to whatever the current defaults happen to be.
+    Reuses sutra.write_status's atomic tmp+rename — its logic has nothing
+    status.json-specific in it, just a name; a second file-writing helper
+    here would only duplicate it. Best-effort: a write failure (e.g. the
+    hardened unit's ReadWritePaths not covering config_path) must not crash
+    the daemon or the in-memory arm/dry toggle it's piggybacking on — it
+    only means the NEXT restart won't inherit this choice, not that this
+    one silently failed to arm/disarm for real right now.
+    """
+    try:
+        with open(config_path) as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    raw["auto_calm_armed"] = armed
+    try:
+        sutra.write_status(config_path, raw, owner=None, mode=0o644)
+    except OSError as exc:
+        return str(exc)
+    return None
+
+
 def _cgroup_root():
     # An env override is honored ONLY when running unprivileged — a root
     # daemon must never let an environment variable redirect where it writes
@@ -938,10 +980,14 @@ def do_kill(pid, starttime, confirm, sig):
 # --- V2.M2: auto-calm — arms the existing calm machinery to act on its own -
 # Three independent consent gates, all required for a REAL (non-dry) action:
 #   1. auto_calm_enabled (config, default False) — the feature exists at all
-#   2. armed (runtime, toggled by `ramstein autocalm arm`/`dry`, ALWAYS
-#      resets to disarmed/dry-run on every daemon restart — a fresh boot
-#      never inherits a prior "yes", the same discipline as the kill gate
-#      requiring a fresh confirmation every time, never a remembered one)
+#   2. armed (config-persisted as auto_calm_armed as of the persistence fix
+#      below, DM #3074/#3079/#3080 — `ramstein autocalm arm`/`dry` write it
+#      to config.json AND flip the daemon's live autocalm_state in the same
+#      act, so a restart inherits the last choice. Was runtime-only through
+#      0.11.1, always resetting to dry-run on restart — an unreachable
+#      standing protection, since nothing durable ever satisfied gate 2 for
+#      longer than until the next reboot. The TTY confirmation on the FIRST
+#      `arm` is unchanged; only the amnesia was the bug)
 #   3. the ramstein-autocalm.timer unit being manually enabled — installed
 #      but not enabled by default, so a cycle never even RUNS unless the
 #      operator deliberately turned the schedule on
@@ -1049,10 +1095,30 @@ def do_autocalm_run(cfg, get_status, autocalm_state):
     return _settle(result)
 
 
-def query_autocalm_status(cfg, autocalm_state):
+def _live_autocalm_triggers(get_status):
+    """Which of do_autocalm_run's OWN trigger conditions can this machine's
+    kernel/config actually satisfy right now? PSI needs CONFIG_PSI
+    (read_psi() degrades to all-None without it, ramsteind.py's own
+    documented fallback -- "classify on meminfo alone"); the swap-storm
+    fallback needs swap actually configured. Surfaced at arm time and in
+    `autocalm status` so a human arming on a machine missing one or both
+    learns that up front rather than by watching nothing happen for a
+    month -- "must see what it thought and why," applied to CAPABILITY
+    rather than to decisions (DM #3079/#3083)."""
+    doc = get_status()
+    mem = doc.get("memory") if isinstance(doc, dict) else {}
+    mem = mem or {}
+    psi = mem.get("psi") or {}
+    psi_live = psi.get("some_avg10") is not None or psi.get("full_avg10") is not None
+    swap_storm_live = bool(mem.get("swap_total"))
+    return {"psi": psi_live, "swap_storm": swap_storm_live}
+
+
+def query_autocalm_status(cfg, autocalm_state, get_status):
     return {
         "enabled": cfg["auto_calm_enabled"],
         "armed": autocalm_state.get("armed", False),
+        "live_triggers": _live_autocalm_triggers(get_status),
         "policy": {
             "psi_some": cfg["auto_calm_psi_some"],
             "psi_full": cfg["auto_calm_psi_full"],
@@ -1074,7 +1140,7 @@ def query_autocalm_status(cfg, autocalm_state):
 # sutra.ControlServer now. This dispatch closure carries only the domain
 # commands; ping/status are sutra's job.
 
-def _make_dispatch(cfg, get_status, autocalm_state):
+def _make_dispatch(cfg, get_status, autocalm_state, config_path):
     def dispatch(cmd, req):
         if cmd == "top":
             by_swap = req.get("swap", False)
@@ -1133,13 +1199,25 @@ def _make_dispatch(cfg, get_status, autocalm_state):
         if cmd == "autocalm":
             action = req.get("action")
             if action == "status":
-                return query_autocalm_status(cfg, autocalm_state)
+                return query_autocalm_status(cfg, autocalm_state, get_status)
             if action == "arm":
                 autocalm_state["armed"] = True
-                return {"ok": True, "armed": True}
+                persist_err = _persist_auto_calm_armed(config_path, True)
+                resp = {"ok": True, "armed": True}
+                if persist_err:
+                    resp["persist_warning"] = (
+                        f"armed for this session, but couldn't persist to "
+                        f"{config_path} — a restart will forget it: {persist_err}")
+                return resp
             if action == "dry":
                 autocalm_state["armed"] = False
-                return {"ok": True, "armed": False}
+                persist_err = _persist_auto_calm_armed(config_path, False)
+                resp = {"ok": True, "armed": False}
+                if persist_err:
+                    resp["persist_warning"] = (
+                        f"disarmed for this session, but couldn't persist to "
+                        f"{config_path}: {persist_err}")
+                return resp
             if action == "run":
                 return do_autocalm_run(cfg, get_status, autocalm_state)
             raise ValueError("unknown autocalm action")
@@ -1166,11 +1244,16 @@ def main():
     state = {}
     latest = {"doc": {"error": "no status yet"}}
     pill_cache = {"summary": None}
-    # V2.M2: always starts disarmed/dry-run — in-memory only, never
-    # persisted, so a daemon restart can never inherit a prior "yes"
-    autocalm_state = {"armed": False, "last_action_ts": None, "last_result": None}
+    # V2.M2, persisted as of the persistence fix (DM #3074/#3079/#3080):
+    # seeds from config.json's auto_calm_armed rather than always starting
+    # disarmed, so a restart inherits the operator's last choice instead of
+    # forgetting it every time. last_action_ts/last_result are still
+    # runtime-only (session-scoped history, not durable state).
+    autocalm_state = {"armed": cfg["auto_calm_armed"],
+                      "last_action_ts": None, "last_result": None}
     sampler = Sampler(cfg)
-    dispatch = _make_dispatch(cfg, lambda: latest["doc"], autocalm_state)
+    dispatch = _make_dispatch(cfg, lambda: latest["doc"], autocalm_state,
+                              args.config)
     ctl = sutra.ControlServer(SOCKET_PATH,
                               sutra.allow_uids({0, os.getuid(), cfg["owner_uid"]}),
                               VERSION, dispatch, lambda: latest["doc"],

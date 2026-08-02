@@ -45,8 +45,10 @@ ramstein autocalm dry        # back to disarmed; cycles keep computing and notif
 ramstein autocalm run        # run one check-and-maybe-act cycle right now
 ```
 
-Arming resets to disarmed on every daemon restart, and the `ramstein-autocalm.timer` unit ships
-installed but not enabled, so you flip on the timer yourself once you want the whole loop live:
+Arming persists across daemon restarts (config-backed, `auto_calm_armed`) — the TTY confirmation
+on the first `arm` is the consent gate, not something a restart makes you repeat; disarm any time
+with `ramstein autocalm dry`. The `ramstein-autocalm.timer` unit still ships installed but not
+enabled, so you flip on the timer yourself once you want the whole loop live:
 `sudo systemctl enable --now ramstein-autocalm.timer`.
 
 ## The GNOME pill

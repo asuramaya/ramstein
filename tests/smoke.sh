@@ -625,13 +625,36 @@ for key in ("psi_some", "psi_full", "use_swap_storm", "step_renice",
     assert key in status["policy"], f"policy missing {key}"
 print("autocalm status ok: disabled/disarmed by default, policy shape correct")
 
+status = ask({"cmd": "autocalm", "action": "status"})
+assert "live_triggers" in status and set(status["live_triggers"]) == {"psi", "swap_storm"}, status
+print("autocalm status ok: live_triggers reported")
+
+config_path = os.path.join(rd, "config.json")
+
+
+def config_on_disk():
+    with open(config_path) as f:
+        return json.load(f)
+
+
+before = config_on_disk()
+
 armed = ask({"cmd": "autocalm", "action": "arm"})
 assert armed == {"ok": True, "armed": True}, armed
 assert ask({"cmd": "autocalm", "action": "status"})["armed"] is True, "arm didn't stick"
+after_arm = config_on_disk()
+assert after_arm["auto_calm_armed"] is True, \
+    f"arm didn't persist to {config_path}: {after_arm}"
+for key in before:  # a surgical edit, not a full-config rewrite
+    assert after_arm.get(key) == before[key], \
+        f"arm clobbered pre-existing key {key!r}: {before[key]!r} -> {after_arm.get(key)!r}"
+
 dry = ask({"cmd": "autocalm", "action": "dry"})
 assert dry == {"ok": True, "armed": False}, dry
 assert ask({"cmd": "autocalm", "action": "status"})["armed"] is False, "dry didn't stick"
-print("autocalm arm/dry ok: runtime toggle round-trips over the socket")
+assert config_on_disk()["auto_calm_armed"] is False, "dry didn't persist"
+print("autocalm arm/dry ok: runtime toggle round-trips over the socket AND"
+      f" persists to {config_path} (surgical edit, other keys untouched)")
 
 # auto_calm_enabled is false in the test config -> run is always a no-op,
 # armed or not, regardless of real system pressure

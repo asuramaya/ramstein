@@ -18,7 +18,16 @@ ProtectSystem=strict
 # allow-list carve-out ReadWritePaths already does for ProtectSystem=strict
 # (nest a writable path inside a read-only one). Verified against a LIVE
 # calm --high, not just fixtures: see docs/ARCHITECTURE.md's security model.
-ReadWritePaths=/run/ramstein /var/lib/ramstein /sys/fs/cgroup
+# /etc/ramstein carries `autocalm arm`/`dry`'s auto_calm_armed persistence
+# (DM #3074/#3079/#3080, _persist_auto_calm_armed) — reading config.json
+# already worked under ProtectSystem=strict (read-only still permits
+# reads), but writing the operator's arm/dry choice back needs the same
+# carve-out. Verified under the REAL unit, not assumed from the directive
+# list: armed a live daemon running under this exact hardened unit inside
+# a real systemd container, confirmed the write landed on disk, restarted
+# the unit for real, and confirmed `autocalm status` still read armed=true
+# with no re-arm — same for the dry/false direction.
+ReadWritePaths=/run/ramstein /var/lib/ramstein /sys/fs/cgroup /etc/ramstein
 # Everything M0 reads lives under /proc — nothing in $HOME matters to any
 # verb through M3 (calm/kill touch /proc + /sys/fs/cgroup, never $HOME).
 ProtectHome=yes
