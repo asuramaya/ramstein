@@ -37,6 +37,32 @@ const STATE_MARK = {ok: '', warn: '⚠ ', hot: '‼ '};
 // (no color perception needed) tells warn from hot
 const STATE_ICON = {ok: ICON, warn: 'dialog-warning-symbolic', hot: 'dialog-error-symbolic'};
 
+// FAMILY.md doctrine #12 ("subtitle re-skins to state") — audited
+// 2026-08-02 as a gap NO pill in the family closes: all four render the
+// collapsed tile's title/subtitle text in the theme's default color
+// regardless of state. St.Widget's inline `style` property is stable,
+// public GJS extension API (not an internal-class-name reach-around) and
+// its `color` cascades down to the toggle's own title/subtitle labels, so
+// setting it on the toggle itself recolors the whole tile's text on
+// warn/hot without depending on GNOME Shell's private widget structure.
+const STATE_TEXT_STYLE = {ok: '', warn: `color: ${PALETTE.WARN};`, hot: `color: ${PALETTE.BAD};`};
+
+// FAMILY.md: "where a state is derived from OR'd conditions, the header
+// must carry WHICH evidence fired" — classify()'s state_evidence names
+// which of psi/avail/eta actually crossed the threshold; this is the
+// header-facing label for each code. "warn" from stalling tasks (psi) and
+// "warn" from a three-hour ETA are different situations, and previously
+// the header showed the same bare mark for both (measured: "OOM ~11h"
+// rendered directly above "pressure 0.0% · burn quiet", predicting death
+// and reporting calm in the same card with nothing tying them together).
+const EVIDENCE_LABEL = {psi: 'pressure', avail: 'low mem', eta: 'ETA'};
+function evidenceTag(mem) {
+    const ev = mem.state_evidence;
+    if (!Array.isArray(ev) || !ev.length)
+        return '';
+    return ev.map(e => EVIDENCE_LABEL[e] ?? e).join('+');
+}
+
 function fmtBurn(bps) {
     // per-second is meaningful for memory — a leak eats MB/s, not GB/day
     if (bps == null || Math.abs(bps) < 1024 * 1024)
@@ -114,6 +140,7 @@ class RAMsteinToggle extends QuickMenuToggle {
             this.subtitle = stale ? 'status stale' : 'daemon offline';
             this.checked = false;
             this.iconName = ICON;
+            this.style = '';
             this._alertSection.removeAll();
             this._rowSection.removeAll();
             this._adviseSection.removeAll();
@@ -149,14 +176,22 @@ class RAMsteinToggle extends QuickMenuToggle {
 
         // tile: the hero readout — how much is left, how long until the
         // kernel starts shooting. Swap storm pre-empts the usual subtitle
-        // with its own countdown — a distinct, more urgent story.
+        // with its own countdown — a distinct, more urgent story; it
+        // already names itself, so it carries no state_evidence tag.
+        // Otherwise the tag says WHICH of classify()'s OR'd conditions
+        // fired (empty at ok) — this branch is only reached when swapStorm
+        // is null, so effState here always equals mem.state exactly.
+        const tag = swapStorm ? '' : evidenceTag(mem);
         this.subtitle = swapStorm
             ? `⚠ swap storm · OOM ${fmtEta(swapStorm.eta_oom_seconds)}`
-            : `${STATE_MARK[effState] ?? ''}` +
+            : `${STATE_MARK[effState] ?? ''}${tag ? `${tag} · ` : ''}` +
               `${Pill.fmtBytes(mem.available)} · OOM ${fmtEta(mem.eta_oom_seconds)}`;
         // the heat: pill lights accent whenever the effective state is warn+
         this.checked = rank >= 1;
         this.iconName = STATE_ICON[effState] ?? ICON;
+        // doctrine #12: the tile's own text re-skins to state, not just
+        // the icon/accent — see STATE_TEXT_STYLE above.
+        this.style = STATE_TEXT_STYLE[effState] ?? '';
 
         // alert banner: warn/hot gets its own loud line — the why is the
         // thresholds the daemon classifies on: PSI full, available, ETA.

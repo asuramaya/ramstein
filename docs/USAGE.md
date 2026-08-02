@@ -75,6 +75,12 @@ same detector RAMstein already uses to judge whether a real backstop exists, rat
 the file it just wrote. If the restart doesn't actually change what's being watched, it says so
 plainly instead of reporting success.
 
+Every place RAMstein mentions another OOM-fighter — `advise`'s coexist line, and the
+`coexist_warning` a `calm`/`kill` reply carries when one is active — names which half of
+`systemd-oomd`'s enrollment is real whenever swap and memory-pressure disagree, e.g. `systemd-oomd
+(pressure only, not swap)`. Pressure-only coverage protects none of the scenario RAMstein exists
+for; a bare "systemd-oomd is active" would read identically whether swap was covered or not.
+
 ## The GNOME pill
 
 `make pill` (as yourself, no sudo) installs the Quick Settings tile: available memory and

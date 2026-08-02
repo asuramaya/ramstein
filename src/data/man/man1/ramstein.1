@@ -54,8 +54,13 @@ Read-only.
 .TP
 .B advise
 One-line nudges: sustained pressure, a fast RSS grower, swap over half
-full, unreaped zombies, another OOM-fighter active, ETA under an hour,
-shared memory (tmpfs/dev/shm) over
+full, unreaped zombies, another OOM-fighter active (naming which half of
+.BR systemd-oomd (8)'s
+swap/pressure enrollment is real when they disagree, e.g. "systemd-oomd
+(pressure only, not swap)" \(em pressure-only coverage protects none of
+the scenario
+.B ramstein
+exists for), ETA under an hour, shared memory (tmpfs/dev/shm) over
 .IR advise_shmem_pct .
 .TP
 .BI calm " target " "[\-\-high SIZE|\-\-release|\-\-nice N|\-\-kill]"

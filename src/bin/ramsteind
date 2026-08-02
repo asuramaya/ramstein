@@ -234,6 +234,7 @@ def poll_memory(state, cfg, now):
         if eta > cfg["eta_cap_hours"] * 3600:
             eta = None
 
+    state, evidence = classify(total, avail, psi, eta, cfg)
     return {
         "total": total,
         "available": avail,
@@ -243,22 +244,47 @@ def poll_memory(state, cfg, now):
         "psi": psi,
         "burn_bps": round(ewma, 1),
         "eta_oom_seconds": None if eta is None else int(eta),
-        "state": classify(total, avail, psi, eta, cfg),
+        "state": state,
+        "state_evidence": evidence,
     }
 
 
 def classify(total, avail, psi, eta, cfg):
+    """Returns (state, evidence) -- `state` stays the same bare
+    "ok"|"warn"|"hot" string every existing caller (the CLI's FLAGS lookup,
+    smoke.sh) already keys on, but each level ORs 2-3 independent
+    conditions and previously discarded WHICH of them actually fired.
+    FAMILY.md ("Headers state STATE, not a number"): "warn" from stalling
+    tasks (psi) and "warn" from a three-hour ETA are different situations
+    needing different responses, and a header that only shows the level
+    can't tell them apart. `evidence` is the list of condition codes that
+    fired at the returned level -- "psi" (full10 for hot, some10 for
+    warn), "avail" (available % below the level's floor), "eta" (ETA
+    under the level's horizon) -- never collapsed into the bare string."""
     pct = 100.0 * avail / total if total else 0.0
     full10, some10 = psi["full_avg10"], psi["some_avg10"]
-    if (full10 is not None and full10 > cfg["hot_psi_full"]) \
-            or pct < cfg["hot_avail_pct"] \
-            or (eta is not None and eta < cfg["hot_eta_minutes"] * 60):
-        return "hot"
-    if (some10 is not None and some10 > cfg["warn_psi_some"]) \
-            or pct < cfg["warn_avail_pct"] \
-            or (eta is not None and eta < cfg["warn_eta_hours"] * 3600):
-        return "warn"
-    return "ok"
+
+    hot = []
+    if full10 is not None and full10 > cfg["hot_psi_full"]:
+        hot.append("psi")
+    if pct < cfg["hot_avail_pct"]:
+        hot.append("avail")
+    if eta is not None and eta < cfg["hot_eta_minutes"] * 60:
+        hot.append("eta")
+    if hot:
+        return "hot", hot
+
+    warn = []
+    if some10 is not None and some10 > cfg["warn_psi_some"]:
+        warn.append("psi")
+    if pct < cfg["warn_avail_pct"]:
+        warn.append("avail")
+    if eta is not None and eta < cfg["warn_eta_hours"] * 3600:
+        warn.append("eta")
+    if warn:
+        return "warn", warn
+
+    return "ok", []
 
 
 def write_status(doc, cfg):
@@ -676,31 +702,66 @@ def _oomd_swap_enrolled():
     return _oomd_monitored_sections()["swap"]
 
 
-def _coexisting_oom_fighter():
-    """Read-only: is systemd-oomd or earlyoom already fighting OOM here?
-    earlyoom has no enrollment concept — active means watching system-wide
-    swap/memory unconditionally. systemd-oomd needs the extra enrollment
-    check — EITHER section counts, this is deliberately the broad
-    question (see _oomd_monitored_sections) — or a merely-running-but-
-    unenrolled oomd would wrongly tell RAMstein a backstop exists and
-    stand down."""
+def _coexist_status():
+    """Read-only: is systemd-oomd or earlyoom already fighting OOM here,
+    and — for systemd-oomd — exactly which half (swap/pressure). The
+    single source of truth for the coexist question: _coexisting_oom_
+    fighter() (the broad either-section question the M1 tests already
+    exercise) and _coexist_label() (the OR'd-evidence-named wording,
+    thread 3dd73060) both read off this instead of re-deriving it or
+    re-spawning systemctl/oomctl a second time. earlyoom has no
+    enrollment concept of its own — active means watching system-wide
+    swap/memory unconditionally, reported as covering both halves."""
     try:
         r = subprocess.run(["systemctl", "is-active", "systemd-oomd"],
                            capture_output=True, text=True, timeout=2)
         if r.stdout.strip() == "active":
             sections = _oomd_monitored_sections()
             if sections["swap"] or sections["pressure"]:
-                return "systemd-oomd"
+                return {"fighter": "systemd-oomd", "swap": sections["swap"],
+                        "pressure": sections["pressure"]}
     except (OSError, subprocess.SubprocessError):
         pass
     try:
         r = subprocess.run(["systemctl", "is-active", "earlyoom"],
                            capture_output=True, text=True, timeout=2)
         if r.stdout.strip() == "active":
-            return "earlyoom"
+            return {"fighter": "earlyoom", "swap": True, "pressure": True}
     except (OSError, subprocess.SubprocessError):
         pass
-    return None
+    return {"fighter": None, "swap": False, "pressure": False}
+
+
+def _coexisting_oom_fighter():
+    """Read-only: is systemd-oomd or earlyoom already fighting OOM here?
+    Deliberately the BROAD either-section question — EITHER swap or
+    pressure enrollment counts, since a merely-running-but-unenrolled
+    oomd would wrongly tell RAMstein a backstop exists and stand down,
+    but for THIS question (should RAMstein mention a fighter at all)
+    partial coverage is still coverage. See _coexist_status for the full
+    picture and _coexist_label for wording that names which half, when
+    they disagree."""
+    return _coexist_status()["fighter"]
+
+
+def _coexist_label(status):
+    """The coexist FACT rendered into a short label — used both by
+    advise rule 5's sentence and by do_calm/do_kill's coexist_warning
+    field, so the OR-collapse fix (thread 3dd73060) lives in one place
+    instead of drifting across three copies. Same rule classify() applies
+    to state_evidence: an OR'd condition must name WHICH half fired.
+    Pressure-only enrollment (found live on the operator's machine,
+    alfred DM #3250) covers none of RAMstein's own specialty — sustained
+    swap exhaustion — and the old undifferentiated "systemd-oomd is
+    active" line read identically whether swap was covered or not."""
+    fighter = status["fighter"]
+    if fighter is None:
+        return None
+    if fighter == "systemd-oomd" and status["swap"] != status["pressure"]:
+        have = "swap" if status["swap"] else "pressure"
+        missing = "pressure" if status["swap"] else "swap"
+        return f"{fighter} ({have} only, not {missing})"
+    return fighter
 
 
 def _ledger_write(entry):
@@ -918,11 +979,13 @@ def query_advise(cfg, get_status):
                 f" unreaped are its children; restart it or send it a"
                 f" signal that makes it wait()"})
 
-    # rule 5: another OOM-fighter active — stand-down language
-    fighter = _coexisting_oom_fighter()
-    if fighter:
+    # rule 5: another OOM-fighter active — stand-down language, naming
+    # which half when systemd-oomd's swap/pressure enrollment disagrees
+    # (thread 3dd73060: an OR'd condition must carry which evidence fired)
+    label = _coexist_label(_coexist_status())
+    if label:
         lines.append({"rule": "coexist", "text":
-            f"{fighter} is active — RAMstein's kill prompts stay"
+            f"{label} is active — RAMstein's kill prompts stay"
             " advisory-only, standing down"})
 
     # rule 6: ETA under an hour — point at `oom`
@@ -995,9 +1058,9 @@ def do_calm(pid, starttime, action, size=None, nice=None):
         return {"error": "stale pid — starttime mismatch, refusing"}
 
     result = {"pid": pid, "comm": proc["comm"]}
-    fighter = _coexisting_oom_fighter()
-    if fighter:
-        result["coexist_warning"] = fighter
+    label = _coexist_label(_coexist_status())
+    if label:
+        result["coexist_warning"] = label
 
     if action == "nice":
         try:
@@ -1056,15 +1119,15 @@ def do_kill(pid, starttime, confirm, sig):
         return {"error": "target process not found"}
     if proc["starttime"] != starttime:
         return {"error": "stale pid — starttime mismatch, refusing"}
-    fighter = _coexisting_oom_fighter()
+    label = _coexist_label(_coexist_status())
     real_sig = signal.SIGKILL if sig == "KILL" else signal.SIGTERM
     try:
         os.kill(pid, real_sig)
     except OSError as exc:
         return {"error": f"kill failed: {exc.strerror}"}
     result = {"ok": True, "pid": pid, "comm": proc["comm"], "signal": sig}
-    if fighter:
-        result["coexist_warning"] = fighter
+    if label:
+        result["coexist_warning"] = label
     _ledger_write({"ts": time.time(), "verb": "kill", "pid": pid,
                    "comm": proc["comm"], "arg": sig, "result": "ok"})
     return result

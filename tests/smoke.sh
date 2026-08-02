@@ -48,7 +48,7 @@ for key in ("pid", "poll_interval"):
     assert key in doc["daemon"], f"daemon missing {key}"
 m = doc["memory"]
 for key in ("total", "available", "swap_total", "swap_free", "shmem", "psi",
-            "burn_bps", "eta_oom_seconds", "state"):
+            "burn_bps", "eta_oom_seconds", "state", "state_evidence"):
     assert key in m, f"memory missing {key}"
 for key in ("some_avg10", "some_avg60", "some_avg300",
             "full_avg10", "full_avg60", "full_avg300"):
@@ -56,6 +56,11 @@ for key in ("some_avg10", "some_avg60", "some_avg300",
     v = m["psi"][key]
     assert v is None or isinstance(v, (int, float)), f"psi {key} bad type"
 assert m["state"] in ("ok", "warn", "hot"), m["state"]
+assert isinstance(m["state_evidence"], list), m["state_evidence"]
+# "ok" must carry no evidence; warn/hot must name at least one OR'd
+# condition that fired (FAMILY.md: state plus evidence, never a bare label)
+assert (m["state"] == "ok") == (not m["state_evidence"]), \
+    f"state/evidence mismatch: {m['state']!r} vs {m['state_evidence']!r}"
 assert m["total"] > 0, "no total memory"
 assert 0 <= m["available"] <= m["total"], "available out of range"
 assert 0 <= m["swap_free"] <= m["swap_total"] or m["swap_total"] == 0, \

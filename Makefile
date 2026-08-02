@@ -29,6 +29,7 @@ smoke: check-sutra
 	python3 tests/test_oom_coexist.py
 	python3 tests/test_oomd_enroll.py
 	python3 tests/test_shmem_advise.py
+	python3 tests/test_header_evidence.py
 
 # the thorough adversarial pass (full cmd surface + oversized/garbage/
 # invalid-utf8/nested/unknown/rapid-reconnect/half-open-stall); smoke.sh
