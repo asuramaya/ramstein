@@ -1292,21 +1292,28 @@ def _oomd_apply_enrollment(write):
     41b72476) rather than trust the write. `write` is True for enroll
     (create the drop-in first), False for disenroll (remove it first).
 
-    HONEST VERIFICATION STATUS (alfred's review, DM #3240): this exact
-    write→restart→re-verify sequence is LIVE-PROVEN for
-    ManagedOOMMemoryPressure=kill (watched a real restart populate
-    oomctl's Memory Pressure Monitored CGroups in real time) but
-    UNTESTED for ManagedOOMSwap=kill specifically — and there is a
-    concrete reason not to assume they behave alike: ManagedOOMSwap=
-    auto on -.slice did NOT register as monitored through that same
-    restart, while the memory-pressure section populated in the same
-    instant. Same daemon, same restart, demonstrably different observed
-    behavior between the two properties in the one case anyone has
-    looked at — "it'll work the same for kill" is not yet a measurement.
-    Shipped anyway: the re-verify below is exactly what makes an
-    unverified path safe to ship — it reports FAILURE rather than
-    trusting the write, the property Werner's ByeByte `declare` verb
-    lacked when it silently ledgered a delete that never happened."""
+    HONEST VERIFICATION STATUS (alfred's review, DM #3240/#3243, source
+    checked against both systemd main and the v259 tag the operator
+    actually runs): ManagedOOMSwap=kill is CONFIRMED AT THE REGISTRATION
+    PATH to enter oomd's swap monitoring hashmap —
+    process_managed_oom_message() in oomd-manager.c strips a cgroup from
+    monitoring when its mode is AUTO (hashmap_remove) and inserts it
+    otherwise (oomd_insert_cgroup_context), with no special-casing
+    between the swap and memory-pressure properties. The empty "Swap
+    Monitored CGroups" section observed live this session is fully
+    explained by -.slice's stock `auto` being actively stripped, not by
+    swap behaving differently from pressure at kill mode — pressure was
+    only ever seen enrolled because user@.service's stock drop-in
+    already sets it to kill, nothing about the registration mechanism
+    itself differs. But it has NEVER been directly observed: no swap
+    cgroup has appeared in that section on any machine looked at this
+    session. "Confirmed in source, unobserved in practice" — keep both
+    halves; don't round the source read up to "verified" and don't let
+    the missing observation collapse back down to "untested". Shipped
+    either way: the re-verify below is exactly what makes an unobserved
+    path safe to ship — it reports FAILURE rather than trusting the
+    write, the property Werner's ByeByte `declare` verb lacked when it
+    silently ledgered a delete that never happened."""
     dropin = _oomd_enroll_dropin_path()
     try:
         if write:
