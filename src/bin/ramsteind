@@ -1290,7 +1290,23 @@ def _oomd_apply_enrollment(write):
     own process restarting does) — then re-verify with the SAME detector
     built this morning as this afternoon's acceptance test (ruling
     41b72476) rather than trust the write. `write` is True for enroll
-    (create the drop-in first), False for disenroll (remove it first)."""
+    (create the drop-in first), False for disenroll (remove it first).
+
+    HONEST VERIFICATION STATUS (alfred's review, DM #3240): this exact
+    write→restart→re-verify sequence is LIVE-PROVEN for
+    ManagedOOMMemoryPressure=kill (watched a real restart populate
+    oomctl's Memory Pressure Monitored CGroups in real time) but
+    UNTESTED for ManagedOOMSwap=kill specifically — and there is a
+    concrete reason not to assume they behave alike: ManagedOOMSwap=
+    auto on -.slice did NOT register as monitored through that same
+    restart, while the memory-pressure section populated in the same
+    instant. Same daemon, same restart, demonstrably different observed
+    behavior between the two properties in the one case anyone has
+    looked at — "it'll work the same for kill" is not yet a measurement.
+    Shipped anyway: the re-verify below is exactly what makes an
+    unverified path safe to ship — it reports FAILURE rather than
+    trusting the write, the property Werner's ByeByte `declare` verb
+    lacked when it silently ledgered a delete that never happened."""
     dropin = _oomd_enroll_dropin_path()
     try:
         if write:
