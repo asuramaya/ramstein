@@ -1,5 +1,5 @@
 # ramstein — the memory demon
-.PHONY: smoke attack check check-repo install uninstall pill deb sync-signers
+.PHONY: smoke attack check check-repo install uninstall pill deb sync-signers check-systemd-live
 
 VERSION := $(shell tr -d '[:space:]' < packaging/VERSION)
 DEBROOT := build/deb/ramstein_$(VERSION)_all
@@ -135,6 +135,99 @@ deb:
 	( cd build/deb && sha256sum "$$(basename $(DEBFILE))" > SHA256SUMS )
 	@echo "-- built $(DEBFILE)"
 	@command -v lintian >/dev/null 2>&1 && lintian $(DEBFILE) || echo "-- lintian not installed, skipping"
+
+# Installs the REAL built .deb under a REAL systemd (root, dpkg -i,
+# systemctl) and proves every shipped unit actually works -- not just
+# that its ExecStart text looks right. Family doctrine (commit 2efd0eb):
+# ci.yml invokes Makefile targets, not a copy of the check only CI knows
+# about, so `sudo make check-systemd-live` reproduces exactly what CI runs
+# in the systemd container harness proven out 2026-08-02 (jrei/systemd-
+# ubuntu:24.04, --cgroupns=host — plain --privileged is not enough for
+# cgroup v2 nesting). $(DEBFILE), not a glob: a might-match-something-
+# stale glob is exactly the kind of "looks right, isn't" this whole check
+# exists to root out.
+#
+# The daemon poll is deliberately scoped, not total coverage -- a joint
+# finding with ByeByte's own version of this check, 2026-08-02.
+# Individual `systemctl show -p <PROP> --value` calls, never a comma-list:
+# `-p A,B,C,D --value` does not preserve the requested order (hit for
+# real on this check's own first CI run -- a positional `read` silently
+# mis-assigned every field even though the service was healthy the whole
+# time). 30s / six 5s samples: the negative control that proved this
+# check works measured the actual failure mode -- 4 restarts within 5s, 6
+# within 15s, against RestartSec=5 -- so six samples over 30s gives real
+# margin around a loop that announces itself in the first five seconds.
+# This window catches IMMEDIATE-DEATH failures -- bad ExecStart, seccomp
+# SIGSYS, a missing capability -- the classes actually shipped between the
+# two pills tonight. It does NOT catch a daemon that runs fine for two
+# minutes and dies on its first real poll-loop tick -- different failure,
+# different detector, not covered here.
+check-systemd-live:
+	@test "$$(id -u)" = "0" || { echo "check-systemd-live: needs root (dpkg -i, systemctl)" >&2; exit 1; }
+	dpkg -i $(DEBFILE)
+	@for i in 1 2 3 4 5 6; do \
+	  active="$$(systemctl show ramsteind.service -p ActiveState --value)"; \
+	  restarts="$$(systemctl show ramsteind.service -p NRestarts --value)"; \
+	  echo "t+$$((i * 5))s: active=$$active restarts=$$restarts"; \
+	  if [ "$$active" != "active" ] || [ "$$restarts" != "0" ]; then \
+	    echo "FAIL: ramsteind.service is '$$active' with $$restarts restart(s)" >&2; \
+	    journalctl -u ramsteind.service --no-pager -n 50 >&2; \
+	    exit 1; \
+	  fi; \
+	  sleep 5; \
+	done
+	@echo "check-systemd-live: ramsteind.service stable, active, 0 restarts, over 30s"
+	ramstein status
+	ramstein-healthcheck
+	@for u in ramstein-update.service ramstein-autocalm.service; do \
+	  systemctl start $$u; \
+	  result="$$(systemctl show $$u -p Result --value)"; \
+	  if [ "$$result" != "success" ]; then \
+	    echo "FAIL: $$u did not complete (Result=$$result)" >&2; \
+	    journalctl -u $$u --no-pager -n 50 >&2; \
+	    echo "-- ramsteind.service's own recent journal (the client's failure may be about what the daemon was doing, not the daemon itself) --" >&2; \
+	    journalctl -u ramsteind.service --no-pager -n 80 >&2; \
+	    exit 1; \
+	  fi; \
+	  echo "check-systemd-live: $$u completed (Result=success)"; \
+	done
+	# Completion-checking the .service units above proves each one runs
+	# correctly WHEN TRIGGERED -- it says nothing about whether the paired
+	# .timer will ever trigger it. A malformed OnCalendar/OnBootSec value,
+	# or a Unit= naming a service that doesn't exist (both timers rely on
+	# systemd's default name-matching convention, correct today, silently
+	# breakable the day one side gets renamed) produce a timer that loads
+	# and enables but never fires -- invisible to everything above. Two
+	# checks, because testing this for real (ByeByte's own version, joint
+	# finding 2026-08-02) showed they catch DIFFERENT halves of it, not the
+	# split originally expected: systemd-analyze verify exits 0 even on a
+	# malformed timer value -- confirmed directly, it only ever prints a
+	# warning line, never a nonzero exit -- so failure is judged on its
+	# OUTPUT being non-empty, not its exit code; and it does NOT catch a
+	# Unit= pointing at nothing at all (also confirmed directly -- verify
+	# is silent about it). That half is caught by actually starting the
+	# timer: systemctl start fails outright on a dangling Unit=, and
+	# list-timers only ever shows a timer that both started AND has a real
+	# resolved NEXT/LEFT.
+	@for t in ramstein-update.timer ramstein-autocalm.timer; do \
+	  out="$$(systemd-analyze verify $$t 2>&1)"; \
+	  if [ -n "$$out" ]; then \
+	    echo "FAIL: systemd-analyze verify found a problem in $$t:" >&2; \
+	    echo "$$out" >&2; \
+	    exit 1; \
+	  fi; \
+	  if ! systemctl start $$t; then \
+	    echo "FAIL: $$t failed to start -- Unit= likely points at a nonexistent service" >&2; \
+	    exit 1; \
+	  fi; \
+	  line="$$(systemctl list-timers --all --no-legend | grep "$$t" || true)"; \
+	  systemctl stop $$t; \
+	  if [ -z "$$line" ]; then \
+	    echo "FAIL: $$t started but never appeared in list-timers -- schedule did not resolve" >&2; \
+	    exit 1; \
+	  fi; \
+	  echo "check-systemd-live: $$t verified ($$line)"; \
+	done
 
 # The family's structural gate (REPO-STANDARD.md §5), mechanical only: it
 # cannot judge whether a document is any good, only that the shape it's

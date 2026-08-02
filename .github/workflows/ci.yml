@@ -78,9 +78,17 @@ jobs:
   # ubuntu-latest runners are full VMs with systemd as PID 1 (not
   # containers), unlike a sandboxed dev environment, so this can run for
   # real rather than assume the hardening/paths are correct on paper.
-  # Polls NRestarts over a window rather than checking is-active once: a
-  # crash loop under Restart=on-failure can read "active" between
-  # failures (ByeByte's same-day fanotify SIGSYS showed exactly this).
+  #
+  # The actual check lives in Makefile's check-systemd-live target, not
+  # here — family doctrine (commit 2efd0eb): ci.yml invokes Makefile
+  # targets rather than carrying a copy CI alone knows about, so the exact
+  # same check reproduces locally in the systemd container harness (jrei/
+  # systemd-ubuntu:24.04, --cgroupns=host), not just on a GitHub runner.
+  # Reconciled with ByeByte's own version of this check, joint findings
+  # 2026-08-02: the daemon poll window (30s), the per-property systemctl
+  # show style, $(DEBFILE) over a glob, and the two-halves timer-resolution
+  # split (systemd-analyze verify's OUTPUT, not its exit code, plus a real
+  # systemctl start) are all the same shape in both pills now.
   systemd-unit:
     runs-on: ubuntu-latest
     steps:
@@ -89,100 +97,5 @@ jobs:
       - name: Build the .deb
         run: make deb
 
-      - name: Install under the real hardened unit
-        run: sudo dpkg -i build/deb/ramstein_*_all.deb
-
-      # Window standardized at 30s across the family (alfred, DM #3110):
-      # the negative control that proved this check works (see ef6394d's
-      # commit message) measured the actual failure mode -- 4 restarts
-      # within 5s, 6 within 15s, against RestartSec=5 -- so 30s gives six
-      # observations of a loop that announces itself in the first five
-      # seconds. SCOPE, so nobody later mistakes it for total coverage:
-      # this window catches IMMEDIATE-DEATH failures -- bad ExecStart,
-      # seccomp SIGSYS, a missing capability -- the class actually shipped
-      # three times today. It does NOT catch a daemon that runs fine for
-      # two minutes and then dies on its first poll-loop tick; that is a
-      # different failure needing a different detector.
-      - name: Poll ActiveState/NRestarts over 30s (not a one-shot is-active)
-        run: |
-          # Individual -p queries, not a single comma-list --value call:
-          # `systemctl show -p A,B,C,D --value` does NOT preserve the
-          # requested order (it returned MainPID,NRestarts,ActiveState,
-          # SubState here, not the ActiveState,SubState,NRestarts,MainPID
-          # asked for) -- caught by this very step on its first real run,
-          # positional `read` silently mis-assigned every field.
-          for i in $(seq 1 6); do
-            active="$(systemctl show ramsteind.service -p ActiveState --value)"
-            substate="$(systemctl show ramsteind.service -p SubState --value)"
-            restarts="$(systemctl show ramsteind.service -p NRestarts --value)"
-            mainpid="$(systemctl show ramsteind.service -p MainPID --value)"
-            echo "t+$((i * 5))s: active=$active sub=$substate restarts=$restarts pid=$mainpid"
-            if [ "$active" != "active" ] || [ "$restarts" != "0" ]; then
-              echo "FAIL: ramsteind.service is '$active/$substate' with $restarts restart(s)" >&2
-              sudo journalctl -u ramsteind.service --no-pager -n 50 >&2
-              exit 1
-            fi
-            sleep 5
-          done
-          echo "ramsteind.service stable: active, 0 restarts, over 30s"
-
-      - name: Real healthcheck + real status query
-        run: |
-          ramstein-healthcheck
-          ramstein status
-
-      # Operator ruling relayed via alfred (DM #3098): covering only
-      # ramsteind isn't enough -- ByeByte's equivalent oneshot units
-      # (update/sweep) needed to actually COMPLETE under their corrected
-      # paths, not just carry the right ExecStart text, to be trusted.
-      # These two are Type=oneshot: `systemctl start` blocks until they
-      # finish, so Result reflects the real outcome, not just that the
-      # process launched. The .timer units have no ExecStart of their own
-      # to break (only OnBootSec/OnUnitActiveSec) -- testing the services
-      # covers their EXECUTION path, but not their own separate failure
-      # mode (see the next step: a timer can fail to ever fire at all).
-      - name: Run the oneshot units to completion (not just check ExecStart text)
-        run: |
-          for u in ramstein-autocalm.service ramstein-update.service; do
-            sudo systemctl start "$u" || true
-            result="$(systemctl show "$u" -p Result --value)"
-            echo "$u: Result=$result"
-            if [ "$result" != "success" ]; then
-              echo "FAIL: $u did not complete successfully (Result=$result)" >&2
-              sudo journalctl -u "$u" --no-pager -n 30 >&2
-              exit 1
-            fi
-          done
-          echo "both oneshot units completed successfully"
-
-      # A timer has its own failure mode starting the service directly
-      # cannot reach (alfred, DM #3110): a malformed OnCalendar/OnBootSec,
-      # or a Unit= naming a service that doesn't exist, produces a timer
-      # that loads and silently never triggers -- RAMstein's timers rely
-      # on systemd's default name-matching convention (foo.timer ->
-      # foo.service) rather than an explicit Unit=, which is correct today
-      # and exactly the kind of implicit coupling that breaks silently the
-      # day one side gets renamed. Two instant checks, no waiting for a
-      # real schedule to fire: `systemd-analyze verify` catches a Unit=
-      # pointing at nothing; `start` (transient, NOT `enable` -- these
-      # ship disabled by family convention and must stay that way after
-      # this check) + `list-timers --all` proves the schedule actually
-      # resolves to a real NEXT time against the right service. Confirmed
-      # locally first: list-timers --all shows NOTHING for a disabled-but-
-      # loaded timer in this systemd version, so `start` before listing is
-      # required, not optional -- `stop` after restores the as-shipped state.
-      - name: Timer units resolve (schedule + Unit= target, not just syntax)
-        run: |
-          sudo systemd-analyze verify ramstein-autocalm.timer ramstein-update.timer
-          sudo systemctl start ramstein-autocalm.timer ramstein-update.timer
-          listing="$(systemctl list-timers --all)"
-          echo "$listing"
-          for t in ramstein-autocalm.timer ramstein-update.timer; do
-            echo "$listing" | grep -q "$t" || {
-              echo "FAIL: $t did not resolve to a scheduled entry" >&2
-              sudo systemctl stop ramstein-autocalm.timer ramstein-update.timer
-              exit 1
-            }
-          done
-          sudo systemctl stop ramstein-autocalm.timer ramstein-update.timer
-          echo "both timers resolve to a real schedule and the correct service"
+      - name: Install for real and poll all shipped units to completion
+        run: sudo make check-systemd-live
