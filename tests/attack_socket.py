@@ -183,6 +183,21 @@ HOSTILE = [
     {"cmd": "swappiness", "action": "set", "value": 99999},
     {"cmd": "swappiness", "action": "set", "value": 3.5},
     {"cmd": "swappiness", "action": "status", "extra": "garbage"},
+    # swap-size: real truncate/mkswap against the isolated RD/state fixture
+    # (same RAMSTEIN_STATE_DIR as everything else here), but systemctl's
+    # generic fake above only answers is-active, so enable/daemon-reload
+    # always fail cleanly -- no real systemd unit is ever touched by fuzz,
+    # only hostile-shape handling and range/type rejection are exercised.
+    {"cmd": "swap-size"}, {"cmd": "swap-size", "action": "wat"},
+    {"cmd": "swap-size", "action": None}, {"cmd": "swap-size", "action": 123},
+    {"cmd": "swap-size", "action": "set"},
+    {"cmd": "swap-size", "action": "set", "size": None},
+    {"cmd": "swap-size", "action": "set", "size": 123},
+    {"cmd": "swap-size", "action": "set", "size": ""},
+    {"cmd": "swap-size", "action": "set", "size": "-5G"},
+    {"cmd": "swap-size", "action": "set", "size": "not-a-size"},
+    {"cmd": "swap-size", "action": "set", "size": "max"},
+    {"cmd": "swap-size", "action": "status", "extra": "garbage"},
     {"cmd": "wat"}, {"cmd": 123}, {"cmd": None}, {}, {"cmd": []},
 ]
 for msg in HOSTILE:

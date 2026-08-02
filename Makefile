@@ -31,6 +31,7 @@ smoke: check-sutra
 	python3 tests/test_shmem_advise.py
 	python3 tests/test_header_evidence.py
 	python3 tests/test_swappiness.py
+	python3 tests/test_swap_size.py
 
 # the thorough adversarial pass (full cmd surface + oversized/garbage/
 # invalid-utf8/nested/unknown/rapid-reconnect/half-open-stall); smoke.sh
@@ -114,7 +115,8 @@ deb:
 	# the daemon dies 203/EXEC, and postinst's `|| true` swallows it
 	# silently. coldspot's build-deb.sh established this exact fix first.
 	for u in ramsteind.service ramstein-update.service ramstein-update.timer \
-	         ramstein-autocalm.service ramstein-autocalm.timer; do \
+	         ramstein-autocalm.service ramstein-autocalm.timer \
+	         var-lib-ramstein-extra.img.swap; do \
 	    sed 's#/usr/local/bin#/usr/bin#g' src/data/systemd/system/$$u \
 	        > $(DEBROOT)/lib/systemd/system/$$u; \
 	done

@@ -30,7 +30,13 @@ fi
 echo "== RAMstein uninstaller =="
 
 echo "-- stopping service + timer"
-systemctl disable --now ramsteind.service ramstein-update.timer ramstein-update.service \
+# var-lib-ramstein-extra.img.swap first, and explicitly -- `disable --now`
+# is what actually swapoffs it; skipping this would leave the swap file
+# active at the kernel level even after ramsteind itself stops, and a
+# later --purge's `rm -rf /var/lib/ramstein` would unlink it out from
+# under still-active swap instead of cleanly turning it off first.
+systemctl disable --now var-lib-ramstein-extra.img.swap ramsteind.service \
+  ramstein-update.timer ramstein-update.service \
   ramstein-autocalm.timer ramstein-autocalm.service 2>/dev/null || true
 
 echo "-- removing files"
@@ -47,7 +53,8 @@ for f in sutra.py sutra.version sutra.commit \
   rm -f "$BINDIR/$f"
 done
 rm -f "$UNITDIR/ramsteind.service" "$UNITDIR/ramstein-update.service" "$UNITDIR/ramstein-update.timer" \
-      "$UNITDIR/ramstein-autocalm.service" "$UNITDIR/ramstein-autocalm.timer"
+      "$UNITDIR/ramstein-autocalm.service" "$UNITDIR/ramstein-autocalm.timer" \
+      "$UNITDIR/var-lib-ramstein-extra.img.swap"
 # Covers the current sutra location too: $SHAREDIR/lib/ (BOOTSTRAP.md).
 rm -rf "$SHAREDIR"
 rm -f "$PREFIX/share/man/man1/ramstein.1" "$PREFIX/share/man/man8/ramsteind.8"

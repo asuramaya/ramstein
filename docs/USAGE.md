@@ -97,8 +97,26 @@ RAMstein last chose. Every write re-measures `/proc/sys/vm/swappiness` before re
 same discipline as `oomd enroll`: a drop-in that was written but didn't move the live value is a
 failure, not a partial success.
 
-Swap file size (`swap-size`) and zram (`zram`) are the next two layer-3 verbs on the same table
-(decision f8e7cc5a) — not yet built.
+## Swap file size
+
+```
+ramstein swap-size status       # active size, disk headroom, last change's outcome
+ramstein swap-size set SIZE     # e.g. 4G, 16G — resize the RAMstein-managed backing file (TTY confirm)
+ramstein swap-size remove       # turn it off and delete the file
+```
+
+A standalone backing file (`/var/lib/ramstein/extra.img`) and its own standalone systemd `.swap`
+unit — additive to whatever swap the machine already has (this box's own `/swap.img` via
+`/etc/fstab` stays untouched), never an fstab edit, so undoing it is disabling one unit rather than
+untangling a shared file. Creating or resizing the file (`fallocate` + `mkswap`) genuinely scales
+with size, so `set` reports `pending` immediately and returns; the CLI polls `status` for you and
+prints the real outcome once it lands, rather than blocking on a socket call that could take a
+while. Refuses up front if the resize would leave less than `swap_size_min_disk_headroom_gb` free
+on the backing filesystem — an oversized swap file trading a RAM crisis for a disk crisis is
+exactly the mistake this exists to block. Every change re-measures via `swapon --show` before
+reporting success, same discipline as `oomd enroll` and `swappiness`.
+
+zram (`zram`) is the last layer-3 verb on the same table (decision f8e7cc5a) — not yet built.
 
 ## The GNOME pill
 

@@ -135,6 +135,12 @@ DEFAULTS = {
     # much FURTHER it can grow before the kernel starts pushing back.
     "auto_calm_squeeze_pct": 130.0,
     "auto_calm_cooldown_seconds": 300.0,  # min gap between acted-on cycles
+    "swap_size_min_disk_headroom_gb": 10.0,  # swap-size set refuses a resize
+                                       # that would leave less than this free
+                                       # on the backing filesystem afterward —
+                                       # an oversized swap file trading a RAM
+                                       # crisis for a disk crisis is exactly
+                                       # what this exists to block
 }
 
 CLAMPS = {
@@ -166,6 +172,7 @@ CLAMPS = {
     # rather than accepting a value that can never take effect
     "auto_calm_squeeze_pct": (110.0, 500.0),
     "auto_calm_cooldown_seconds": (30.0, 86400.0),
+    "swap_size_min_disk_headroom_gb": (0.1, 100000.0),
 }
 
 
@@ -1655,13 +1662,255 @@ def query_swappiness_status():
     }
 
 
+# --- layer 3, verb #3: swap file size ---------------------------------------
+# Approved table (decision f8e7cc5a): BUTTON presets, BOUNDED-WAIT, PERSISTENT.
+# A standalone backing file + a standalone systemd .swap unit, additive to
+# whatever swap the machine already has (this box's own /swap.img stays
+# fstab-based and untouched) -- never an fstab edit, so undoing it is disabling
+# one unit, never untangling a shared file. The unit is SHIPPED statically by
+# the package (installed, never enabled) with a fixed `What=`, so the daemon
+# itself never writes a unit file here -- only the backing file inside
+# /var/lib/ramstein, already covered by ReadWritePaths. Genuinely BOUNDED-WAIT
+# (fallocate + mkswap scale with size), so `set` runs the real work on a
+# background thread and reports `pending` immediately -- FAMILY.md: "a verb
+# that may take minutes is not a control without a progress state."
+
+SWAP_SIZE_MIN_BYTES = 64 * 1024 * 1024
+# A .swap unit's name isn't arbitrary (unlike a .service): systemd
+# requires it to be the path-escaped form of its own What= (systemd.
+# swap(5)) -- `systemd-escape --path --suffix=swap /var/lib/ramstein/
+# extra.img` -- or the unit fails to load entirely ("Value of What= and
+# unit name do not match"), caught by systemd-analyze verify before this
+# ever shipped. The backing file is named .img, not .swap, specifically
+# so this escaped name doesn't end up double-suffixed.
+_SWAP_SIZE_UNIT_NAME = "var-lib-ramstein-extra.img.swap"
+_SWAP_SIZE_BACKING_REL = "extra.img"
+
+
+def _swap_size_backing_file_path():
+    return os.path.join(STATE_DIR, _SWAP_SIZE_BACKING_REL)
+
+
+def _swap_size_rows():
+    """`swapon --show`, machine-parseable: --bytes/--noheadings/--raw give
+    exact integer sizes and one space-separated row per active swap, no
+    unit suffix guessing (a human-readable "8G" would need re-parsing the
+    same size logic _parse_size already owns, for no benefit)."""
+    try:
+        r = subprocess.run(
+            ["swapon", "--show", "--bytes", "--noheadings", "--raw"],
+            capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if r.returncode != 0:
+        return []
+    rows = []
+    for line in r.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 3:
+            try:
+                rows.append({"name": parts[0], "type": parts[1],
+                             "size": int(parts[2])})
+            except ValueError:
+                continue
+    return rows
+
+
+def _swap_size_active_bytes():
+    path = _swap_size_backing_file_path()
+    for row in _swap_size_rows():
+        if row["name"] == path:
+            return row["size"]
+    return 0
+
+
+def _swap_size_disk_headroom_after(new_size_bytes):
+    """Free bytes on the backing file's own filesystem AFTER this resize.
+    The file's CURRENT size (if it already exists) is already counted
+    against free space by statvfs, so only the DELTA (new minus current)
+    is what actually consumes more disk -- a same-size or shrinking `set`
+    never reports less free than statvfs already does."""
+    path = _swap_size_backing_file_path()
+    try:
+        st = os.statvfs(os.path.dirname(path))
+    except OSError:
+        return None
+    free = st.f_bavail * st.f_frsize
+    current = os.path.getsize(path) if os.path.exists(path) else 0
+    delta = new_size_bytes - current
+    return free - delta if delta > 0 else free
+
+
+def _swap_size_apply(size_bytes):
+    """The BOUNDED-WAIT body, run off the request thread (see
+    do_swap_size_set). `systemctl stop` first -- resizing or re-mkswap-ing
+    a file that's CURRENTLY active swap corrupts it; idempotent (exit
+    nonzero, ignored) if the unit was never started. Then allocate +
+    mkswap + enable --now, and re-measure via swapon --show before ever
+    reporting success (ruling 41b72476) -- a backing file written and a
+    unit enabled is not success if the kernel doesn't actually show the
+    swap active at the requested size.
+
+    posix_fallocate, NOT truncate, for growth: a truncate-extended file
+    is SPARSE (holes, no real blocks behind the new length), and both
+    mkswap and swapon refuse a sparse swap file outright ("contains
+    holes or other unsupported extents" / "skipping - it appears to have
+    holes") -- confirmed live, on real ext4, not just theorized: a
+    truncate-based first cut of this verb passed every offline test
+    (which never allocates real disk) and only failed at the very last
+    step, in an isolated container, against the real kernel. Shrinking
+    uses ftruncate instead -- fallocate only ever grows.
+
+    VERIFICATION STATUS, honestly: the fallocate->mkswap sequence and the
+    honest-failure path are both directly confirmed live -- a raw
+    `swapon` on the fallocate'd file (bypassing systemd entirely)
+    succeeds cleanly on real ext4. `systemctl enable --now` on the
+    STANDALONE UNIT specifically has never been observed succeeding in
+    ANY test environment available here: systemd's own swap_start()
+    (src/core/swap.c) contains `if (detect_container() > 0) return
+    -EPERM;` -- an unconditional, no-override refusal of every .swap
+    unit activation inside any detected container, confirmed by reading
+    the source after hitting "Operation on or unit type of ... not
+    supported on this system" in an isolated, privileged,
+    --cgroupns=host, real-ext4-backed container (jrei/systemd-ubuntu),
+    the same harness that verified swappiness and oomd enroll for real.
+    That check runs before anything else in swap_start() and is the ONLY
+    reason activation failed -- everything upstream of it (the file, its
+    permissions, mkswap's signature) was independently confirmed correct
+    via the raw swapon call. Confirmed in source and by an equivalent
+    kernel-level call; never directly observed through the systemd unit
+    path itself, and structurally can't be in any container-based
+    harness. The operator's own machine is not a container."""
+    path = _swap_size_backing_file_path()
+    try:
+        subprocess.run(["systemctl", "stop", _SWAP_SIZE_UNIT_NAME],
+                       capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            current_size = os.fstat(fd).st_size
+            if size_bytes > current_size:
+                os.posix_fallocate(fd, current_size, size_bytes - current_size)
+            elif size_bytes < current_size:
+                os.ftruncate(fd, size_bytes)
+            os.fchmod(fd, 0o600)
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        return {"ok": False, "error": f"backing file write failed: {exc.strerror}"}
+
+    try:
+        r = subprocess.run(["mkswap", path], capture_output=True, text=True,
+                           timeout=300)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"ok": False, "error": f"mkswap failed: {exc}"}
+    if r.returncode != 0:
+        return {"ok": False, "error":
+                f"mkswap exited {r.returncode}: {(r.stderr or r.stdout).strip()}"}
+
+    for step in (["systemctl", "daemon-reload"],
+                 ["systemctl", "enable", "--now", _SWAP_SIZE_UNIT_NAME]):
+        try:
+            r = subprocess.run(step, capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {"ok": False, "error": f"{' '.join(step)} failed: {exc}"}
+        if r.returncode != 0:
+            return {"ok": False, "error":
+                    f"{' '.join(step)} exited {r.returncode}: "
+                    f"{(r.stderr or r.stdout).strip()}"}
+
+    measured = _swap_size_active_bytes()
+    moved = measured == size_bytes
+    result = {"ok": moved, "requested": size_bytes, "measured": measured}
+    if not moved:
+        result["error"] = (
+            f"wrote a {size_bytes}-byte backing file and enabled"
+            f" {_SWAP_SIZE_UNIT_NAME}, but swapon --show now reports"
+            f" {measured!r} — refusing to report success")
+    return result
+
+
+def _swap_size_worker(size_bytes, swap_size_state):
+    result = _swap_size_apply(size_bytes)
+    swap_size_state["in_progress"] = False
+    swap_size_state["last_result"] = result
+    _ledger_write({"ts": time.time(), "verb": "swap_size_set", "pid": None,
+                   "comm": None, "arg": str(size_bytes),
+                   "result": "ok" if result.get("ok") else "error",
+                   "detail": result.get("error")})
+
+
+def do_swap_size_set(cfg, size_bytes, swap_size_state):
+    if size_bytes < SWAP_SIZE_MIN_BYTES:
+        return {"error": f"size must be at least {SWAP_SIZE_MIN_BYTES} bytes"}
+    if swap_size_state.get("in_progress"):
+        return {"error": "a swap-size change is already in progress —"
+                          " see `swap-size status`"}
+    headroom = _swap_size_disk_headroom_after(size_bytes)
+    if headroom is None:
+        return {"error": "could not stat the backing filesystem"}
+    floor_gb = cfg["swap_size_min_disk_headroom_gb"]
+    if headroom < floor_gb * 1024 ** 3:
+        return {"error":
+            f"refusing: only {headroom / 1024**3:.1f}G would remain free on"
+            f" disk after this resize (floor {floor_gb:.0f}G) — an oversized"
+            f" swap file trades a RAM crisis for a disk crisis"}
+
+    swap_size_state["in_progress"] = True
+    swap_size_state["requested"] = size_bytes
+    threading.Thread(target=_swap_size_worker, args=(size_bytes, swap_size_state),
+                     daemon=True).start()
+    return {"pending": True, "requested": size_bytes}
+
+
+def do_swap_size_remove():
+    path = _swap_size_backing_file_path()
+    if not os.path.exists(path) and _swap_size_active_bytes() == 0:
+        return {"error": "no RAMstein-managed swap file to remove"}
+    try:
+        subprocess.run(["systemctl", "disable", "--now", _SWAP_SIZE_UNIT_NAME],
+                       capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"ok": False, "error": f"systemctl disable --now failed: {exc}"}
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except OSError as exc:
+        return {"ok": False, "error": f"file removal failed: {exc.strerror}"}
+    measured = _swap_size_active_bytes()
+    moved = measured == 0
+    result = {"ok": moved, "measured": measured}
+    if not moved:
+        result["error"] = (
+            f"removed the backing file but swapon --show still reports"
+            f" {measured!r} bytes active — refusing to report success")
+    _ledger_write({"ts": time.time(), "verb": "swap_size_remove", "pid": None,
+                   "comm": None, "arg": None,
+                   "result": "ok" if result["ok"] else "error",
+                   "detail": result.get("error")})
+    return result
+
+
+def query_swap_size_status(swap_size_state):
+    return {
+        "active_bytes": _swap_size_active_bytes(),
+        "backing_file_present": os.path.exists(_swap_size_backing_file_path()),
+        "in_progress": swap_size_state.get("in_progress", False),
+        "last_result": swap_size_state.get("last_result"),
+        "disk_headroom_bytes": _swap_size_disk_headroom_after(0),
+    }
+
+
 # --- control socket ---------------------------------------------------------
 # The security seam (SO_PEERCRED-gated, bounded reads, hostile-input framing,
 # the listen(64) backlog M4's attack suite demanded) lives in
 # sutra.ControlServer now. This dispatch closure carries only the domain
 # commands; ping/status are sutra's job.
 
-def _make_dispatch(cfg, get_status, autocalm_state, config_path):
+def _make_dispatch(cfg, get_status, autocalm_state, config_path, swap_size_state):
     def dispatch(cmd, req):
         if cmd == "top":
             by_swap = req.get("swap", False)
@@ -1763,6 +2012,24 @@ def _make_dispatch(cfg, get_status, autocalm_state, config_path):
             if action == "reset":
                 return do_swappiness_reset()
             raise ValueError("unknown swappiness action")
+        if cmd == "swap-size":
+            action = req.get("action")
+            if action == "status":
+                return query_swap_size_status(swap_size_state)
+            if action == "set":
+                size = req.get("size")
+                if not isinstance(size, str) or not size:
+                    raise ValueError("size must be a non-empty string")
+                try:
+                    size_bytes = _parse_size(size)
+                except ValueError as exc:
+                    raise ValueError(str(exc))
+                if size_bytes is None:
+                    raise ValueError("size must be a concrete value, not 'max'")
+                return do_swap_size_set(cfg, size_bytes, swap_size_state)
+            if action == "remove":
+                return do_swap_size_remove()
+            raise ValueError("unknown swap-size action")
         return None  # unknown -> sutra frames {"error": "unknown command"}
     return dispatch
 
@@ -1793,9 +2060,17 @@ def main():
     # runtime-only (session-scoped history, not durable state).
     autocalm_state = {"armed": cfg["auto_calm_armed"],
                       "last_action_ts": None, "last_result": None}
+    # swap-size's own runtime-only state -- BOUNDED-WAIT (fallocate+mkswap
+    # scale with size), so `set` runs on a background thread and this dict
+    # is how `status` sees whether it's still running and what the last
+    # attempt's outcome was. Session-scoped like autocalm_state's own
+    # last_result; a daemon restart mid-resize just means the NEXT set
+    # redoes the whole (idempotent) sequence rather than resuming one.
+    swap_size_state = {"in_progress": False, "requested": None,
+                       "last_result": None}
     sampler = Sampler(cfg)
     dispatch = _make_dispatch(cfg, lambda: latest["doc"], autocalm_state,
-                              args.config)
+                              args.config, swap_size_state)
     ctl = sutra.ControlServer(SOCKET_PATH,
                               sutra.allow_uids({0, os.getuid(), cfg["owner_uid"]}),
                               VERSION, dispatch, lambda: latest["doc"],

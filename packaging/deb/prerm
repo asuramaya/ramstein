@@ -6,6 +6,12 @@ set -e
 
 case "$1" in
   remove|deconfigure)
+    # The swap unit specifically, and first: unlike a plain service/timer,
+    # an active swap is a live kernel resource -- letting the package be
+    # removed without swapping it off first would leave the backing file
+    # (deleted later, on purge) active underneath a system that no longer
+    # has the daemon that manages it.
+    systemctl disable --now var-lib-ramstein-extra.img.swap >/dev/null 2>&1 || true
     systemctl disable --now ramsteind.service >/dev/null 2>&1 || true
     ;;
 esac

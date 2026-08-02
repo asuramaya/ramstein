@@ -228,6 +228,48 @@ Errors cleanly if RAMstein has never changed
 on this machine.
 .RE
 .TP
+.BI swap\-size " status|set SIZE|remove"
+A standalone, additive swap file \(em its own backing file
+.RI ( /var/lib/ramstein/extra.img )
+and its own standalone
+.BR systemd.swap (5)
+unit, never touching the machine's own existing swap or
+.IR /etc/fstab .
+Genuinely BOUNDED\-WAIT: creating or resizing the file
+.RI ( fallocate " + " mkswap )
+scales with size.
+.RS
+.TP
+.B status
+Active size, disk headroom, and the last change's outcome
+.RI ( pending
+while one is running).
+.TP
+.BI set " SIZE"
+.I SIZE
+is e.g.
+.IR 4G " or " 16G .
+Requires a real TTY and typing
+.B set
+to confirm. Reports
+.I pending
+immediately \(em the daemon runs the real work on a background thread \(em
+and the CLI polls
+.B status
+for the real outcome rather than blocking the socket. Refuses up front
+if the resize would leave less than
+.I swap_size_min_disk_headroom_gb
+free on the backing filesystem: an oversized swap file trading a RAM
+crisis for a disk crisis is exactly the mistake this blocks. Re\-measures
+via
+.B swapon \-\-show
+before ever reporting success.
+.TP
+.B remove
+Turns the swap off and deletes the backing file. Errors cleanly if
+RAMstein has no managed swap file on this machine.
+.RE
+.TP
 .BI update " [\-\-check] [\-\-json]"
 Delegates straight to
 .BR ramstein\-update (1)

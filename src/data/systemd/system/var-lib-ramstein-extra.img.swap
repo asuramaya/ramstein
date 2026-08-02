@@ -1,0 +1,22 @@
+[Unit]
+Description=RAMstein-managed extra swap (ramstein swap-size)
+Documentation=https://github.com/asuramaya/ramstein
+# Additive, not a replacement for the machine's own /swap.img (or
+# equivalent) — this unit and its backing file are entirely RAMstein's
+# own, so disabling it is undoing exactly one thing, never untangling a
+# file another part of the system also depends on.
+
+[Swap]
+# The daemon owns this file's whole lifecycle (create/resize/mkswap via
+# `ramstein swap-size set`, remove via `swap-size remove`) — never hand
+# edit. Static What=, so the daemon never needs to WRITE this unit file
+# itself: it's shipped once by the package and only ever started/stopped/
+# enabled/disabled, sidestepping the ReadWritePaths-target-must-already-
+# exist trap the swappiness/oomd drop-ins had to solve for.
+#
+# The FILENAME isn't arbitrary: unlike a .service unit, a .swap unit's
+# name must be systemd's own path-escaped form of What= (systemd.swap(5))
+# — `systemd-escape --path --suffix=swap /var/lib/ramstein/extra.img` —
+# or systemd refuses to load it ("Value of What= and unit name do not
+# match"), caught by `systemd-analyze verify` before this ever shipped.
+What=/var/lib/ramstein/extra.img

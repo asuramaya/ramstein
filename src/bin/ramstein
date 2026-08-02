@@ -532,6 +532,87 @@ def cmd_swappiness(argv):
     sys.exit("ramstein: swappiness needs one of status | set N | reset")
 
 
+def _swap_size_poll_until_done(timeout_s=120):
+    """`set`'s BOUNDED-WAIT half: the daemon already returned `pending`
+    immediately (fallocate+mkswap scale with size), so the CLI polls
+    status instead of blocking the socket for however long that takes —
+    same shape as --kill's post-SIGTERM poll, just with no fixed cap on
+    what "a while" means."""
+    start = time.time()
+    while time.time() - start < timeout_s:
+        doc = request_or_die({"cmd": "swap-size", "action": "status"})
+        if not doc.get("in_progress"):
+            lr = doc.get("last_result")
+            if lr and lr.get("ok"):
+                print(f"done — {human_bytes(lr['measured'])} active"
+                      " (confirmed live, not just written).")
+            else:
+                print(f"FAILED: {lr.get('error') if lr else 'no result recorded'}")
+            return
+        time.sleep(1)
+    print("still running after 2 minutes — check `ramstein swap-size status` later.")
+
+
+def cmd_swap_size(argv):
+    """Layer 3, verb #3: a standalone, additive swap file (own backing
+    file + own systemd .swap unit) -- BOUNDED-WAIT, so `set` reports
+    pending immediately and the CLI polls for the real outcome. Never
+    touches the machine's own pre-existing swap."""
+    sub = argv[0] if argv else "status"
+    rest = argv[1:]
+
+    if sub == "status":
+        doc = request_or_die({"cmd": "swap-size", "action": "status"})
+        if "--json" in rest:
+            print(json.dumps(doc, indent=2))
+            return
+        active = doc["active_bytes"]
+        print(f"swap-size: {human_bytes(active)} active" if active else
+              "swap-size: none (RAMstein-managed extra swap not enabled)")
+        if doc["in_progress"]:
+            req = doc.get("requested")
+            print(f"  a resize to {human_bytes(req) if req else '?'}"
+                  " is in progress...")
+        lr = doc.get("last_result")
+        if lr and not doc["in_progress"]:
+            outcome = "ok" if lr.get("ok") else f"FAILED: {lr.get('error')}"
+            print(f"  last change: {outcome}")
+        print(f"  disk headroom if left unchanged:"
+              f" {human_bytes(doc['disk_headroom_bytes'])}")
+        return
+
+    if sub == "set":
+        if not rest:
+            sys.exit("ramstein: swap-size set needs a size, e.g. 4G")
+        size = rest[0]
+        if not sys.stdin.isatty():
+            sys.exit("ramstein: swap-size set refuses a non-interactive TTY")
+        print(f"Creating/resizing a RAMstein-managed swap file to {size} —")
+        print("persists across reboot, additive to any swap this machine")
+        print("already has. Refuses if it would leave too little disk free.")
+        try:
+            typed = input("type 'set' to confirm: ").strip()
+        except EOFError:
+            typed = ""
+        if typed != "set":
+            sys.exit("ramstein: swap-size set not confirmed")
+        doc = request_or_die({"cmd": "swap-size", "action": "set", "size": size})
+        if "error" in doc:
+            sys.exit(f"ramstein: swap-size set failed: {doc['error']}")
+        print(f"Started — resizing to {size}...")
+        _swap_size_poll_until_done()
+        return
+
+    if sub == "remove":
+        doc = request_or_die({"cmd": "swap-size", "action": "remove"})
+        if not doc.get("ok"):
+            sys.exit(f"ramstein: swap-size remove failed: {doc.get('error', doc)}")
+        print("RAMstein-managed swap removed and confirmed off.")
+        return
+
+    sys.exit("ramstein: swap-size needs one of status | set SIZE | remove")
+
+
 def cmd_update(argv):
     """Delegate straight to ramstein-update (execvp — its exit code becomes
     ours). `ramstein update --check --json` is the pill's UpdateSurface
@@ -567,6 +648,7 @@ verbs:
   autocalm status|arm|dry|run     unattended calm: arm/disarm, or run one cycle
   oomd status|enroll|disenroll    layer-3: enroll this session in systemd-oomd's swap-kill protection
   swappiness status|set N|reset   layer-3: vm.swappiness, persisted + applied live (0-200)
+  swap-size status|set SIZE|remove  layer-3: standalone additive swap file, e.g. 4G
   update [--check]                check for / delegate to ramstein-update
 
 --json applies to any read verb for machine-readable output.
@@ -598,7 +680,7 @@ def main():
              "swap": cmd_swap, "zombies": cmd_zombies, "oom": cmd_oom,
              "advise": cmd_advise, "calm": cmd_calm, "autocalm": cmd_autocalm,
              "oomd": cmd_oomd, "swappiness": cmd_swappiness,
-             "update": cmd_update}
+             "swap-size": cmd_swap_size, "update": cmd_update}
     if verb in verbs:
         verbs[verb](rest)
     elif verb in PLANNED:

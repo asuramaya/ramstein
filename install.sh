@@ -238,6 +238,13 @@ install -m 0644 "$SRC/src/data/systemd/system/ramstein-update.service"  "$UNITDI
 install -m 0644 "$SRC/src/data/systemd/system/ramstein-update.timer"    "$UNITDIR/ramstein-update.timer"
 install -m 0644 "$SRC/src/data/systemd/system/ramstein-autocalm.service" "$UNITDIR/ramstein-autocalm.service"
 install -m 0644 "$SRC/src/data/systemd/system/ramstein-autocalm.timer"   "$UNITDIR/ramstein-autocalm.timer"
+# `ramstein swap-size`'s standalone unit -- static What=, shipped once,
+# inert (not enabled) until `swap-size set` actually formats the backing
+# file and enables it. Filename isn't arbitrary: it's systemd's own
+# path-escaped form of the backing file (systemd.swap(5)), see the unit's
+# own header comment.
+install -m 0644 "$SRC/src/data/systemd/system/var-lib-ramstein-extra.img.swap" \
+                "$UNITDIR/var-lib-ramstein-extra.img.swap"
 systemctl daemon-reload
 systemctl enable ramsteind.service
 # `enable --now` on an ALREADY-active unit is a no-op start — it would leave
