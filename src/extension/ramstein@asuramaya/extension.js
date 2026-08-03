@@ -63,6 +63,21 @@ const EVIDENCE_LABEL = {psi: 'pressure', avail: 'low mem', eta: 'ETA'};
 // rather than percentages, since that's what the verb actually takes.
 const SWAP_SIZE_PRESETS = ['2G', '4G', '8G', '16G'];
 
+// swappiness's SEGMENT: "a small named-stance set" (the CLI's own
+// docstring), not the raw 0-200 kernel value -- that's the CLI's job,
+// for agents and experts. Deliberately stays inside the traditional
+// 0-100 range every Linux user/admin already recognizes; the modern
+// MGLRU-era 100-200 extension (SWAPPINESS_MAX in the daemon) is real but
+// genuinely expert tuning, left to the CLI on purpose. 60 is the kernel
+// default, included as its own stance so "back to normal" is always one
+// click away, not just `reset` (which restores THIS machine's own prior
+// value, not necessarily 60).
+const SWAPPINESS_PRESETS = [
+    {label: 'Avoid swap', value: 10},
+    {label: 'Balanced', value: 60},
+    {label: 'Favor swap', value: 100},
+];
+
 function evidenceTag(mem) {
     const ev = mem.state_evidence;
     if (!Array.isArray(ev) || !ev.length)
@@ -464,6 +479,54 @@ class ramsteinToggle extends QuickMenuToggle {
             disabled: !pill.zram?.generator_present,
             onToggle: () => this._onZramToggle(pill.zram),
         }));
+        this._renderAutocalmArmControl(ac);
+    }
+
+    // SEGMENT: a small named-stance set (SWAPPINESS_PRESETS), not the raw
+    // 0-200 value — same St.Button/CHIP shape as swap-size's strip below,
+    // except this one settles in ONE round trip (do_swappiness_set writes
+    // and re-measures synchronously, no worker thread), so runRamsteinJson
+    // is enough — no BOUNDED-WAIT polling needed, same shape as oomd's
+    // toggle. Shows the live numeric value alongside the chips because,
+    // unlike swap-size's exact-size match, a CLI-set custom value (or
+    // anything RAMstein didn't choose) very plausibly matches none of the
+    // three presets — that should read as "on a custom value", not as a
+    // silently blank row.
+    _buildSwappinessRow(swappiness) {
+        const box = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
+        const layout = new St.BoxLayout({x_expand: true});
+        const current = swappiness?.current;
+        const lab = new St.Label({
+            text: current != null ? `swappiness${NB}(${current})` : 'swappiness',
+            style: `color:${DIM}; padding-right:8px;`,
+        });
+        lab.y_align = 2;
+        layout.add_child(lab);
+        for (const {label, value} of SWAPPINESS_PRESETS) {
+            const isCurrent = current === value;
+            const btn = new St.Button({
+                label, x_expand: true, can_focus: true,
+                style: isCurrent ? Pill.CHIP_ON : Pill.CHIP,
+            });
+            btn.connect('clicked', () => this._onSwappinessClick(value));
+            layout.add_child(btn);
+        }
+        box.add_child(layout);
+        return box;
+    }
+
+    _onSwappinessClick(value) {
+        runRamsteinJson(['swappiness', 'set', String(value), '--yes', '--json'],
+            this._cancellable, doc => {
+                if (!doc || doc.error) {
+                    Pill.notify('ramstein', doc?.error || 'swappiness set — daemon unreachable');
+                    this.refresh();   // chip reverts: re-render from real state
+                    return;
+                }
+                Pill.notify('ramstein', doc.ok
+                    ? `vm.swappiness${NB}→${NB}${doc.measured}${NB}(confirmed live)`
+                    : `swappiness set to ${value} did not take effect: ${doc.error ?? 'unknown'}`);
+            });
     }
 
     // BOUNDED-WAIT BUTTON: a SEGMENT-shaped preset strip (Werner's own
@@ -506,8 +569,6 @@ class ramsteinToggle extends QuickMenuToggle {
     }
 
     _onSwapSizeClick(size) {
-        // --yes does not exist on this verb yet (file-header note) --
-        // this call is the intended shape, not a working one.
         pollUntilDone(['swap-size', 'set', size, '--yes', '--json'], this._cancellable, {
             isDone: doc => !doc.pending,
             onDone: doc => {

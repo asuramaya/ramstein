@@ -35,11 +35,27 @@ def request(payload):
     return sutra.request(sock_path, payload, timeout=10)
 
 
-def request_or_die(payload):
+def request_or_die(payload, as_json=False):
+    """as_json=True (pass the caller's own "--json" in argv) makes a daemon
+    refusal exit through stdout as parseable {"error": ...} JSON instead of
+    sys.exit's plain-text stderr line -- byebyte's own fix (Werner), ported
+    here after finding the identical gap wiring the pill's own
+    subprocess+--json calls to autocalm arm: sys.exit always fired BEFORE
+    a verb's own --json print ever ran, so every refusal (a preflight
+    refusal, an out-of-range value, a write that failed) silently never
+    reached stdout at all -- a caller parsing --json output saw empty
+    stdout and could only tell "something failed", never why,
+    indistinguishable from the daemon being unreachable."""
     doc = request(payload)
     if doc is None:
+        if as_json:
+            print(json.dumps({"error": "daemon unreachable"}))
+            sys.exit(1)
         sys.exit("ramstein: daemon unreachable — is ramsteind running?")
     if isinstance(doc, dict) and "error" in doc:
+        if as_json:
+            print(json.dumps(doc, indent=2))
+            sys.exit(1)
         sys.exit(f"ramstein: {doc['error']}")
     return doc
 
@@ -509,7 +525,7 @@ def cmd_swappiness(argv):
         value = int(rest[0])
         yes = "--yes" in rest
         doc = request_or_die({"cmd": "swappiness", "action": "set", "value": value,
-                              "dry_run": not yes})
+                              "dry_run": not yes}, as_json="--json" in rest)
         if "--json" in rest:
             print(json.dumps(doc, indent=2))
             return
