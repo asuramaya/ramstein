@@ -26,14 +26,15 @@ include src/share/ramstein/lib/sutra.mk
 smoke: check-sutra
 	bash tests/smoke.sh
 	bash tests/test_signing.sh
-	python3 tests/test_oom_coexist.py
-	python3 tests/test_oomd_enroll.py
-	python3 tests/test_shmem_advise.py
-	python3 tests/test_header_evidence.py
-	python3 tests/test_swappiness.py
-	python3 tests/test_swap_size.py
-	python3 tests/test_zram.py
-	python3 tests/test_autocalm_arm.py
+	# a glob, not a hand list (alfred, msg 3460): the exact defect class
+	# `make test` itself exists to close -- a hand list is silently green
+	# on a new test file nobody wired in, and the newest two files here
+	# (test_zram.py, test_autocalm_arm.py) are precisely the ones a list
+	# would have dropped first. Loud on failure by construction (`|| exit
+	# 1`), same discipline as the JS-check loop below.
+	@for t in tests/test_*.py; do \
+	  python3 "$$t" || exit 1; \
+	done
 
 # the thorough adversarial pass (full cmd surface + oversized/garbage/
 # invalid-utf8/nested/unknown/rapid-reconnect/half-open-stall); smoke.sh
