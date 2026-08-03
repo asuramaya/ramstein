@@ -520,15 +520,28 @@ import json, sys
 doc = json.load(open(sys.argv[1]))
 pill = doc.get("pill")
 assert pill is not None, "pill digest never populated"
-for key in ("top_process", "zombie_count", "advise_headline", "advise_count"):
+for key in ("top_process", "zombie_count", "advise_headline", "advise_count",
+            "oomd", "swappiness", "swap_size", "zram"):
     assert key in pill, f"pill missing {key}"
 assert isinstance(pill["zombie_count"], int), pill["zombie_count"]
 assert isinstance(pill["advise_count"], int), pill["advise_count"]
 if pill["top_process"] is not None:
     for key in ("pid", "comm", "rss"):
         assert key in pill["top_process"], f"pill.top_process missing {key}"
+# layer-3 digest entries: same shape query_*_status() already returns over
+# the socket, just riding the file instead -- the pill needs no new
+# request/response path to know whether a TOGGLE should render on or off.
+for key in ("enrolled", "ramstein_dropin_present"):
+    assert key in pill["oomd"], f"pill.oomd missing {key}"
+for key in ("current", "ramstein_dropin_present", "prior"):
+    assert key in pill["swappiness"], f"pill.swappiness missing {key}"
+for key in ("active_bytes", "backing_file_present", "in_progress", "last_result"):
+    assert key in pill["swap_size"], f"pill.swap_size missing {key}"
+for key in ("generator_present", "config_enabled", "active_bytes", "in_progress"):
+    assert key in pill["zram"], f"pill.zram missing {key}"
 print(f"pill digest ok: top={pill['top_process'] and pill['top_process']['comm']}"
-      f" zombies={pill['zombie_count']} advise={pill['advise_count']}")
+      f" zombies={pill['zombie_count']} advise={pill['advise_count']}"
+      f" layer3=[oomd,swappiness,swap_size,zram] all present")
 PY
 
 # --- V2.M1: the watchman — swap-storm early warning -------------------------
