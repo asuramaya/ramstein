@@ -11,9 +11,11 @@ scope than a /tmp-only tool like ByeByte's `why` (Werner, DM #3228).
 
 Run as: python3 tests/test_shmem_advise.py
 """
+import atexit
 import importlib.machinery
 import importlib.util
 import os
+import shutil
 import sys
 import tempfile
 
@@ -23,6 +25,7 @@ RAMSTEIND_PATH = os.path.join(REPO_ROOT, "src", "bin", "ramsteind")
 # query_advise touches the proc_stats index (rule 2/4) -- point it at a
 # throwaway, empty state dir rather than the real /var/lib/ramstein.
 _STATE_FIXTURE = tempfile.mkdtemp(prefix="ramstein-shmem-advise-test-")
+atexit.register(shutil.rmtree, _STATE_FIXTURE, ignore_errors=True)
 os.environ["RAMSTEIN_STATE_DIR"] = _STATE_FIXTURE
 
 _loader = importlib.machinery.SourceFileLoader("ramsteind", RAMSTEIND_PATH)

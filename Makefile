@@ -1,5 +1,5 @@
 # ramstein — the memory demon
-.PHONY: smoke attack check check-repo install uninstall pill deb sync-signers check-systemd-live
+.PHONY: smoke attack test check check-repo install uninstall pill deb sync-signers check-systemd-live
 
 VERSION := $(shell tr -d '[:space:]' < packaging/VERSION)
 DEBROOT := build/deb/ramstein_$(VERSION)_all
@@ -40,6 +40,16 @@ smoke: check-sutra
 # keeps its own quick hostile-input block for a fast loop
 attack:
 	python3 tests/attack_socket.py
+
+# THE one true "is it green" (alfred, msg 3456): `python3 -m pytest tests/`
+# looks like the obvious thing and lies -- these are standalone scripts
+# (their own `tmp` helper, `if __name__ == "__main__": main()`), not
+# pytest fixtures, so pytest silently "passes" 6 by accident and errors
+# on the other 7 ("fixture 'tmp' not found") while reporting nothing
+# broken. `test` is smoke's full test_*.py sweep plus attack_socket.py's
+# adversarial pass, run the way they're actually meant to run -- nothing
+# else should be trusted as the green/red signal.
+test: smoke attack
 
 # static checks, CI-equivalent. Family grammar: smoke attack check deb.
 check: check-sutra check-vendored-path-all
