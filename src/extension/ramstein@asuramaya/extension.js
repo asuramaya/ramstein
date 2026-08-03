@@ -85,41 +85,24 @@ function evidenceTag(mem) {
     return ev.map(e => EVIDENCE_LABEL[e] ?? e).join('+');
 }
 
-// ---- layer-3 controls: ramstein's first consumption of the shared
+// ---- layer-3 controls: ramstein's own consumption of the shared
 // affordance vocabulary (alfred's dispatch, thread f10c0cd3). Werner's
 // ByeByte shapes (reserve's SEGMENT chip-strip, declare's Reclaim
-// pick-list) both complete in ONE round trip; none of the three verbs
-// here do — swap-size/zram genuinely take real wall-clock time
-// (fallocate+mkswap / the generator's own setup run). This is ramstein's
-// own answer to a shape Werner's code never needed, local until a
-// second pill needs it (Tantra extracts once more than one local copy
-// exists).
+// pick-list) both complete in ONE round trip; swap-size/zram don't —
+// they genuinely take real wall-clock time (fallocate+mkswap / the
+// generator's own setup run), hence the BOUNDED-WAIT polling shape below
+// that Werner's code never needed.
 //
-// THE MISFIT THAT MATTERS MOST, found building this rather than reading
-// Werner's code: every PERSISTENT verb here (swappiness set, swap-size
-// set, zram enable — and ramstein's own pre-existing autocalm arm) gates
-// on an INTERACTIVE TYPED CONFIRMATION at the CLI layer
-// (`sys.stdin.isatty()` + `input("type '...' to confirm: ")`). A pill
-// click spawns a Gio.Subprocess with no TTY at all — `isatty()` reads
-// False every time, so the CLI refuses outright before the daemon ever
-// sees the request, exactly like a script piping `--kill` is refused by
-// design. ByeByte's reserve/declare never hit this because Werner's own
-// runByebyteJson calls already pass `--yes` — a bypass flag those verbs
-// were built with from the start. ramstein's PERSISTENT verbs have no
-// such flag; nothing below can actually fire through the CLI as written.
-//
-// Deliberately NOT worked around by talking to the control socket
-// directly (Pill.sendCmd could reach do_swap_size_set/do_zram_enable
-// today — neither has its own TTY check, only the CLI wrapper does) —
-// that would make the pill the only caller with no consent gate at all,
-// the opposite of ramstein's own standing discipline that the pill and
-// the CLI answer the SAME authority, not different ones. The click
-// handlers below call `--yes`, a flag that does not exist yet — this is
-// the shape a fix should take (matching ByeByte's own precedent), not a
-// bug in this file. See the fit report (DM to alfred) for the actual
-// recommendation: a real GNOME-native confirm step belongs on the PILL
-// side of that flag, not a bare bypass — the CLI's typed-word gate stays
-// the answer for terminal use, the pill needs its own.
+// THE MISFIT FOUND BUILDING THE FIRST THREE (fit report, DM to alfred):
+// every PERSISTENT verb here gated on an INTERACTIVE TYPED CONFIRMATION
+// at the CLI layer (`sys.stdin.isatty()` + `input("type '...' to
+// confirm: ")`) — structurally impossible for a pill-spawned
+// Gio.Subprocess (no TTY, ever) to satisfy, the same way a script piping
+// `--kill` is refused by design. NOW CONVERGED: every verb below (plus
+// swappiness, plus autocalm arm) is byebyte's already-shipped shape —
+// dry-run by default, `--yes` applies, the daemon's own compiled-in
+// floor is what makes `--yes` safe, never a human ceremony. The click
+// handlers below sending `--yes` are a WORKING path, not aspirational.
 
 let _ramsteinCliPath = null;
 function ramsteinCli() {
@@ -256,9 +239,15 @@ class ramsteinToggle extends QuickMenuToggle {
         // healthy, unlike advise/autocalm's conditional sections above).
         this._controlsSection = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(this._controlsSection);
-        this._swapSizeRow = null;
-        this._oomdToggleRow = null;
-        this._zramToggleRow = null;
+        // autocalm arm's own small state machine (NOT rebuilt by every
+        // refresh like the rest of this section -- see _renderControls):
+        // 'idle' (normal control), 'loading' (fetching the dry-run
+        // preview), 'confirm' (preview text + Confirm/Cancel). The
+        // preview NOTE TEXT itself lives on the daemon (do_autocalm_arm's
+        // dry_run branch) and is only ever fetched, never duplicated here
+        // -- one place defines the consent language, the pill renders it.
+        this._autocalmArmState = 'idle';
+        this._autocalmArmNote = null;
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this._update = new Pill.UpdateSurface('ramstein', {cancellable});
@@ -448,23 +437,31 @@ class ramsteinToggle extends QuickMenuToggle {
                 `${NB}·${NB}${age}${NB}ago</span>`));
         }
         this._maybeNotifyAutocalm(st);
-        this._renderControls(pill);
+        this._renderControls(pill, ac);
 
         this.menu.setHeader(this.iconName, 'ramstein', this.subtitle);
         this._update.setVersion(st.daemon?.version);
     }
 
-    // ---- layer 3: swap-size (BOUNDED-WAIT button), oomd enroll and zram
-    // (both TOGGLEs) — see the file-header note on the CLI's TTY gate:
-    // the click handlers below are the shape a working control takes,
-    // not yet a working control. Rebuilt each refresh, like every other
-    // section here except Reclaim's own persistent picks (nothing here
-    // holds in-progress user state the way that does).
+    // ---- layer 3: swappiness (SEGMENT), swap-size (BOUNDED-WAIT button),
+    // oomd enroll and zram (both TOGGLEs), autocalm arm (its own
+    // preview-then-confirm shape, below). All five now drive working
+    // dry-run/--yes verbs. Ordered cheapest-and-most-routine first,
+    // highest-authority last — swappiness costs nothing to get wrong and
+    // reverts with one more click; autocalm arm grants standing,
+    // persistent, unsupervised permission and gets the most careful
+    // treatment below. Rebuilt each refresh from real daemon state, like
+    // every other section here, EXCEPT autocalm's own pending-preview
+    // state (_autocalmArmState/_autocalmArmNote, set on _init) — that one
+    // deliberately survives a refresh mid-flow, the same way a user
+    // mid-decision shouldn't have their own in-progress confirm dialog
+    // silently reset by the next GFileMonitor tick.
 
-    _renderControls(pill) {
+    _renderControls(pill, ac) {
         this._controlsSection.removeAll();
         if (!pill)
             return;
+        this._controlsSection.addMenuItem(this._buildSwappinessRow(pill.swappiness));
         this._controlsSection.addMenuItem(this._buildSwapSizeRow(pill.swap_size));
         this._controlsSection.addMenuItem(this._buildToggleRow({
             label: 'systemd-oomd swap protection',
@@ -650,6 +647,125 @@ class ramsteinToggle extends QuickMenuToggle {
                     ? `zram ${action}d (confirmed live).`
                     : `zram ${action} did not take effect: ${lr?.error ?? 'unknown'}`);
             },
+        });
+    }
+
+    // AUTOCALM ARM: the repo's highest-authority verb, and deliberately
+    // NOT a plain toggle. Arming grants ramsteind standing, PERSISTENT
+    // permission to act on its own -- renice and squeeze cgroup
+    // memory.high -- on a timer, without asking again. "Arm auto-calm" on
+    // a switch is not consent (alfred, msg 3503); the click has to show
+    // what it GRANTS, matching the CLI's own text, before it can apply.
+    //
+    // DISARMING stays a plain immediate toggle, same shape as oomd/zram's
+    // safe direction: it only ever gives permission back, nothing to
+    // preview.
+    //
+    // ARMING is a real preview-then-confirm flow rendered as clicks, not
+    // a modal: idle (switch) -> loading (fetching the dry-run preview) ->
+    // confirm (the daemon's own preview text + Confirm/Cancel) -> back to
+    // idle. The preview TEXT itself is fetched from do_autocalm_arm's
+    // dry_run response (`note`), never duplicated in JS -- one place
+    // defines the consent language, this renders it. If arming is
+    // refused (the trigger condition is already firing --
+    // _autocalm_arm_preflight), that's a notify + revert, the same shape
+    // oomd's own preflight refusal already uses -- a redirect, not a
+    // second UI state.
+    //
+    // NOT in build_pill_summary, and staying that way: autocalm's status
+    // is a cheap in-memory dict read that already rides every poll tick
+    // (ramsteind's own comment on doc["autocalm"]), strictly FRESHER than
+    // build_pill_summary's cache (recomputed only on the sampler's own,
+    // slower cadence, because oomd/swappiness/swap-size/zram cost real
+    // subprocess/DB work autocalm doesn't pay). Folding it into the pill
+    // digest would make the one control an operator actually clicks
+    // STALER for zero benefit -- the opposite of what that digest exists
+    // to buy.
+    _renderAutocalmArmControl(ac) {
+        if (this._autocalmArmState === 'loading') {
+            const it = new PopupMenu.PopupSwitchMenuItem(
+                'auto-calm (checking…)', !!ac?.armed, {reactive: false});
+            this._controlsSection.addMenuItem(it);
+            return;
+        }
+        if (this._autocalmArmState === 'confirm') {
+            this._controlsSection.addMenuItem(Pill.wrapRow(
+                `<span foreground="${ACCENT}">Arm auto-calm?</span>` +
+                `<span foreground="${DIM}">${NB}—${NB}${Pill.esc(this._autocalmArmNote ?? '')}</span>`));
+            const box = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
+            const layout = new St.BoxLayout({x_expand: true});
+            const confirmBtn = new St.Button({
+                label: 'Confirm arm', x_expand: true, can_focus: true, style: Pill.CHIP,
+            });
+            confirmBtn.connect('clicked', () => this._confirmAutocalmArm());
+            const cancelBtn = new St.Button({
+                label: 'Cancel', x_expand: true, can_focus: true, style: Pill.CHIP,
+            });
+            cancelBtn.connect('clicked', () => this._cancelAutocalmArm());
+            layout.add_child(confirmBtn);
+            layout.add_child(cancelBtn);
+            box.add_child(layout);
+            this._controlsSection.addMenuItem(box);
+            return;
+        }
+        this._controlsSection.addMenuItem(this._buildToggleRow({
+            label: 'auto-calm (act on memory pressure automatically)',
+            enabled: !!ac?.armed,
+            pending: false,
+            onToggle: state => state
+                ? this._startAutocalmArmPreview()
+                : this._onAutocalmDisarm(),
+        }));
+    }
+
+    _startAutocalmArmPreview() {
+        this._autocalmArmState = 'loading';
+        this.refresh();
+        runRamsteinJson(['autocalm', 'arm', '--json'], this._cancellable, doc => {
+            if (!doc || doc.error) {
+                Pill.notify('ramstein', doc?.error || 'autocalm arm — daemon unreachable');
+                this._autocalmArmState = 'idle';
+                this.refresh();
+                return;
+            }
+            this._autocalmArmNote = doc.note ?? null;
+            this._autocalmArmState = 'confirm';
+            this.refresh();
+        });
+    }
+
+    _confirmAutocalmArm() {
+        this._autocalmArmState = 'loading';
+        this.refresh();
+        runRamsteinJson(['autocalm', 'arm', '--yes', '--json'], this._cancellable, doc => {
+            this._autocalmArmState = 'idle';
+            this._autocalmArmNote = null;
+            if (!doc || doc.error || !doc.ok) {
+                Pill.notify('ramstein', doc?.error || 'autocalm arm — daemon unreachable');
+                this.refresh();
+                return;
+            }
+            this.refresh();
+            Pill.notify('ramstein',
+                'auto-calm ARMED — acts for real on its next triggered cycle,' +
+                ' stays armed across restarts until disarmed.');
+        });
+    }
+
+    _cancelAutocalmArm() {
+        this._autocalmArmState = 'idle';
+        this._autocalmArmNote = null;
+        this.refresh();
+    }
+
+    _onAutocalmDisarm() {
+        runRamsteinJson(['autocalm', 'dry', '--json'], this._cancellable, doc => {
+            if (!doc || doc.error) {
+                Pill.notify('ramstein', doc?.error || 'autocalm dry — daemon unreachable');
+                this.refresh();
+                return;
+            }
+            Pill.notify('ramstein', 'auto-calm disarmed — back to computing and notifying only.');
         });
     }
 

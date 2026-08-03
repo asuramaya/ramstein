@@ -387,7 +387,10 @@ def cmd_autocalm(argv):
         return
 
     if sub == "dry":
-        doc = request_or_die({"cmd": "autocalm", "action": "dry"})
+        doc = request_or_die({"cmd": "autocalm", "action": "dry"}, as_json="--json" in rest)
+        if "--json" in rest:
+            print(json.dumps(doc, indent=2))
+            return
         print("auto-calm disarmed — back to dry-run (computes + notifies, never acts)")
         if doc.get("persist_warning"):
             print(f"! {doc['persist_warning']}")
@@ -395,7 +398,8 @@ def cmd_autocalm(argv):
 
     if sub == "arm":
         yes = "--yes" in rest
-        doc = request_or_die({"cmd": "autocalm", "action": "arm", "dry_run": not yes})
+        doc = request_or_die({"cmd": "autocalm", "action": "arm", "dry_run": not yes},
+                             as_json="--json" in rest)
         if "--json" in rest:
             print(json.dumps(doc, indent=2))
             return
@@ -465,7 +469,8 @@ def cmd_oomd(argv):
 
     if sub == "enroll":
         yes = "--yes" in rest
-        doc = request_or_die({"cmd": "oomd", "action": "enroll", "dry_run": not yes})
+        doc = request_or_die({"cmd": "oomd", "action": "enroll", "dry_run": not yes},
+                             as_json="--json" in rest)
         if "--json" in rest:
             print(json.dumps(doc, indent=2))
             return
@@ -486,7 +491,10 @@ def cmd_oomd(argv):
         return
 
     if sub == "disenroll":
-        request_or_die({"cmd": "oomd", "action": "disenroll"})
+        doc = request_or_die({"cmd": "oomd", "action": "disenroll"}, as_json="--json" in rest)
+        if "--json" in rest:
+            print(json.dumps(doc, indent=2))
+            return
         print("oomd swap-kill protection removed and confirmed live —"
               " restored to this machine's default (unenrolled unless"
               " something else enrolls it).")
@@ -604,7 +612,7 @@ def cmd_swap_size(argv):
         size = rest[0]
         yes = "--yes" in rest
         doc = request_or_die({"cmd": "swap-size", "action": "set", "size": size,
-                              "dry_run": not yes})
+                              "dry_run": not yes}, as_json="--json" in rest)
         if "--json" in rest:
             print(json.dumps(doc, indent=2))
             return
@@ -681,7 +689,8 @@ def cmd_zram(argv):
 
     if sub == "enable":
         yes = "--yes" in rest
-        doc = request_or_die({"cmd": "zram", "action": "enable", "dry_run": not yes})
+        doc = request_or_die({"cmd": "zram", "action": "enable", "dry_run": not yes},
+                             as_json="--json" in rest)
         if "--json" in rest:
             print(json.dumps(doc, indent=2))
             return
@@ -697,7 +706,10 @@ def cmd_zram(argv):
         return
 
     if sub == "disable":
-        doc = request_or_die({"cmd": "zram", "action": "disable"})
+        doc = request_or_die({"cmd": "zram", "action": "disable"}, as_json="--json" in rest)
+        if "--json" in rest:
+            print(json.dumps(doc, indent=2))
+            return
         if "error" in doc:
             sys.exit(f"ramstein: zram disable failed: {doc['error']}")
         print("Started — disabling zram...")
