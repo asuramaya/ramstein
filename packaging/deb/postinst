@@ -24,6 +24,11 @@ case "$1" in
     # missing target fails the WHOLE unit (226/NAMESPACE), not just the
     # write. install.sh carries the same step; see its comment there.
     mkdir -p /etc/systemd/system/user@.service.d
+    # Same reason, third time: zram-generator.conf is a single FILE (not
+    # a directory) that may not exist depending on the installed
+    # systemd-zram-generator version -- touch, never overwrite, so a
+    # package-shipped default (when one exists) survives untouched.
+    [ -e /etc/systemd/zram-generator.conf ] || touch /etc/systemd/zram-generator.conf
     systemctl daemon-reload >/dev/null 2>&1 || true
     systemctl enable ramsteind.service >/dev/null 2>&1 || true
     if systemctl is-active --quiet ramsteind.service 2>/dev/null; then

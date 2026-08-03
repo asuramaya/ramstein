@@ -47,9 +47,22 @@ ProtectSystem=strict
 # hardening pass until now. Scoped to the one directory the verb writes,
 # not all of /etc/systemd/system, for the same reason every other entry
 # here is a single path rather than its whole parent.
+#
+# /etc/systemd/zram-generator.conf — same gap, third instance, found the
+# same way this time on real hardware rather than in a container: zram
+# enable() correctly stopped a pre-existing device first (see
+# _zram_apply's own docstring), then failed writing this file with
+# "Read-only file system" before ever reaching daemon-reload/start. A
+# single FILE, not a directory, and it may not exist at all depending on
+# the installed systemd-zram-generator version (some ship a default
+# conffile here, some rely purely on compiled-in defaults) — install.sh/
+# postinst touch it into existence for the same reason they mkdir
+# user@.service.d: ReadWritePaths needs its target to already exist at
+# unit start, or the whole daemon fails to start, not just this write.
 ReadWritePaths=/run/ramstein /var/lib/ramstein /sys/fs/cgroup /etc/ramstein \
                 /proc/sys/vm/swappiness /etc/sysctl.d \
-                /etc/systemd/system/user@.service.d
+                /etc/systemd/system/user@.service.d \
+                /etc/systemd/zram-generator.conf
 # Everything M0 reads lives under /proc — nothing in $HOME matters to any
 # verb through M3 (calm/kill touch /proc + /sys/fs/cgroup, never $HOME).
 ProtectHome=yes

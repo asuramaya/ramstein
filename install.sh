@@ -233,6 +233,11 @@ echo "-- systemd units + enabling"
 # file's own comments: a missing target here doesn't just fail the write,
 # it fails the WHOLE UNIT at startup (226/NAMESPACE, daemon crash-loops).
 install -d -m 0755 /etc/systemd/system/user@.service.d
+# Same reason, third time: zram-generator.conf is a single FILE (not a
+# directory) that may not exist at all depending on the installed
+# systemd-zram-generator version -- touch, never overwrite, so a
+# package-shipped default (when one exists) survives untouched.
+[ -e /etc/systemd/zram-generator.conf ] || touch /etc/systemd/zram-generator.conf
 install -m 0644 "$SRC/src/data/systemd/system/ramsteind.service"        "$UNITDIR/ramsteind.service"
 install -m 0644 "$SRC/src/data/systemd/system/ramstein-update.service"  "$UNITDIR/ramstein-update.service"
 install -m 0644 "$SRC/src/data/systemd/system/ramstein-update.timer"    "$UNITDIR/ramstein-update.timer"
