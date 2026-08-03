@@ -1982,15 +1982,30 @@ def _zram_device_active_bytes():
 
 def _zram_apply(enable):
     """The BOUNDED-WAIT body, run off the request thread (see
-    do_zram_enable/do_zram_disable). Writes the config, daemon-reload
-    (re-runs the generator), start/stop the setup unit, then re-measures
-    via swapon --show before ever reporting success (ruling 41b72476) --
-    a rewritten config and a "successful" systemctl call are not success
-    if the device doesn't actually show the expected state."""
+    do_zram_enable/do_zram_disable). Stops the setup unit FIRST,
+    unconditionally, before writing anything -- a zram device can
+    already be active from the package's OWN built-in default (no
+    /etc/systemd/zram-generator.conf at all: zram-generator falls back
+    to ~50% of RAM or 4GiB, whichever is less) or from a previous
+    RAMstein config with a different size, and `systemctl start` on an
+    ALREADY-ACTIVE oneshot unit is a no-op -- the config would change
+    and the device wouldn't, and a size-blind re-measure ("is anything
+    active") would have called that success. Found live, on this exact
+    machine, the package's own default 4G device already running before
+    RAMstein ever touched it (alfred, DM #3363). Idempotent if nothing
+    was running. Then write config, daemon-reload (re-runs the
+    generator against the new config), start/stop fresh, and re-measure
+    via swapon --show before ever reporting success (ruling 41b72476)."""
     if not _zram_generator_present():
         return {"ok": False, "error":
                 "systemd-zram-generator is not installed"
                 " (apt install systemd-zram-generator)"}
+    try:
+        subprocess.run(["systemctl", "stop", _ZRAM_SETUP_UNIT],
+                       capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
     config = _zram_config_path()
     try:
         os.makedirs(os.path.dirname(config), exist_ok=True)
@@ -1999,8 +2014,10 @@ def _zram_apply(enable):
     except OSError as exc:
         return {"ok": False, "error": f"config write failed: {exc.strerror}"}
 
-    for step in (["systemctl", "daemon-reload"],
-                 ["systemctl", "start" if enable else "stop", _ZRAM_SETUP_UNIT]):
+    steps = [["systemctl", "daemon-reload"]]
+    if enable:
+        steps.append(["systemctl", "start", _ZRAM_SETUP_UNIT])
+    for step in steps:
         try:
             r = subprocess.run(step, capture_output=True, text=True, timeout=60)
         except (OSError, subprocess.SubprocessError) as exc:

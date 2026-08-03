@@ -51,13 +51,23 @@ def _write_exec(path, body):
 
 
 def _fakebin(tmp, marker_path, enable_noop=False):
-    """systemctl start writes a swapon(8)-shaped marker line (UNLESS
-    enable_noop, which exits 0 without writing it -- systemctl
-    "succeeding" while the device never actually comes up); stop clears
-    it. swapon reads the marker back, same shape as test_swap_size.py."""
+    """systemctl start writes a swapon(8)-shaped marker line ONLY when the
+    marker is currently absent -- real oneshot-unit semantics: `start` on
+    an ALREADY-ACTIVE unit is a no-op, it does not re-run ExecStart. This
+    is what makes the marker distinguish "stop ran first" (marker
+    cleared, so start writes fresh) from "stop was skipped" (a stale
+    marker survives start untouched) -- the exact bug found live on the
+    operator's machine (DM #3363): a zram device already active from the
+    package's own default, `systemctl start` on it a no-op, so a
+    size-blind re-measure ("something's active") would have called a
+    config change successful when the device never actually moved.
+    enable_noop instead exits 0 without EVER writing the marker --
+    systemctl "succeeding" while the device never comes up at all; stop
+    unconditionally clears it."""
     d = tempfile.mkdtemp(dir=tmp)
     start_body = "exit 0" if enable_noop else (
-        f'echo "/dev/{ramsteind._ZRAM_DEVICE} file {DEVICE_MARKER_SIZE} 0 -2" > "{marker_path}"\n'
+        f'[ -f "{marker_path}" ] || echo "/dev/{ramsteind._ZRAM_DEVICE} file'
+        f' {DEVICE_MARKER_SIZE} 0 -2" > "{marker_path}"\n'
         f'exit 0')
     _write_exec(os.path.join(d, "systemctl"), f"""#!/usr/bin/env bash
 if [ "$1" = "daemon-reload" ]; then exit 0; fi
@@ -141,6 +151,28 @@ def main():
             status = ramsteind.query_zram_status(state)
             if not status["config_enabled"] or status["active_bytes"] != DEVICE_MARKER_SIZE:
                 fails.append(f"status wrong after enable: {status!r}")
+
+            # --- PRE-EXISTING DEVICE (DM #3363, live on the operator's
+            # machine): a device is already active from something other
+            # than RAMstein's own config (the package's own built-in
+            # default, or a stale prior size) BEFORE enable() ever runs.
+            # enable() must stop it first so the fresh config actually
+            # takes effect -- without that, `start` on an already-active
+            # oneshot unit is a no-op and the stale size would survive
+            # untouched while `measured > 0` still reported ok=True.
+            stale_size = DEVICE_MARKER_SIZE * 7  # deliberately NOT what enable() would produce
+            with open(marker, "w") as f:
+                f.write(f"/dev/{ramsteind._ZRAM_DEVICE} file {stale_size} 0 -2\n")
+            state = _fresh_state()
+            r = ramsteind.do_zram_enable(state)
+            result = _wait_done(state)
+            if not result or not result.get("ok") or result.get("measured") != DEVICE_MARKER_SIZE:
+                fails.append(
+                    f"enable() over a pre-existing device didn't reconfigure it"
+                    f" -- got {result!r}, expected measured={DEVICE_MARKER_SIZE}"
+                    f" (stale was {stale_size}): a stop-before-reconfigure"
+                    f" regression would leave the stale size in place while"
+                    f" still reporting ok=True")
 
             # --- disable: config rewritten without [zram0], marker cleared --
             state = _fresh_state()
