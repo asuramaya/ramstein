@@ -17,6 +17,7 @@
 import GObject from 'gi://GObject';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import St from 'gi://St';
 
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {QuickMenuToggle} from 'resource:///org/gnome/shell/ui/quickSettings.js';
@@ -56,11 +57,125 @@ const STATE_TEXT_STYLE = {ok: '', warn: `color: ${PALETTE.WARN};`, hot: `color: 
 // rendered directly above "pressure 0.0% · burn quiet", predicting death
 // and reporting calm in the same card with nothing tying them together).
 const EVIDENCE_LABEL = {psi: 'pressure', avail: 'low mem', eta: 'ETA'};
+
+// swap-size's own preset strip, matching Werner's RESERVE_PRESETS shape
+// (fixed chip values, not derived from device capacity) -- byte sizes
+// rather than percentages, since that's what the verb actually takes.
+const SWAP_SIZE_PRESETS = ['2G', '4G', '8G', '16G'];
+
 function evidenceTag(mem) {
     const ev = mem.state_evidence;
     if (!Array.isArray(ev) || !ev.length)
         return '';
     return ev.map(e => EVIDENCE_LABEL[e] ?? e).join('+');
+}
+
+// ---- layer-3 controls: RAMstein's first consumption of the shared
+// affordance vocabulary (alfred's dispatch, thread f10c0cd3). Werner's
+// ByeByte shapes (reserve's SEGMENT chip-strip, declare's Reclaim
+// pick-list) both complete in ONE round trip; none of the three verbs
+// here do — swap-size/zram genuinely take real wall-clock time
+// (fallocate+mkswap / the generator's own setup run). This is RAMstein's
+// own answer to a shape Werner's code never needed, local until a
+// second pill needs it (Tantra extracts once more than one local copy
+// exists).
+//
+// THE MISFIT THAT MATTERS MOST, found building this rather than reading
+// Werner's code: every PERSISTENT verb here (swappiness set, swap-size
+// set, zram enable — and RAMstein's own pre-existing autocalm arm) gates
+// on an INTERACTIVE TYPED CONFIRMATION at the CLI layer
+// (`sys.stdin.isatty()` + `input("type '...' to confirm: ")`). A pill
+// click spawns a Gio.Subprocess with no TTY at all — `isatty()` reads
+// False every time, so the CLI refuses outright before the daemon ever
+// sees the request, exactly like a script piping `--kill` is refused by
+// design. ByeByte's reserve/declare never hit this because Werner's own
+// runByebyteJson calls already pass `--yes` — a bypass flag those verbs
+// were built with from the start. RAMstein's PERSISTENT verbs have no
+// such flag; nothing below can actually fire through the CLI as written.
+//
+// Deliberately NOT worked around by talking to the control socket
+// directly (Pill.sendCmd could reach do_swap_size_set/do_zram_enable
+// today — neither has its own TTY check, only the CLI wrapper does) —
+// that would make the pill the only caller with no consent gate at all,
+// the opposite of RAMstein's own standing discipline that the pill and
+// the CLI answer the SAME authority, not different ones. The click
+// handlers below call `--yes`, a flag that does not exist yet — this is
+// the shape a fix should take (matching ByeByte's own precedent), not a
+// bug in this file. See the fit report (DM to alfred) for the actual
+// recommendation: a real GNOME-native confirm step belongs on the PILL
+// side of that flag, not a bare bypass — the CLI's typed-word gate stays
+// the answer for terminal use, the pill needs its own.
+
+let _ramsteinCliPath = null;
+function ramsteinCli() {
+    if (_ramsteinCliPath)
+        return _ramsteinCliPath;
+    for (const p of ['/usr/bin/ramstein', '/usr/local/bin/ramstein']) {
+        if (GLib.file_test(p, GLib.FileTest.IS_EXECUTABLE)) {
+            _ramsteinCliPath = p;
+            return _ramsteinCliPath;
+        }
+    }
+    _ramsteinCliPath = 'ramstein';
+    return _ramsteinCliPath;
+}
+
+// Runs `ramstein <args>` and parses stdout as JSON -- ByeByte's
+// runByebyteJson shape exactly (kast's readKastJson lineage before it):
+// always calls onDone exactly once, with the parsed doc or null on any
+// spawn/communicate/parse failure.
+function runRamsteinJson(args, cancellable, onDone) {
+    try {
+        const proc = Gio.Subprocess.new(
+            [ramsteinCli(), ...args],
+            Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE);
+        proc.communicate_utf8_async(null, cancellable, (p, res) => {
+            let parsed = null;
+            try {
+                const [, stdout] = p.communicate_utf8_finish(res);
+                parsed = JSON.parse(stdout);
+            } catch (e) {
+                logError(e, 'ramstein: JSON parse failed');
+            }
+            onDone(parsed);
+        });
+    } catch (e) {
+        logError(e, 'ramstein: subprocess failed');
+        onDone(null);
+    }
+}
+
+// BOUNDED-WAIT polling: swap-size/zram report `pending` immediately and
+// need `status` polled for the real outcome (the CLI's own
+// _swap_size_poll_until_done does the identical thing from the terminal
+// side). Stops on isDone(), on a spawn/parse failure (never spins on
+// nothing), or after timeoutSeconds — hands back the last-seen doc
+// either way, never silently claims to have finished.
+function pollUntilDone(args, cancellable, {isDone, onTick, onDone,
+                                            intervalSeconds = 1, timeoutSeconds = 120}) {
+    const tick = elapsed => {
+        runRamsteinJson(args, cancellable, doc => {
+            if (!doc) {
+                onDone(null);
+                return;
+            }
+            if (isDone(doc)) {
+                onDone(doc);
+                return;
+            }
+            onTick?.(doc, elapsed);
+            const next = elapsed + intervalSeconds;
+            if (next >= timeoutSeconds) {
+                onDone(doc);
+                return;
+            }
+            GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, intervalSeconds, () => {
+                tick(next);
+                return GLib.SOURCE_REMOVE;
+            });
+        });
+    };
+    tick(0);
 }
 
 function fmtBurn(bps) {
@@ -120,6 +235,17 @@ class RAMsteinToggle extends QuickMenuToggle {
         this.menu.addMenuItem(this._autocalmSection);
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        // layer-3: swap-size's BOUNDED-WAIT preset chips, oomd enroll's
+        // and zram's TOGGLEs — persistent rows, always visible (a control
+        // needs to be reachable whether or not the machine is currently
+        // healthy, unlike advise/autocalm's conditional sections above).
+        this._controlsSection = new PopupMenu.PopupMenuSection();
+        this.menu.addMenuItem(this._controlsSection);
+        this._swapSizeRow = null;
+        this._oomdToggleRow = null;
+        this._zramToggleRow = null;
+
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         this._update = new Pill.UpdateSurface('ramstein', {cancellable});
         this.menu.addMenuItem(this._update.updateItem);
         this.menu.addMenuItem(this._update.versionItem);
@@ -145,6 +271,7 @@ class RAMsteinToggle extends QuickMenuToggle {
             this._rowSection.removeAll();
             this._adviseSection.removeAll();
             this._autocalmSection.removeAll();
+            this._controlsSection.removeAll();
             this._rowSection.addMenuItem(Pill.row(
                 `<span foreground="${DIM}">` +
                 `${stale ? 'ramsteind stopped updating' : 'ramsteind not running'}</span>`));
@@ -306,9 +433,163 @@ class RAMsteinToggle extends QuickMenuToggle {
                 `${NB}·${NB}${age}${NB}ago</span>`));
         }
         this._maybeNotifyAutocalm(st);
+        this._renderControls(pill);
 
         this.menu.setHeader(this.iconName, 'RAMstein', this.subtitle);
         this._update.setVersion(st.daemon?.version);
+    }
+
+    // ---- layer 3: swap-size (BOUNDED-WAIT button), oomd enroll and zram
+    // (both TOGGLEs) — see the file-header note on the CLI's TTY gate:
+    // the click handlers below are the shape a working control takes,
+    // not yet a working control. Rebuilt each refresh, like every other
+    // section here except Reclaim's own persistent picks (nothing here
+    // holds in-progress user state the way that does).
+
+    _renderControls(pill) {
+        this._controlsSection.removeAll();
+        if (!pill)
+            return;
+        this._controlsSection.addMenuItem(this._buildSwapSizeRow(pill.swap_size));
+        this._controlsSection.addMenuItem(this._buildToggleRow({
+            label: 'systemd-oomd swap protection',
+            enabled: !!pill.oomd?.enrolled,
+            pending: false,
+            onToggle: () => this._onOomdToggle(pill.oomd),
+        }));
+        this._controlsSection.addMenuItem(this._buildToggleRow({
+            label: 'zram (compressed swap)',
+            enabled: !!pill.zram?.config_enabled,
+            pending: !!pill.zram?.in_progress,
+            disabled: !pill.zram?.generator_present,
+            onToggle: () => this._onZramToggle(pill.zram),
+        }));
+    }
+
+    // BOUNDED-WAIT BUTTON: a SEGMENT-shaped preset strip (Werner's own
+    // reserve chip shape — St.Button row, CHIP/CHIP_ON), except a click
+    // here can't render success synchronously the way his does: fallocate
+    // +mkswap genuinely takes real wall-clock time, so `pending` replaces
+    // the strip with a busy row instead of highlighting a chip. Neither
+    // ByeByte verb needed this — reserve/declare both settle in one call.
+    _buildSwapSizeRow(swapSize) {
+        const box = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
+        const layout = new St.BoxLayout({x_expand: true});
+        const lab = new St.Label({text: 'swap file', style: `color:${DIM}; padding-right:8px;`});
+        lab.y_align = 2;
+        layout.add_child(lab);
+
+        if (!swapSize || swapSize.in_progress) {
+            layout.add_child(new St.Label({
+                text: 'resizing…', x_expand: true, style: `color:${ACCENT};`,
+            }));
+        } else {
+            const activeText = swapSize.active_bytes ? Pill.fmtBytes(swapSize.active_bytes) : null;
+            for (const preset of SWAP_SIZE_PRESETS) {
+                // string compare against fmtBytes' own rounding -- exact
+                // only for the presets that round cleanly (4G, 8G, 16G);
+                // 2G vs "2.0G" already needs unit-aware parsing Werner's
+                // reserve strip never had to do (percentages compare as
+                // plain integers). Real misfit, not a placeholder bug —
+                // see the fit report.
+                const isCurrent = activeText === preset;
+                const btn = new St.Button({
+                    label: preset, x_expand: true, can_focus: true,
+                    style: isCurrent ? Pill.CHIP_ON : Pill.CHIP,
+                });
+                btn.connect('clicked', () => this._onSwapSizeClick(preset));
+                layout.add_child(btn);
+            }
+        }
+        box.add_child(layout);
+        return box;
+    }
+
+    _onSwapSizeClick(size) {
+        // --yes does not exist on this verb yet (file-header note) --
+        // this call is the intended shape, not a working one.
+        pollUntilDone(['swap-size', 'set', size, '--yes', '--json'], this._cancellable, {
+            isDone: doc => !doc.pending,
+            onDone: doc => {
+                if (!doc) {
+                    Pill.notify('RAMstein', 'swap-size set — daemon unreachable');
+                    return;
+                }
+                if (doc.error) {
+                    Pill.notify('RAMstein', `swap-size: ${doc.error}`);
+                    return;
+                }
+                const lr = doc.last_result;
+                Pill.notify('RAMstein', lr?.ok
+                    ? `swap file → ${Pill.fmtBytes(lr.measured)} (confirmed live)`
+                    : `swap-size set to ${size} did not take effect: ${lr?.error ?? 'unknown'}`);
+            },
+        });
+    }
+
+    // TOGGLE: PopupMenu.PopupSwitchMenuItem, GNOME's own stock widget --
+    // no shared vocabulary primitive needed here, unlike submenuRow/
+    // accordionRow. `pending` disables interaction and shows a busy
+    // label instead of the switch, same reasoning as swap-size's row.
+    // `disabled` (zram's generator-absent case) shows the actionable
+    // refusal text in place of the switch entirely -- the pill surfacing
+    // the same "apt install systemd-zram-generator" the CLI already
+    // gives, not a dead-ended toggle.
+    _buildToggleRow({label, enabled, pending, disabled, onToggle}) {
+        if (disabled) {
+            const it = new PopupMenu.PopupMenuItem('', {reactive: false});
+            it.label.clutter_text.set_markup(
+                `<span foreground="${DIM}">${Pill.esc(label)}: systemd-zram-generator` +
+                ` not installed (apt install systemd-zram-generator)</span>`);
+            return it;
+        }
+        const it = new PopupMenu.PopupSwitchMenuItem(label, enabled, {reactive: !pending});
+        if (pending) {
+            it.label.text = `${label} (working…)`;
+        } else {
+            it.connect('toggled', (_item, state) => onToggle(state));
+        }
+        return it;
+    }
+
+    _onOomdToggle(oomdStatus) {
+        const action = oomdStatus?.enrolled ? 'disenroll' : 'enroll';
+        // enroll's own pre-flight refusal MUST read as a redirect, not a
+        // wall (FAMILY.md) -- the daemon already composes that message
+        // ({"error": "refusing: ... see `ramstein oom` ..."}); the toggle
+        // reverting to its prior state and surfacing that same text
+        // unchanged IS the redirect, not a separate thing to build.
+        runRamsteinJson(['oomd', action, '--yes', '--json'], this._cancellable, doc => {
+            if (!doc || doc.error) {
+                Pill.notify('RAMstein', doc?.error || `oomd ${action} — daemon unreachable`);
+                this.refresh();   // toggle reverts: re-render from real state
+                return;
+            }
+            Pill.notify('RAMstein',
+                `systemd-oomd swap protection ${action === 'enroll' ? 'enrolled' : 'removed'}` +
+                ' (confirmed live).');
+        });
+    }
+
+    _onZramToggle(zramStatus) {
+        const action = zramStatus?.config_enabled ? 'disable' : 'enable';
+        pollUntilDone(['zram', action, '--yes', '--json'], this._cancellable, {
+            isDone: doc => !doc.pending,
+            onDone: doc => {
+                if (!doc) {
+                    Pill.notify('RAMstein', `zram ${action} — daemon unreachable`);
+                    return;
+                }
+                if (doc.error) {
+                    Pill.notify('RAMstein', `zram: ${doc.error}`);
+                    return;
+                }
+                const lr = doc.last_result;
+                Pill.notify('RAMstein', lr?.ok
+                    ? `zram ${action}d (confirmed live).`
+                    : `zram ${action} did not take effect: ${lr?.error ?? 'unknown'}`);
+            },
+        });
     }
 
     // A root systemd daemon has no clean path into the operator's own
