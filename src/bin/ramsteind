@@ -228,7 +228,7 @@ def poll_memory(state, cfg, now):
     psi = read_psi()
 
     prev = state.get("mem")
-    # sutra.ewma_rate wants the quantity whose INCREASE is the burn; RAMstein
+    # sutra.ewma_rate wants the quantity whose INCREASE is the burn; ramstein
     # measures consumption, so feed it the used-equivalent (total - avail) —
     # since total is constant, avail falling and used rising are the same
     # rate, just mirrored. burn stays positive-when-memory-is-eaten.
@@ -684,7 +684,7 @@ def _oomd_monitored_sections():
     Memory Pressure section that follows it, so a pressure-only Path:
     line satisfied a query asking about swap. Found live on the
     operator's own machine (alfred, DM #3250) the same day this verb
-    shipped: RAMstein reported swap protection that did not exist — the
+    shipped: ramstein reported swap protection that did not exist — the
     exact failure class this whole night's work exists to catch, one
     layer up, in the tool built to catch it. Fixed by bounding swap's
     tail at the pressure header (which follows it in the dump) instead
@@ -743,8 +743,8 @@ def _coexisting_oom_fighter():
     """Read-only: is systemd-oomd or earlyoom already fighting OOM here?
     Deliberately the BROAD either-section question — EITHER swap or
     pressure enrollment counts, since a merely-running-but-unenrolled
-    oomd would wrongly tell RAMstein a backstop exists and stand down,
-    but for THIS question (should RAMstein mention a fighter at all)
+    oomd would wrongly tell ramstein a backstop exists and stand down,
+    but for THIS question (should ramstein mention a fighter at all)
     partial coverage is still coverage. See _coexist_status for the full
     picture and _coexist_label for wording that names which half, when
     they disagree."""
@@ -758,7 +758,7 @@ def _coexist_label(status):
     instead of drifting across three copies. Same rule classify() applies
     to state_evidence: an OR'd condition must name WHICH half fired.
     Pressure-only enrollment (found live on the operator's machine,
-    alfred DM #3250) covers none of RAMstein's own specialty — sustained
+    alfred DM #3250) covers none of ramstein's own specialty — sustained
     swap exhaustion — and the old undifferentiated "systemd-oomd is
     active" line read identically whether swap was covered or not."""
     fighter = status["fighter"]
@@ -992,7 +992,7 @@ def query_advise(cfg, get_status):
     label = _coexist_label(_coexist_status())
     if label:
         lines.append({"rule": "coexist", "text":
-            f"{label} is active — RAMstein's kill prompts stay"
+            f"{label} is active — ramstein's kill prompts stay"
             " advisory-only, standing down"})
 
     # rule 6: ETA under an hour — point at `oom`
@@ -1367,7 +1367,7 @@ def query_autocalm_status(cfg, autocalm_state, get_status):
 # world changes, never merely when a file is written). Found live 2026-08-02
 # (DM #3207/#3209/#3212): Ubuntu ships user@.service with
 # ManagedOOMMemoryPressure=kill but nothing anywhere sets ManagedOOMSwap=
-# kill — the exact scenario RAMstein exists for (sustained swap pressure)
+# kill — the exact scenario ramstein exists for (sustained swap pressure)
 # has zero stock coverage. This verb closes that gap the way systemd
 # itself would: a new override drop-in, nothing hand-edited, undone the
 # same way it was done.
@@ -1429,7 +1429,7 @@ def _oomd_enroll_preflight(get_status):
     duration/hysteresis at all (unlike memory-pressure's
     ManagedOOMMemoryPressureDurationSec): it acts on the very next poll
     cycle. Enrolling while this already holds hands victim selection to
-    oomd with zero time to react; RAMstein's own `oom` verb (surface
+    oomd with zero time to react; ramstein's own `oom` verb (surface
     candidates, human picks) is strictly better in that exact moment —
     same outcome, chosen target, no race. Per this conjunction, the
     refusal will almost never actually fire on a healthy machine — that
@@ -1652,9 +1652,9 @@ def _swappiness_prior_read():
 
 
 def _swappiness_prior_write_once(value):
-    """Ledger the value from BEFORE RAMstein's first change — idempotent:
+    """Ledger the value from BEFORE ramstein's first change — idempotent:
     a second or third `set` must never overwrite the true original with
-    an intermediate RAMstein-chosen value, or `reset` would restore to
+    an intermediate ramstein-chosen value, or `reset` would restore to
     the wrong number. Cleared by a successful reset (see
     do_swappiness_reset) so a later first-change re-ledgers fresh instead
     of a `reset` years later snapping back to a long-stale number."""
@@ -1706,7 +1706,7 @@ def do_swappiness_set(value, dry_run=True):
 def do_swappiness_reset():
     prior = _swappiness_prior_read()
     if prior is None:
-        return {"error": "nothing to reset — RAMstein has never changed"
+        return {"error": "nothing to reset — ramstein has never changed"
                           " vm.swappiness on this machine"}
     dropin = _swappiness_dropin_path()
     try:
@@ -1964,7 +1964,7 @@ def do_swap_size_set(cfg, size_bytes, swap_size_state, dry_run=True):
 def do_swap_size_remove():
     path = _swap_size_backing_file_path()
     if not os.path.exists(path) and _swap_size_active_bytes() == 0:
-        return {"error": "no RAMstein-managed swap file to remove"}
+        return {"error": "no ramstein-managed swap file to remove"}
     try:
         subprocess.run(["systemctl", "disable", "--now", _SWAP_SIZE_UNIT_NAME],
                        capture_output=True, text=True, timeout=60)
@@ -2002,7 +2002,7 @@ def query_swap_size_status(swap_size_state):
 # --- layer 3, verb #4: zram --------------------------------------------------
 # Approved table (decision f8e7cc5a): TOGGLE, BOUNDED-WAIT, PERSISTENT.
 # Compressed RAM-backed swap via systemd-zram-generator's own mechanism.
-# RAMstein writes /etc/systemd/zram-generator.conf DIRECTLY, not via a
+# ramstein writes /etc/systemd/zram-generator.conf DIRECTLY, not via a
 # drop-in -- the one deliberate exception to that preference (FAMILY.md):
 # this file is self-contained and "deletable", inert the moment its
 # [zram0] section is absent, none of an fstab edit's brick-the-boot risk.
@@ -2113,12 +2113,12 @@ def _zram_apply(enable):
     already be active from the package's OWN built-in default (no
     /etc/systemd/zram-generator.conf at all: zram-generator falls back
     to ~50% of RAM or 4GiB, whichever is less) or from a previous
-    RAMstein config with a different size, and `systemctl start` on an
+    ramstein config with a different size, and `systemctl start` on an
     ALREADY-ACTIVE oneshot unit is a no-op -- the config would change
     and the device wouldn't, and a size-blind re-measure ("is anything
     active") would have called that success. Found live, on this exact
     machine, the package's own default 4G device already running before
-    RAMstein ever touched it (alfred, DM #3363). Idempotent if nothing
+    ramstein ever touched it (alfred, DM #3363). Idempotent if nothing
     was running. Then write config, daemon-reload (re-runs the
     generator against the new config), start/stop fresh, and re-measure
     via swapon --show before ever reporting success (ruling 41b72476)."""

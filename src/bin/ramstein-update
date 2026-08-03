@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2026 asuramaya and RAMstein contributors
-"""ramstein-update — is a newer RAMstein release out? Install it, on consent.
+# Copyright (C) 2026 asuramaya and ramstein contributors
+"""ramstein-update — is a newer ramstein release out? Install it, on consent.
 
 Thin wrapper over the vendored sutra_update.py (UNIFY.md Wave A #1, the
 family's shared update spine — one grammar, one trust chain, one
 install-path detection, three consent tiers). This file supplies only
-what's RAMstein-specific: the repo slug, the installed-version lookup
+what's ramstein-specific: the repo slug, the installed-version lookup
 (dpkg first — the authoritative source across a .deb upgrade — VERSION
 file fallback for a source install), and where the signing anchor lives.
 
   ramstein-update --check [--json]   notify tier (default): report only
   ramstein-update                    manual install tier (explicit consent)
   ramstein-update --auto             timer tier — inert here, since
-                                      RAMstein has no auto_update config
+                                      ramstein has no auto_update config
                                       toggle (installs stay notify+click,
                                       never unattended); the daily timer
                                       only ever passes --check.
@@ -40,7 +40,7 @@ del _os, _sys, _libdir, _PILL
 # --- end sutra bootstrap ----------------------------------------------------
 import sutra_update  # noqa: E402
 
-REPO_SLUG = "asuramaya/RAMstein"
+REPO_SLUG = "asuramaya/ramstein"
 PILL = "ramstein"
 # This file lives at src/bin/ramstein-update, two levels under the repo
 # root, so reaching root needs three dirname calls, not two — a level got

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Tests advise rule 7 (shared-memory visibility): RAMstein's status/classify
+Tests advise rule 7 (shared-memory visibility): ramstein's status/classify
 correctly excludes Shmem from MemAvailable, per the kernel's own
 accounting, but that meant the card stayed silent about it even when it
 was the single largest reclaimable block of RAM on a machine (found

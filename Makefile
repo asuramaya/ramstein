@@ -11,7 +11,7 @@ DEBFILE := build/deb/ramstein_$(VERSION)_all.deb
 # the include; everything else in sutra.mk resolves relative to its own
 # vendored location, not this Makefile's.
 #
-# 0.11.1 folded RAMstein's own pilot supplements upstream (msg 2783):
+# 0.11.1 folded ramstein's own pilot supplements upstream (msg 2783):
 # SUTRA_EXT_DIR opts check-sutra into also checking pill.js (was a separate
 # check-pill-js target here, same integrity+freshness shape, now deleted —
 # sutra.mk's own check-sutra covers it). SUTRA_CHECK_BINS is the native
@@ -159,7 +159,7 @@ deb:
 	  echo "Depends: python3 (>= 3.8), systemd, openssh-client"; \
 	  echo "Suggests: gnome-shell, systemd-zram-generator"; \
 	  echo "Maintainer: asuramaya <asuramaya@users.noreply.github.com>"; \
-	  echo "Homepage: https://github.com/asuramaya/RAMstein"; \
+	  echo "Homepage: https://github.com/asuramaya/ramstein"; \
 	  echo "Description: memory as a deadline, not a percentage"; \
 	  echo " ramstein owns the truth about bytes alive: /proc+PSI polling, burn"; \
 	  echo " rate, ETA-to-OOM, a per-process index, calm/oom/advise, and a GNOME"; \
@@ -274,7 +274,7 @@ check-systemd-live:
 # cannot judge whether a document is any good, only that the shape it's
 # supposed to have is actually there and nothing contradicts it. Copied from
 # coldspot, the family's reference implementation of this target, and
-# adapted to RAMstein's own file list.
+# adapted to ramstein's own file list.
 check-repo:
 	@fail=0; \
 	for f in README.md LICENSE Makefile install.sh uninstall.sh .gitignore .gitattributes \

@@ -1,6 +1,6 @@
-# Contributing to RAMstein
+# Contributing to ramstein
 
-Thanks for your interest! RAMstein is small and dependency-free on purpose,
+Thanks for your interest! ramstein is small and dependency-free on purpose,
 keep changes simple and self-contained.
 
 Before changing much, read [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md). It

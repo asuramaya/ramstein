@@ -1,6 +1,6 @@
 # Architecture
 
-RAMstein is a daemon that owns the truth about live memory (`ramsteind`), a verb CLI over it
+ramstein is a daemon that owns the truth about live memory (`ramsteind`), a verb CLI over it
 (`ramstein`), and a GNOME Quick Settings pill on top. The CLI and the pill never read `/proc`
 or a cgroup directly; they read `status.json` or send a command over the control socket, and
 the daemon is the only thing that ever touches a privileged path.
@@ -28,16 +28,16 @@ tree was built: only the source layout changed (REPO-STANDARD.md's tree pass), s
 ## Boundary, versus byebyte
 
 byebyte owns bytes at rest: every filesystem, including tmpfs, file usage and quota headroom.
-RAMstein owns bytes alive: RSS, swap contents, PSI, PIDs, who is holding memory hostage right
+ramstein owns bytes alive: RSS, swap contents, PSI, PIDs, who is holding memory hostage right
 now. Two edge cases are deliberately not deduplicated between the two tools:
 
 - tmpfs is memory-backed, so both tools see it. byebyte reports it df-shaped (bytes written,
-  quota left); RAMstein reports it memory-shaped (paged like anonymous memory, competing for
+  quota left); ramstein reports it memory-shaped (paged like anonymous memory, competing for
   the same PSI). Same bytes, two different questions: "why is /tmp full" and "why is memory
   tight" want different tools.
 - Swap splits down the middle. The swap file's disk footprint (size, growth, whether it is
   about to fill the partition) is byebyte's. Swap occupancy, who is actually parked in it via
-  `VmSwap`, is RAMstein's. byebyte can say the swapfile is 98% full; only RAMstein says who is
+  `VmSwap`, is ramstein's. byebyte can say the swapfile is 98% full; only ramstein says who is
   in it.
 
 ## Data sources
@@ -87,13 +87,13 @@ before signaling, so a stale or reused pid is refused even if the CLI layer were
 bypassed. PID 1, kernel threads, and the daemon's own pid are hardcoded exclusions; config can
 narrow the target pool further, never widen it past this set.
 
-If systemd-oomd or earlyoom is already active, every action verb and `advise` say so. RAMstein
+If systemd-oomd or earlyoom is already active, every action verb and `advise` say so. ramstein
 never races another OOM-fighter; its kill prompts stay advisory information rather than an
 automatic stand-down, since that decision is still the human's and still requires the same TTY
 confirmation.
 
 Every `calm` or `kill` action is ledgered to `/var/lib/ramstein/ledger.jsonl` (timestamp, verb,
-pid, comm, argument, result), the family's ledger pattern in RAMstein's own dialect.
+pid, comm, argument, result), the family's ledger pattern in ramstein's own dialect.
 
 ## The watchman and auto-calm (V2)
 
@@ -140,7 +140,7 @@ present) reads the `.commit` anchor and asks canonical git whether it is an exac
 (an ancestor of current HEAD, a stale but honest vendor, warns only), or drift (not an ancestor
 at all, a corrupted anchor or a rewritten canonical history, hard fails).
 
-RAMstein was the family's pilot (alfred, DM #2716) for vendoring the *recipe* the same way as the
+ramstein was the family's pilot (alfred, DM #2716) for vendoring the *recipe* the same way as the
 code: `src/share/ramstein/lib/sutra.mk`, included from the root `Makefile` (`PILL := ramstein`),
 supplies `check-sutra` itself, the canonical tracked-files row count (`check-repo` references
 `SUTRA_ROOT_ROWS` rather than re-deriving it), and `check-vendored-path` (loads a binary as a real
@@ -175,12 +175,12 @@ closing the exact blind spot the collision itself exploited.
 
 `ramsteind` gets its config loading, status writing, EWMA math, and control socket from `sutra`
 (`load_config`, `write_status`, `ewma_rate`, `ControlServer`); the one subtlety is that
-`ewma_rate` wants the quantity whose *increase* is the burn, so RAMstein passes `total - avail`
+`ewma_rate` wants the quantity whose *increase* is the burn, so ramstein passes `total - avail`
 (the used-equivalent) rather than avail itself. `ramstein` (the CLI) gets its socket client and
 status fallback from `sutra.request`/`sutra.read_status`. `ramstein-update` is a thin wrapper
 over `sutra_update.main()`, the family's shared update spine with its three consent tiers and
 SSH-signature verification. `sutra_xen.py` ships because the family vendors the full set even
-where it is not yet imported (RAMstein has no Xen guest-surface concerns wired in today);
+where it is not yet imported (ramstein has no Xen guest-surface concerns wired in today);
 shipping less than the full set is exactly the bug Wave B fixed for the other three files.
 
 ## Security model
@@ -203,11 +203,11 @@ or weaken a hardcoded invariant like the kill gate or the memory.high floor. The
 exactly once, at `packaging/VERSION`; nothing else carries a literal version string. `sutra.py` and its
 siblings are vendored byte-identical; `make check-sutra` proves it, and the fix for drift is
 always a re-vendor, never a hand-edit. Names that come off `/proc` (comm strings) reach the CLI
-and the pill as-is; RAMstein trusts the kernel's own accounting more than it distrusts a
+and the pill as-is; ramstein trusts the kernel's own accounting more than it distrusts a
 process's own chosen name, unlike a tool parsing attacker-controlled network input.
 
 ## Standard exemptions
 
-No declared exemptions. RAMstein already ships a daemon, man pages for both binaries, an attack
+No declared exemptions. ramstein already ships a daemon, man pages for both binaries, an attack
 suite over the full command surface, and a release-signing anchor; nothing in
 `REPO-STANDARD.md`'s required shape is missing here.

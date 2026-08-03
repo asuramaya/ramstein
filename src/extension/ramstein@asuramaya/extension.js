@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 asuramaya and RAMstein contributors
+// Copyright (C) 2026 asuramaya and ramstein contributors
 //
-// RAMstein — memory as a deadline, not a percentage, in a GNOME Quick
+// ramstein — memory as a deadline, not a percentage, in a GNOME Quick
 // Settings pill. Read-only by design: one file (status.json), one
 // GFileMonitor, no daemon-protocol client in GJS. M2/M3 (top process,
 // zombie count, an advise headline) ride along as a small digest the
@@ -10,7 +10,7 @@
 //
 // Wave B: adopts pill.js, the family's vendored extension commons (palette,
 // formatters, row helpers, the status watcher, the update-surface UI, the
-// Quick Settings indicator boilerplate) — everything here is RAMstein's own
+// Quick Settings indicator boilerplate) — everything here is ramstein's own
 // domain judgement (severity ranking, hero/alert/advise/autocalm content,
 // swap-storm re-skinning, memory-specific ETA/burn formatting).
 
@@ -70,19 +70,19 @@ function evidenceTag(mem) {
     return ev.map(e => EVIDENCE_LABEL[e] ?? e).join('+');
 }
 
-// ---- layer-3 controls: RAMstein's first consumption of the shared
+// ---- layer-3 controls: ramstein's first consumption of the shared
 // affordance vocabulary (alfred's dispatch, thread f10c0cd3). Werner's
 // ByeByte shapes (reserve's SEGMENT chip-strip, declare's Reclaim
 // pick-list) both complete in ONE round trip; none of the three verbs
 // here do — swap-size/zram genuinely take real wall-clock time
-// (fallocate+mkswap / the generator's own setup run). This is RAMstein's
+// (fallocate+mkswap / the generator's own setup run). This is ramstein's
 // own answer to a shape Werner's code never needed, local until a
 // second pill needs it (Tantra extracts once more than one local copy
 // exists).
 //
 // THE MISFIT THAT MATTERS MOST, found building this rather than reading
 // Werner's code: every PERSISTENT verb here (swappiness set, swap-size
-// set, zram enable — and RAMstein's own pre-existing autocalm arm) gates
+// set, zram enable — and ramstein's own pre-existing autocalm arm) gates
 // on an INTERACTIVE TYPED CONFIRMATION at the CLI layer
 // (`sys.stdin.isatty()` + `input("type '...' to confirm: ")`). A pill
 // click spawns a Gio.Subprocess with no TTY at all — `isatty()` reads
@@ -90,14 +90,14 @@ function evidenceTag(mem) {
 // sees the request, exactly like a script piping `--kill` is refused by
 // design. ByeByte's reserve/declare never hit this because Werner's own
 // runByebyteJson calls already pass `--yes` — a bypass flag those verbs
-// were built with from the start. RAMstein's PERSISTENT verbs have no
+// were built with from the start. ramstein's PERSISTENT verbs have no
 // such flag; nothing below can actually fire through the CLI as written.
 //
 // Deliberately NOT worked around by talking to the control socket
 // directly (Pill.sendCmd could reach do_swap_size_set/do_zram_enable
 // today — neither has its own TTY check, only the CLI wrapper does) —
 // that would make the pill the only caller with no consent gate at all,
-// the opposite of RAMstein's own standing discipline that the pill and
+// the opposite of ramstein's own standing discipline that the pill and
 // the CLI answer the SAME authority, not different ones. The click
 // handlers below call `--yes`, a flag that does not exist yet — this is
 // the shape a fix should take (matching ByeByte's own precedent), not a
@@ -205,11 +205,11 @@ function readStatus() {
 // of ramstein-update.timer (which only notifies/logs, never paints the UI)
 const UPDATE_CHECK_SECONDS = 6 * 3600;
 
-const RAMsteinToggle = GObject.registerClass(
-class RAMsteinToggle extends QuickMenuToggle {
+const ramsteinToggle = GObject.registerClass(
+class ramsteinToggle extends QuickMenuToggle {
     _init(cancellable) {
-        super._init({title: 'RAMstein', iconName: ICON, toggleMode: false});
-        this.menu.setHeader(ICON, 'RAMstein', 'bytes alive');
+        super._init({title: 'ramstein', iconName: ICON, toggleMode: false});
+        this.menu.setHeader(ICON, 'ramstein', 'bytes alive');
 
         // alert banner — hidden until the memory state is warn/hot
         this._alertSection = new PopupMenu.PopupMenuSection();
@@ -276,7 +276,7 @@ class RAMsteinToggle extends QuickMenuToggle {
                 `<span foreground="${DIM}">` +
                 `${stale ? 'ramsteind stopped updating' : 'ramsteind not running'}</span>`));
             this._update.setVersion(null);
-            this.menu.setHeader(ICON, 'RAMstein', this.subtitle);
+            this.menu.setHeader(ICON, 'ramstein', this.subtitle);
             return;
         }
         this._apply(st);
@@ -435,7 +435,7 @@ class RAMsteinToggle extends QuickMenuToggle {
         this._maybeNotifyAutocalm(st);
         this._renderControls(pill);
 
-        this.menu.setHeader(this.iconName, 'RAMstein', this.subtitle);
+        this.menu.setHeader(this.iconName, 'ramstein', this.subtitle);
         this._update.setVersion(st.daemon?.version);
     }
 
@@ -512,15 +512,15 @@ class RAMsteinToggle extends QuickMenuToggle {
             isDone: doc => !doc.pending,
             onDone: doc => {
                 if (!doc) {
-                    Pill.notify('RAMstein', 'swap-size set — daemon unreachable');
+                    Pill.notify('ramstein', 'swap-size set — daemon unreachable');
                     return;
                 }
                 if (doc.error) {
-                    Pill.notify('RAMstein', `swap-size: ${doc.error}`);
+                    Pill.notify('ramstein', `swap-size: ${doc.error}`);
                     return;
                 }
                 const lr = doc.last_result;
-                Pill.notify('RAMstein', lr?.ok
+                Pill.notify('ramstein', lr?.ok
                     ? `swap file → ${Pill.fmtBytes(lr.measured)} (confirmed live)`
                     : `swap-size set to ${size} did not take effect: ${lr?.error ?? 'unknown'}`);
             },
@@ -561,11 +561,11 @@ class RAMsteinToggle extends QuickMenuToggle {
         // unchanged IS the redirect, not a separate thing to build.
         runRamsteinJson(['oomd', action, '--yes', '--json'], this._cancellable, doc => {
             if (!doc || doc.error) {
-                Pill.notify('RAMstein', doc?.error || `oomd ${action} — daemon unreachable`);
+                Pill.notify('ramstein', doc?.error || `oomd ${action} — daemon unreachable`);
                 this.refresh();   // toggle reverts: re-render from real state
                 return;
             }
-            Pill.notify('RAMstein',
+            Pill.notify('ramstein',
                 `systemd-oomd swap protection ${action === 'enroll' ? 'enrolled' : 'removed'}` +
                 ' (confirmed live).');
         });
@@ -577,15 +577,15 @@ class RAMsteinToggle extends QuickMenuToggle {
             isDone: doc => !doc.pending,
             onDone: doc => {
                 if (!doc) {
-                    Pill.notify('RAMstein', `zram ${action} — daemon unreachable`);
+                    Pill.notify('ramstein', `zram ${action} — daemon unreachable`);
                     return;
                 }
                 if (doc.error) {
-                    Pill.notify('RAMstein', `zram: ${doc.error}`);
+                    Pill.notify('ramstein', `zram: ${doc.error}`);
                     return;
                 }
                 const lr = doc.last_result;
-                Pill.notify('RAMstein', lr?.ok
+                Pill.notify('ramstein', lr?.ok
                     ? `zram ${action}d (confirmed live).`
                     : `zram ${action} did not take effect: ${lr?.error ?? 'unknown'}`);
             },
@@ -611,7 +611,7 @@ class RAMsteinToggle extends QuickMenuToggle {
         const verb = r.acted ? 'acted' : 'would act (dry-run)';
         const steps = (r.steps ?? []).map(s => s.step).join(', ') || 'nothing';
         const kill = r.notify?.suggested_kill;
-        Pill.notify('RAMstein — auto-calm',
+        Pill.notify('ramstein — auto-calm',
             `${verb} on ${t.comm ?? '?'} (pid ${t.pid ?? '?'}) — ${r.trigger}.` +
             ` Steps: ${steps}.` + (kill ? ` If needed: ${kill}` : ''));
     }
@@ -621,10 +621,10 @@ class RAMsteinToggle extends QuickMenuToggle {
     }
 });
 
-export default class RAMsteinExtension extends Extension {
+export default class ramsteinExtension extends Extension {
     enable() {
         this._cancellable = new Gio.Cancellable();
-        this._toggle = new RAMsteinToggle(this._cancellable);
+        this._toggle = new ramsteinToggle(this._cancellable);
         this._indicator = Pill.addQuickSettingsToggle(this._toggle);
         this._toggle.refresh();
         this._toggle.checkForUpdate();

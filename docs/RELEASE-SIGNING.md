@@ -10,7 +10,7 @@ running order.
 
 ## Why this exists
 
-The SHA256 check RAMstein already does (`ramstein-update`'s manifest
+The SHA256 check ramstein already does (`ramstein-update`'s manifest
 verification) proves a download wasn't corrupted or truncated in transit.
 It proves nothing about *authenticity*: the checksum comes from the same
 GitHub release it's checking, so a compromised release asset carries its
@@ -27,7 +27,7 @@ private key material never leaves the hardware token, and every signature
 needs a physical touch. A compromised CI runner or build machine cannot
 forge a release; it would need the physical key in hand. This is the same
 trust anchor the fleet's `rotten-apple` master-identity ceremony
-established (2026-07-16) — RAMstein reuses that identity rather than
+established (2026-07-16) — ramstein reuses that identity rather than
 minting its own (per-project keys were the ruled-out footgun — see
 `~/code/REPOS/RELEASE.md`).
 
@@ -71,9 +71,9 @@ build if the two ever drift, so never hand-edit either — always
 **Sequencing rule (do not skip):** `make sync-signers` populates the
 anchor. Run it ONLY in the same act as cutting a signed release: arming it
 any earlier bricks `ramstein update` against every existing unsigned
-release. RAMstein's own anchor was armed one commit after the v0.9.0 tag
+release. ramstein's own anchor was armed one commit after the v0.9.0 tag
 rather than inside a new release's own act, which was safe only because no
-installed base yet existed to brick: v0.9.0 was RAMstein's first public
+installed base yet existed to brick: v0.9.0 was ramstein's first public
 release, and it had already shipped unsigned by the time arming ran. Treat
 that as the exception it was, not the pattern: every arming after this one
 belongs inside the same act as the release it seals. CI's `signing-sync`
@@ -135,7 +135,7 @@ publishes both under one signature.
 are vendored, never hand-edited — `make check-sutra` is the drift guard
 (integrity always; freshness as a three-way LAG/DRIFT read against the
 canonical `~/code/REPOS/sutra` checkout when present), wired into `make
-smoke` and CI. RAMstein vendors the full set even though `sutra_xen.py`
+smoke` and CI. ramstein vendors the full set even though `sutra_xen.py`
 isn't imported anywhere yet (no Xen guest-surface concerns wired in) — the
 family's ship-the-full-set convention, so a future adoption never hits the
 "vendored but not shipped" bug this same Wave B fixed for the other three

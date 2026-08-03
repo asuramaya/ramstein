@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Tests RAMstein's layer-3 swappiness verb (decision f8e7cc5a): SEGMENT
+Tests ramstein's layer-3 swappiness verb (decision f8e7cc5a): SEGMENT
 presets, CHEAP, PERSISTENT -- a sysctl.d drop-in for reboot survival plus
 an immediate live apply, with the prior value ledgered before the FIRST
-change so `reset` restores the true pre-RAMstein baseline rather than
-some RAMstein-chosen number.
+change so `reset` restores the true pre-ramstein baseline rather than
+some ramstein-chosen number.
 
 Fulcrum-standard negative control: a case where the "live apply" write
 silently doesn't move the underlying value (a read-only fixture,

@@ -56,8 +56,8 @@ daemon, the pill never needs root):
 **Step 1, the daemon (you type sudo yourself, exactly once):**
 
 ```bash
-git clone https://github.com/asuramaya/RAMstein
-cd RAMstein
+git clone https://github.com/asuramaya/ramstein
+cd ramstein
 sudo ./install.sh        # or: sudo make install
 ```
 

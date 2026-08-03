@@ -7,7 +7,7 @@ carry WHICH evidence fired. classify() ORs three independent conditions
 "warn"/"hot" string thrown away which one(s) actually crossed a threshold,
 so "warn from stalling tasks" and "warn from a three-hour ETA" -- genuinely
 different situations needing different responses -- were indistinguishable
-on the card (alfred, ruling: RAMstein's own header read "OOM ~11h" directly
+on the card (alfred, ruling: ramstein's own header read "OOM ~11h" directly
 above "pressure 0.0% . burn quiet", predicting death and reporting calm in
 the same card with nothing tying the two together).
 

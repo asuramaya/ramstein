@@ -16,12 +16,12 @@
 # can't silently produce a partial anchor.
 #
 # SEQUENCING: this populates the anchor. Run it ONLY in the same act as
-# cutting the operator's first signed RAMstein release; arming
+# cutting the operator's first signed ramstein release; arming
 # packaging/release-signing/allowed_signers any earlier bricks `ramstein
 # update` against every release published before the arming.
 #
 # install.sh's own curl-pipe-bash bootstrap (added alongside v0.11.1, DM
-# #2913 — RAMstein's install.sh deliberately had NO fetch path before that,
+# #2913 — ramstein's install.sh deliberately had NO fetch path before that,
 # see git history) fetches only itself over the network, so it can't read
 # this sibling allowed_signers file at that point — the same content is
 # embedded directly, BYTE-FOR-BYTE (CI's drift check compares them exactly,

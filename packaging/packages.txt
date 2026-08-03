@@ -1,4 +1,4 @@
-# RAMstein — runtime dependencies
+# ramstein — runtime dependencies
 #
 # Pure Python standard library — no pip/PyPI dependencies at all. Everything
 # below is an EXTERNAL BINARY ramsteind/ramstein/ramstein-update shells out

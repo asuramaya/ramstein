@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2026 asuramaya and RAMstein contributors
-# RAMstein uninstaller. Keeps /etc/ramstein (config) and /var/lib/ramstein
+# Copyright (C) 2026 asuramaya and ramstein contributors
+# ramstein uninstaller. Keeps /etc/ramstein (config) and /var/lib/ramstein
 # (state) unless --purge is given. Root-only, and never self-elevates — see
 # install.sh for why. The GNOME pill is a per-account, non-root install
 # (make pill) — removing it stays a per-account step, never this script's
@@ -23,11 +23,11 @@ for a in "$@"; do
 done
 
 if [[ $EUID -ne 0 ]]; then
-  echo "RAMstein uninstaller needs root — run: sudo ./uninstall.sh" >&2
+  echo "ramstein uninstaller needs root — run: sudo ./uninstall.sh" >&2
   exit 1
 fi
 
-echo "== RAMstein uninstaller =="
+echo "== ramstein uninstaller =="
 
 echo "-- stopping service + timer"
 # var-lib-ramstein-extra.img.swap first, and explicitly -- `disable --now`
@@ -63,7 +63,7 @@ systemctl daemon-reload
 if [[ "$PURGE" -eq 1 ]]; then
   echo "-- purging config + state"
   rm -rf /etc/ramstein /var/lib/ramstein
-  echo "RAMstein fully removed."
+  echo "ramstein fully removed."
 else
-  echo "RAMstein removed. (kept /etc/ramstein and /var/lib/ramstein — use --purge to drop them.)"
+  echo "ramstein removed. (kept /etc/ramstein and /var/lib/ramstein — use --purge to drop them.)"
 fi

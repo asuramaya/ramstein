@@ -1,4 +1,4 @@
-# Releasing RAMstein
+# Releasing ramstein
 
 How a version becomes a signed release. The trust chain itself is described in
 [RELEASE-SIGNING.md](RELEASE-SIGNING.md); this is the running order.
@@ -46,7 +46,7 @@ gh release upload vX.Y.Z SHA256SUMS.sig
 This runs through the family's seal desk in practice, which derives its queue from published
 releases and shows anything published without a `.sig` as awaiting the seal.
 
-## Where RAMstein actually stands
+## Where ramstein actually stands
 
 v0.9.0 was tagged and published before the anchor held any real keys, so its shipped copy of
 `packaging/release-signing/allowed_signers` is empty and every client verifying it degrades to sha256-only.

@@ -78,7 +78,7 @@ jobs:
             exit 1
           fi
 
-      # No signing step here, deliberately: ramstein-update and (once RAMstein
+      # No signing step here, deliberately: ramstein-update and (once ramstein
       # gains a verified-release bootstrap) install.sh trust an SSH signature
       # (ssh-keygen -Y verify) against a key pinned INSIDE the client
       # (packaging/release-signing/allowed_signers, docs/RELEASE-SIGNING.md),

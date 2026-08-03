@@ -33,7 +33,7 @@ jobs:
       # ACTUAL step list off a real run (gh api .../jobs/<id> steps[].status),
       # not by the green checkmark alone.
       run-attack: true
-      # RAMstein has no per-file VERSION constant to check: Pass 2 (RS-STD-1)
+      # ramstein has no per-file VERSION constant to check: Pass 2 (RS-STD-1)
       # deliberately removed the old per-binary literal in favor of a single
       # packaging/VERSION source of truth, read live at runtime — the exact
       # opposite of the per-file-version-constant convention check-version.sh
@@ -68,7 +68,7 @@ jobs:
   # Found 2026-08-02 (alfred, diffing the published v0.11.1 .deb against its
   # own unit files): every pill in this family ships a hardened systemd
   # unit and none had ever actually STARTED one in a test — CI always ran
-  # the raw binary directly. RAMstein's .deb shipped ExecStart=/usr/local/
+  # the raw binary directly. ramstein's .deb shipped ExecStart=/usr/local/
   # bin/... (install.sh's prefix) while installing binaries to /usr/bin
   # (fixed in the deb: target, this same commit): dpkg succeeded, the
   # daemon died 203/EXEC, postinst's `|| true` swallowed it silently.

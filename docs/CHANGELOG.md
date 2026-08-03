@@ -1,7 +1,7 @@
 # Changelog
 
 ## 0.11.1 — sutra.mk / pill-ci.yml adoption
-Structural only, no daemon/CLI/pill behavior changed. RAMstein piloted the family's shared
+Structural only, no daemon/CLI/pill behavior changed. ramstein piloted the family's shared
 recipe layer ahead of the other four pills, so they could copy this diff rather than a
 description of it (alfred's order, DM #2716).
 
@@ -9,12 +9,12 @@ description of it (alfred's order, DM #2716).
   `sutra_update.py`/`sutra_xen.py`) and replaced the hand-written `check-sutra` target and
   `check-repo`'s row-count logic with it. Found and reported upstream: the original loop never
   covered `pill.js` (a gap for 3 of 5 pills), `check-vendored-path` validated only one binary
-  per call (RAMstein has four), `pill-ci.yml` shellchecked nothing, `run-check-version`
+  per call (ramstein has four), `pill-ci.yml` shellchecked nothing, `run-check-version`
   defaulted on with no pill actually using it, and `SUTRA_CHECK_ARGS` defaulting to `--help`
   made `make check` place a real (harmless, read-only) call against the live daemon socket on
   every run. All five folded upstream into sutra 0.11.0/0.11.1.
 - Adopted `pill-ci.yml` (sutra's shared reusable CI workflow), pinned by commit SHA. Split
-  RAMstein's CI into the shared job plus a thin `ramstein-specific` sibling for the one thing
+  ramstein's CI into the shared job plus a thin `ramstein-specific` sibling for the one thing
   sutra.mk still can't do package-agnostically: looping the resolution check across all four
   binaries.
 - Re-vendored to 0.11.1 (DM #2783) once the four findings above landed upstream, deleting the
@@ -106,7 +106,7 @@ coldspot already reached.
   into docs/; the three community files into .github/. No installed path changed, verified
   via byte-identical deb contents and two live install.sh install-over-installed runs
   against a real daemon. Added make check and make check-repo, the family's structural
-  gate, copied from coldspot. Added .gitattributes: RAMstein had none, so CI/dev files were
+  gate, copied from coldspot. Added .gitattributes: ramstein had none, so CI/dev files were
   shipping inside every release tarball; a real git archive now confirms they don't.
 
 Found while trying to complete the deb-layout half of the install-over-installed test:
@@ -119,7 +119,7 @@ Not this release's fix: sutra publishes a shared install convention first, then 
 adopts it in a follow-up pass alfred is sequencing.
 
 ## 0.9.0 — Wave B: the family backbone, and the first release pipeline
-RAMstein was the last daemon pill still on the 0.1.0-era sutra vendor
+ramstein was the last daemon pill still on the 0.1.0-era sutra vendor
 (alfred's order, mail #1232). Six milestones, closing the gap:
 
 - **M1 — re-vendor the current commons.** sutra.py 0.1.0 → 0.7.1 (gains

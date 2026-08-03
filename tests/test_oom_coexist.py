@@ -271,7 +271,7 @@ def main():
         # THE OR-COLLAPSE CASE (thread 3dd73060): the old advise/
         # coexist_warning wording said "systemd-oomd is active" whether
         # swap was covered or not -- indistinguishable from the label a
-        # FULLY-protected machine gets, even though RAMstein's own
+        # FULLY-protected machine gets, even though ramstein's own
         # specialty (sustained swap exhaustion) had zero backstop. The
         # label must name the gap when the two halves disagree, and stay
         # the plain undifferentiated form when they agree (both enrolled,

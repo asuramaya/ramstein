@@ -1,8 +1,8 @@
 [Unit]
-Description=RAMstein-managed extra swap (ramstein swap-size)
+Description=ramstein-managed extra swap (ramstein swap-size)
 Documentation=https://github.com/asuramaya/ramstein
 # Additive, not a replacement for the machine's own /swap.img (or
-# equivalent) — this unit and its backing file are entirely RAMstein's
+# equivalent) — this unit and its backing file are entirely ramstein's
 # own, so disabling it is undoing exactly one thing, never untangling a
 # file another part of the system also depends on.
 

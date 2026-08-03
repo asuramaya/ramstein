@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2026 asuramaya and RAMstein contributors
+# Copyright (C) 2026 asuramaya and ramstein contributors
 """ramstein-healthcheck — are the daemon's vitals good?
 
 Thin wrapper over sutra.check_health (UNIFY Wave A #3): status.json fresh

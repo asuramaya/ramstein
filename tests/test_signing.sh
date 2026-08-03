@@ -51,7 +51,7 @@ fi
 echo "has_signing_key() OK"
 
 # --- verify_signature(): real roundtrip -------------------------------------
-# principal = WHO (RAMstein's identity), namespace = WHAT-FOR ("ramstein-
+# principal = WHO (ramstein's identity), namespace = WHAT-FOR ("ramstein-
 # release") — deliberately distinct, per RELEASE.md's identity-vs-role split.
 PRINCIPAL="ramstein"
 NS="ramstein-release"

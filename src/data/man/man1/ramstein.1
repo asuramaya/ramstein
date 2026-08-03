@@ -205,8 +205,8 @@ for reboot survival and the live kernel value in the same call.
 .RS
 .TP
 .B status
-Current live value, whether RAMstein's drop\-in is present, and the
-ledgered pre\-RAMstein value if one has been set.
+Current live value, whether ramstein's drop\-in is present, and the
+ledgered pre\-ramstein value if one has been set.
 .TP
 .BI set " N " "[\-\-yes]"
 .I N
@@ -214,7 +214,7 @@ is 0\(en200. Dry\-run by default \(em
 .B \-\-yes
 applies it. Ledgers the value from
 .I before
-RAMstein's first change \(em never overwritten by a later
+ramstein's first change \(em never overwritten by a later
 .BR set ,
 so
 .B reset
@@ -224,8 +224,8 @@ before reporting success; a drop\-in written without the live value
 moving is a failure, not a partial success.
 .TP
 .B reset
-Restores the ledgered pre\-RAMstein value and removes the drop\-in.
-Errors cleanly if RAMstein has never changed
+Restores the ledgered pre\-ramstein value and removes the drop\-in.
+Errors cleanly if ramstein has never changed
 .I vm.swappiness
 on this machine.
 .RE
@@ -269,7 +269,7 @@ before ever reporting success.
 .TP
 .B remove
 Turns the swap off and deletes the backing file. Errors cleanly if
-RAMstein has no managed swap file on this machine.
+ramstein has no managed swap file on this machine.
 .RE
 .TP
 .BI zram " status|enable|disable"
@@ -287,7 +287,7 @@ Needs the
 .B systemd\-zram\-generator
 package \(em deliberately
 .I not
-a RAMstein dependency (one opt\-in verb, not a subsystem); absent,
+a ramstein dependency (one opt\-in verb, not a subsystem); absent,
 .B status
 and
 .B enable
@@ -297,7 +297,7 @@ nothing else degrades.
 .RS
 .TP
 .B status
-Whether the generator package is installed, whether RAMstein's config
+Whether the generator package is installed, whether ramstein's config
 section is present, active size, and the last change's outcome
 .RI ( pending
 while one is running).
@@ -323,7 +323,7 @@ store out from under a live swap area.
 .TP
 .B disable
 Removes the config section and stops the device. No confirmation
-required \(em undoing a RAMstein\-made change.
+required \(em undoing a ramstein\-made change.
 .RE
 .TP
 .BI update " [\-\-check] [\-\-json]"
@@ -364,7 +364,7 @@ who dies first (by oom_score):
 
 $ ramstein advise
 \- 2 zombie(s) unreaped \(em warp\-terminal isn't reaping (2 of them)
-\- systemd\-oomd is active \(em RAMstein's kill prompts stay advisory\-only, standing down
+\- systemd\-oomd is active \(em ramstein's kill prompts stay advisory\-only, standing down
 
 $ ramstein calm 2312307 \-\-nice 10
 ! systemd\-oomd is active \(em proceeding, but it may already be handling this
@@ -399,4 +399,4 @@ message explains why.
 .BR ramstein\-healthcheck (1),
 .BR ramstein\-update (1)
 .SH AUTHOR
-asuramaya and RAMstein contributors.
+asuramaya and ramstein contributors.

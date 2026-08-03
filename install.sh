@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Copyright (C) 2026 asuramaya and RAMstein contributors
-# RAMstein installer — the memory demon: daemon, CLI, healthcheck, updater,
+# Copyright (C) 2026 asuramaya and ramstein contributors
+# ramstein installer — the memory demon: daemon, CLI, healthcheck, updater,
 # systemd units. Root-only, and ONLY root-only: this script never re-execs
 # itself under sudo (family rule — a script that quietly escalates itself is
 # exactly what once misattributed the human user to "root"; see coldspot's
@@ -20,9 +20,9 @@ SHAREDIR="$PREFIX/share/ramstein"
 UNITDIR="/etc/systemd/system"
 CONFDIR="/etc/ramstein"
 
-# principal = WHO (RAMstein's stable identity); namespace = WHAT-FOR (what
+# principal = WHO (ramstein's stable identity); namespace = WHAT-FOR (what
 # this signature authorizes). Never conflate the two — see ~/code/REPOS/RELEASE.md.
-REPO_SLUG="asuramaya/RAMstein"
+REPO_SLUG="asuramaya/ramstein"
 SIGN_PRINCIPAL="ramstein"
 SIGN_NAMESPACE="ramstein-release"
 
@@ -49,7 +49,7 @@ has_signing_key() {
 # True/false: does the detached signature in $2 (a file path) verify $1 (a
 # file path, the exact bytes that were signed) against the pinned key(s) in
 # $3 (an allowed_signers path), for principal $4 and namespace $5? Principal
-# is WHO (RAMstein's identity); namespace is WHAT-FOR (what this signature
+# is WHO (ramstein's identity); namespace is WHAT-FOR (what this signature
 # authorizes) — a signature made for a different purpose, or by a principal
 # not pinned in allowed_signers, must not verify here.
 verify_signature() {
@@ -71,7 +71,7 @@ fi
 # Fail fast and plainly rather than self-elevating.
 if [[ $EUID -ne 0 ]]; then
   cat >&2 <<'EOF'
-RAMstein needs root to install (binaries, systemd units). Re-run with sudo:
+ramstein needs root to install (binaries, systemd units). Re-run with sudo:
 
   sudo ./install.sh        (or: sudo make install)
 EOF
@@ -79,7 +79,7 @@ EOF
 fi
 
 # Verified-release bootstrap (docs/RELEASE-SIGNING.md): v0.11.1 was
-# RAMstein's first release published with SHA256SUMS (2026-08-01), so
+# ramstein's first release published with SHA256SUMS (2026-08-01), so
 # `curl -fsSL .../install.sh | sudo bash` — running with no sibling files
 # next to it — now has something real to verify against, instead of only
 # ever being able to fetch unverified main-branch code. Fetches the
@@ -101,7 +101,7 @@ bootstrap_from_release() {
   trap 'rm -rf "${tmp}"' EXIT
   local base="https://github.com/${REPO_SLUG}/releases/latest/download"
 
-  echo "== fetching latest RAMstein release =="
+  echo "== fetching latest ramstein release =="
   curl -fsSL "${base}/SHA256SUMS" -o "${tmp}/SHA256SUMS" \
     || { echo "could not fetch the release checksum manifest (SHA256SUMS) — refusing to install unverified." >&2; exit 1; }
   local debname
@@ -155,7 +155,7 @@ if [[ -z "$OWNER_UID" ]]; then
 fi
 VERSION="$(tr -d '[:space:]' < "$SRC/packaging/VERSION" 2>/dev/null || echo unknown)"
 
-echo "== RAMstein ${VERSION} installer =="
+echo "== ramstein ${VERSION} installer =="
 
 # 1. binaries + version marker
 echo "-- binaries -> $BINDIR"
@@ -275,7 +275,7 @@ verify "$CONFDIR/config.json" 644
 
 cat <<EOF
 
-== RAMstein ${VERSION} installed ==
+== ramstein ${VERSION} installed ==
   ramstein status             available memory, PSI, burn rate, ETA-to-OOM
   ramstein-healthcheck        one-line vitals verdict (exit 0 = healthy)
   ramstein-update --check     is a newer release out? (never installs by itself)

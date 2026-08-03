@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Tests RAMstein's layer-3 swap-size verb (decision f8e7cc5a): BUTTON
+Tests ramstein's layer-3 swap-size verb (decision f8e7cc5a): BUTTON
 presets, BOUNDED-WAIT, PERSISTENT. A standalone backing file (STATE_DIR/
 extra.img) + a standalone, statically-shipped systemd .swap unit --
 `set` runs the real fallocate/mkswap/systemctl-enable sequence on a

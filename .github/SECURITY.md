@@ -1,6 +1,6 @@
 # Security Policy
 
-RAMstein runs a **root daemon** (`ramsteind`) that reads `/proc` and answers a
+ramstein runs a **root daemon** (`ramsteind`) that reads `/proc` and answers a
 local Unix socket, so security is taken seriously.
 
 ## Reporting a vulnerability

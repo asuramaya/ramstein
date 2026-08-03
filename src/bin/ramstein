@@ -426,7 +426,7 @@ def cmd_autocalm(argv):
 def cmd_oomd(argv):
     """Layer 3's first verb (ruling 41b72476): enroll this session into
     systemd-oomd's swap-kill protection, which Ubuntu ships configured
-    for memory pressure but never for swap — the exact scenario RAMstein
+    for memory pressure but never for swap — the exact scenario ramstein
     exists for. `enroll` writes a drop-in, restarts systemd-oomd (proven
     necessary — a config write alone doesn't make it re-discover units),
     and re-measures with the real detector before ever claiming success."""
@@ -440,7 +440,7 @@ def cmd_oomd(argv):
             return
         print(f"oomd swap-kill protection: "
               f"{'ENROLLED' if doc['enrolled'] else 'not enrolled'}"
-              f" (RAMstein's own drop-in "
+              f" (ramstein's own drop-in "
               f"{'present' if doc['ramstein_dropin_present'] else 'absent'})")
         if doc.get("preflight_would_refuse"):
             print(f"  ! enrolling right now would refuse:"
@@ -456,7 +456,7 @@ def cmd_oomd(argv):
         if doc.get("dry_run"):
             print("Enrolling asks systemd-oomd to SIGKILL a process in your")
             print("session if swap AND memory both stay critically full at")
-            print("once — the exact scenario RAMstein exists to catch, which")
+            print("once — the exact scenario ramstein exists to catch, which")
             print("Ubuntu ships configured for memory pressure but NOT for")
             print("swap. This restarts systemd-oomd (required for it to")
             print(f"notice the change) and writes {doc['would_write']},")
@@ -494,9 +494,9 @@ def cmd_swappiness(argv):
             print(json.dumps(doc, indent=2))
             return
         present = "present" if doc["ramstein_dropin_present"] else "absent"
-        print(f"vm.swappiness: {doc['current']} (RAMstein drop-in {present})")
+        print(f"vm.swappiness: {doc['current']} (ramstein drop-in {present})")
         if doc.get("prior") is not None:
-            print(f"  prior value (before RAMstein first changed it):"
+            print(f"  prior value (before ramstein first changed it):"
                   f" {doc['prior']} -- `ramstein swappiness reset` restores it")
         return
 
@@ -569,7 +569,7 @@ def cmd_swap_size(argv):
             return
         active = doc["active_bytes"]
         print(f"swap-size: {human_bytes(active)} active" if active else
-              "swap-size: none (RAMstein-managed extra swap not enabled)")
+              "swap-size: none (ramstein-managed extra swap not enabled)")
         if doc["in_progress"]:
             req = doc.get("requested")
             print(f"  a resize to {human_bytes(req) if req else '?'}"
@@ -593,7 +593,7 @@ def cmd_swap_size(argv):
             print(json.dumps(doc, indent=2))
             return
         if doc.get("dry_run"):
-            print(f"Creating/resizing a RAMstein-managed swap file to {size} —")
+            print(f"Creating/resizing a ramstein-managed swap file to {size} —")
             print(f"  {doc['note']}")
             print(f"  disk headroom after: {human_bytes(doc['disk_headroom_after_bytes'])}")
             print("  (dry-run — add --yes to apply)")
@@ -608,7 +608,7 @@ def cmd_swap_size(argv):
         doc = request_or_die({"cmd": "swap-size", "action": "remove"})
         if not doc.get("ok"):
             sys.exit(f"ramstein: swap-size remove failed: {doc.get('error', doc)}")
-        print("RAMstein-managed swap removed and confirmed off.")
+        print("ramstein-managed swap removed and confirmed off.")
         return
 
     sys.exit("ramstein: swap-size needs one of status | set SIZE | remove")

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Tests RAMstein's layer-3 zram verb (decision f8e7cc5a): TOGGLE,
+Tests ramstein's layer-3 zram verb (decision f8e7cc5a): TOGGLE,
 BOUNDED-WAIT, PERSISTENT. Writes /etc/systemd/zram-generator.conf
 directly (the one deliberate exception to the drop-in preference --
 this file is self-contained and inert with no [zram0] section, see the
@@ -187,7 +187,7 @@ def main():
 
             # --- PRE-EXISTING DEVICE (DM #3363, live on the operator's
             # machine): a device is already active from something other
-            # than RAMstein's own config (the package's own built-in
+            # than ramstein's own config (the package's own built-in
             # default, or a stale prior size) BEFORE enable() ever runs.
             # enable() must stop it first so the fresh config actually
             # takes effect -- without that, `start` on an already-active

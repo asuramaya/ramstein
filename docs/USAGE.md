@@ -1,6 +1,6 @@
-# Using RAMstein
+# Using ramstein
 
-Everything the CLI, the daemon, and the GNOME pill can do. If you just installed RAMstein, run
+Everything the CLI, the daemon, and the GNOME pill can do. If you just installed ramstein, run
 `ramstein status` first. For the short version, see the [README](../README.md).
 
 ## Everyday commands
@@ -59,7 +59,7 @@ whole loop live: `sudo systemctl enable --now ramstein-autocalm.timer`.
 ## OOM daemon enrollment
 
 Ubuntu ships `systemd-oomd` configured to kill on memory *pressure* for your session, but not on
-sustained *swap* exhaustion — the exact scenario RAMstein exists for has zero stock coverage.
+sustained *swap* exhaustion — the exact scenario ramstein exists for has zero stock coverage.
 `ramstein oomd enroll` closes that gap the way systemd itself would: a drop-in, not a hand edit.
 
 ```
@@ -77,30 +77,30 @@ same candidates and let you choose instead. This refusal is a compiled-in invari
 
 `enroll` restarts `systemd-oomd` itself (proven necessary — it only discovers newly-configured
 units on its own process startup, not on a plain config reload) and then re-measures with the
-same detector RAMstein already uses to judge whether a real backstop exists, rather than trust
+same detector ramstein already uses to judge whether a real backstop exists, rather than trust
 the file it just wrote. If the restart doesn't actually change what's being watched, it says so
 plainly instead of reporting success.
 
-Every place RAMstein mentions another OOM-fighter — `advise`'s coexist line, and the
+Every place ramstein mentions another OOM-fighter — `advise`'s coexist line, and the
 `coexist_warning` a `calm`/`kill` reply carries when one is active — names which half of
 `systemd-oomd`'s enrollment is real whenever swap and memory-pressure disagree, e.g. `systemd-oomd
-(pressure only, not swap)`. Pressure-only coverage protects none of the scenario RAMstein exists
+(pressure only, not swap)`. Pressure-only coverage protects none of the scenario ramstein exists
 for; a bare "systemd-oomd is active" would read identically whether swap was covered or not.
 
 ## Swappiness
 
 ```
-ramstein swappiness status         # current vm.swappiness, RAMstein drop-in state, ledgered prior
+ramstein swappiness status         # current vm.swappiness, ramstein drop-in state, ledgered prior
 ramstein swappiness set N --yes    # 0-200, applies immediately, persists across reboot (dry-run without --yes)
-ramstein swappiness reset          # restore the value from before RAMstein's first change
+ramstein swappiness reset          # restore the value from before ramstein's first change
 ```
 
 `set` is dry-run by default — run it bare to preview the change, add `--yes` to apply. It writes a
 `sysctl.d` drop-in (`/etc/sysctl.d/90-ramstein-swappiness.conf`) for reboot survival
 and applies the value to the live kernel in the same call — no service to restart, no reload to
-wait on. The value from *before* RAMstein's very first change is ledgered once and never
+wait on. The value from *before* ramstein's very first change is ledgered once and never
 overwritten by a later `set`, so `reset` always restores the true original rather than whatever
-RAMstein last chose. Every write re-measures `/proc/sys/vm/swappiness` before reporting success,
+ramstein last chose. Every write re-measures `/proc/sys/vm/swappiness` before reporting success,
 same discipline as `oomd enroll`: a drop-in that was written but didn't move the live value is a
 failure, not a partial success.
 
@@ -108,7 +108,7 @@ failure, not a partial success.
 
 ```
 ramstein swap-size status          # active size, disk headroom, last change's outcome
-ramstein swap-size set SIZE --yes  # e.g. 4G, 16G — resize the RAMstein-managed backing file (dry-run without --yes)
+ramstein swap-size set SIZE --yes  # e.g. 4G, 16G — resize the ramstein-managed backing file (dry-run without --yes)
 ramstein swap-size remove          # turn it off and delete the file
 ```
 
@@ -139,13 +139,13 @@ claimed by something `enable` didn't start (most commonly systemd's own auto-gen
 else already has active as swap would pull backing store out from under a live swap area.
 
 Writes `/etc/systemd/zram-generator.conf` directly rather than a drop-in — the one deliberate
-exception to that preference in RAMstein: this file is self-contained and inert the moment its
+exception to that preference in ramstein: this file is self-contained and inert the moment its
 `[zram0]` section is removed, with none of an `/etc/fstab` edit's brick-the-boot risk. `enable`
 writes the section, reloads (which re-runs the generator), and starts the resulting
 `systemd-zram-setup@zram0.service`; genuinely bounded-wait like `swap-size`, so it reports
 `pending` and the CLI polls for the real outcome. Needs the `systemd-zram-generator` package —
-deliberately *not* a RAMstein dependency (it backs one opt-in verb, not a subsystem everyone
-touches, so installing RAMstein never puts a boot-time generator on a machine that'll never use
+deliberately *not* a ramstein dependency (it backs one opt-in verb, not a subsystem everyone
+touches, so installing ramstein never puts a boot-time generator on a machine that'll never use
 it): `status`/`enable` refuse with `apt install systemd-zram-generator` when it's absent, and
 nothing else on the card degrades. Every change re-measures via `swapon --show` before reporting
 success, same discipline as every other layer-3 verb here.
@@ -167,7 +167,7 @@ ramstein update [--check]    # pull a newer release now (manual; signature-verif
 
 The daily `ramstein-update.timer` only ever passes `--check`; it never installs anything
 unattended. See [RELEASE-SIGNING.md](RELEASE-SIGNING.md) for what "signature-verified" actually
-checks, and where RAMstein currently stands on that chain.
+checks, and where ramstein currently stands on that chain.
 
 ## Troubleshooting
 
