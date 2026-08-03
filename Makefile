@@ -44,7 +44,20 @@ attack:
 check: check-sutra check-vendored-path-all
 	python3 -m py_compile src/bin/ramsteind src/bin/ramstein src/bin/ramstein-healthcheck \
 	    src/bin/ramstein-update src/share/ramstein/lib/sutra.py src/share/ramstein/lib/sutra_update.py src/share/ramstein/lib/sutra_xen.py
-	node --check "src/extension/ramstein@asuramaya/extension.js" "src/extension/ramstein@asuramaya/pill.js"
+	# `node --check <path>` on a file with top-level import/export silently
+	# skips real syntax validation -- confirmed directly: a file starting
+	# with `import Foo from "bar";` followed by an unambiguous syntax error
+	# (an unclosed brace) still exits 0. Every extension.js/pill.js in the
+	# family is an ES module, always, by construction -- this "syntax"
+	# check has been passing malformed GJS since it was written, on every
+	# pill that copies this exact line (phanspeed/coldspot/kast all do).
+	# `--input-type=module` over stdin parses for real (verified against
+	# the same known-bad file: catches it, exit 1) -- found writing new
+	# JS for the layer-3 controls and re-checking it, not by auditing this
+	# line specifically.
+	@for f in "src/extension/ramstein@asuramaya/extension.js" "src/extension/ramstein@asuramaya/pill.js"; do \
+	  node --input-type=module --check < "$$f" || exit 1; \
+	done
 	bash -n install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh tests/test_signing.sh
 	shellcheck install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh tests/test_signing.sh
 	groff -man -Tutf8 -ww src/data/man/man1/ramstein.1 > /dev/null
