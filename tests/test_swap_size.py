@@ -106,14 +106,14 @@ def main():
 
             # --- range floor -------------------------------------------------
             state = _fresh_state()
-            r = ramsteind.do_swap_size_set(CFG, 1024, state)
+            r = ramsteind.do_swap_size_set(CFG, 1024, state, dry_run=False)
             if "error" not in r or state["in_progress"]:
                 fails.append(f"below-floor size not rejected: {r!r}")
 
             # --- disk headroom refusal (real statvfs on this real tmpdir,
             # no mock needed -- an absurd size can't possibly fit) ----------
             state = _fresh_state()
-            r = ramsteind.do_swap_size_set(CFG, 10 ** 18, state)  # 1 exabyte
+            r = ramsteind.do_swap_size_set(CFG, 10 ** 18, state, dry_run=False)  # 1 exabyte
             err = r.get("error", "")
             if "error" not in r or ("headroom" not in err and "refusing" not in err):
                 fails.append(f"absurd size didn't refuse on disk headroom: {r!r}")
@@ -124,16 +124,25 @@ def main():
             # needed to test the guard itself) --------------------------------
             state = _fresh_state()
             state["in_progress"] = True
-            r = ramsteind.do_swap_size_set(CFG, 128 * 1024**2, state)
+            r = ramsteind.do_swap_size_set(CFG, 128 * 1024**2, state, dry_run=False)
             if "error" not in r:
                 fails.append(f"a concurrent set wasn't refused: {r!r}")
+
+            # --- THE SAFE DEFAULT (alfred's ratification, msg 3429, item 1):
+            # omitting dry_run must preview, never touch the backing file or
+            # start the worker thread.
+            state = _fresh_state()
+            r = ramsteind.do_swap_size_set(CFG, size := 128 * 1024 * 1024, state)
+            if not r.get("dry_run") or r.get("requested") != size:
+                fails.append(f"omitting dry_run did not default to a preview: {r!r}")
+            if state["in_progress"] or os.path.exists(BACKING_PATH):
+                fails.append("the default (no dry_run arg) call started real work")
 
             # --- a clean set: real truncate, fake mkswap/systemctl/swapon --
             fakebin = _fakebin(tmp, marker)
             os.environ["PATH"] = fakebin + os.pathsep + old_path
             state = _fresh_state()
-            size = 128 * 1024 * 1024  # above SWAP_SIZE_MIN_BYTES, still small/fast
-            r = ramsteind.do_swap_size_set(CFG, size, state)
+            r = ramsteind.do_swap_size_set(CFG, size, state, dry_run=False)
             if not r.get("pending"):
                 fails.append(f"a valid set didn't report pending: {r!r}")
             result = _wait_done(state)
@@ -168,7 +177,7 @@ def main():
             fakebin_fail = _fakebin(tmp, marker, mkswap_fail=True)
             os.environ["PATH"] = fakebin_fail + os.pathsep + old_path
             state = _fresh_state()
-            r = ramsteind.do_swap_size_set(CFG, size, state)
+            r = ramsteind.do_swap_size_set(CFG, size, state, dry_run=False)
             result = _wait_done(state)
             if not result or result.get("ok") or "mkswap" not in (result.get("error") or ""):
                 fails.append(f"mkswap failure wasn't surfaced honestly: {result!r}")
@@ -184,7 +193,7 @@ def main():
             fakebin_noop = _fakebin(tmp, marker, enable_noop=True)
             os.environ["PATH"] = fakebin_noop + os.pathsep + old_path
             state = _fresh_state()
-            r = ramsteind.do_swap_size_set(CFG, size, state)
+            r = ramsteind.do_swap_size_set(CFG, size, state, dry_run=False)
             result = _wait_done(state)
             if not result or result.get("ok"):
                 fails.append(

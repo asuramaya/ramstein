@@ -40,16 +40,21 @@ Three gates, all required before a cycle does anything real:
 
 ```
 ramstein autocalm status     # current enabled/armed state, thresholds, last cycle
-ramstein autocalm arm        # let the next triggered cycle act for real (TTY confirm required)
+ramstein autocalm arm --yes  # let the next triggered cycle act for real (dry-run without --yes)
 ramstein autocalm dry        # back to disarmed; cycles keep computing and notifying only
 ramstein autocalm run        # run one check-and-maybe-act cycle right now
 ```
 
-Arming persists across daemon restarts (config-backed, `auto_calm_armed`) — the TTY confirmation
-on the first `arm` is the consent gate, not something a restart makes you repeat; disarm any time
-with `ramstein autocalm dry`. The `ramstein-autocalm.timer` unit still ships installed but not
-enabled, so you flip on the timer yourself once you want the whole loop live:
-`sudo systemctl enable --now ramstein-autocalm.timer`.
+`arm` is dry-run by default, like every layer-3 verb below: run it bare and it prints what arming
+would grant without granting it; add `--yes` to actually arm. This is the repo's highest-authority
+verb — it grants ramsteind standing permission to renice and squeeze cgroup memory.high **on its
+own, on a timer, without asking again** — so it refuses outright if the trigger condition (PSI or
+an active swap-storm warning) is already firing right now: arming into an already-firing trigger
+would hand the very next scheduled tick an immediate, unreviewed action, with no time to
+reconsider. Once armed, the choice persists across daemon restarts (config-backed,
+`auto_calm_armed`) — disarm any time with `ramstein autocalm dry`. The `ramstein-autocalm.timer`
+unit still ships installed but not enabled, so you flip on the timer yourself once you want the
+whole loop live: `sudo systemctl enable --now ramstein-autocalm.timer`.
 
 ## OOM daemon enrollment
 
@@ -58,16 +63,17 @@ sustained *swap* exhaustion — the exact scenario RAMstein exists for has zero 
 `ramstein oomd enroll` closes that gap the way systemd itself would: a drop-in, not a hand edit.
 
 ```
-ramstein oomd status      # is systemd-oomd actually watching this session right now
-ramstein oomd enroll      # write the drop-in, restart systemd-oomd, confirm it's real (TTY confirm required)
-ramstein oomd disenroll   # remove it, restart systemd-oomd, confirm the machine is back to its default
+ramstein oomd status        # is systemd-oomd actually watching this session right now
+ramstein oomd enroll --yes  # write the drop-in, restart systemd-oomd, confirm it's real (dry-run without --yes)
+ramstein oomd disenroll     # remove it, restart systemd-oomd, confirm the machine is back to its default
 ```
 
-`enroll` refuses outright — naming the remedy, not just declining — if memory *and* swap are both
-already past systemd-oomd's own trigger threshold: enrolling in that exact moment would hand
-process selection to a kill with no grace period, when `ramstein oom` can show you the same
-candidates and let you choose instead. This refusal is a compiled-in invariant, not something a
-flag can skip — it will rarely fire on a healthy machine, which is correct.
+`enroll` is dry-run by default — run it bare to see what it would write and why, add `--yes` to
+apply. It refuses outright either way — naming the remedy, not just declining — if memory *and*
+swap are both already past systemd-oomd's own trigger threshold: enrolling in that exact moment
+would hand process selection to a kill with no grace period, when `ramstein oom` can show you the
+same candidates and let you choose instead. This refusal is a compiled-in invariant, not something
+`--yes` can skip — it will rarely fire on a healthy machine, which is correct.
 
 `enroll` restarts `systemd-oomd` itself (proven necessary — it only discovers newly-configured
 units on its own process startup, not on a plain config reload) and then re-measures with the
@@ -84,12 +90,13 @@ for; a bare "systemd-oomd is active" would read identically whether swap was cov
 ## Swappiness
 
 ```
-ramstein swappiness status      # current vm.swappiness, RAMstein drop-in state, ledgered prior
-ramstein swappiness set N       # 0-200, applies immediately, persists across reboot (TTY confirm)
-ramstein swappiness reset       # restore the value from before RAMstein's first change
+ramstein swappiness status         # current vm.swappiness, RAMstein drop-in state, ledgered prior
+ramstein swappiness set N --yes    # 0-200, applies immediately, persists across reboot (dry-run without --yes)
+ramstein swappiness reset          # restore the value from before RAMstein's first change
 ```
 
-`set` writes a `sysctl.d` drop-in (`/etc/sysctl.d/90-ramstein-swappiness.conf`) for reboot survival
+`set` is dry-run by default — run it bare to preview the change, add `--yes` to apply. It writes a
+`sysctl.d` drop-in (`/etc/sysctl.d/90-ramstein-swappiness.conf`) for reboot survival
 and applies the value to the live kernel in the same call — no service to restart, no reload to
 wait on. The value from *before* RAMstein's very first change is ledgered once and never
 overwritten by a later `set`, so `reset` always restores the true original rather than whatever
@@ -100,12 +107,13 @@ failure, not a partial success.
 ## Swap file size
 
 ```
-ramstein swap-size status       # active size, disk headroom, last change's outcome
-ramstein swap-size set SIZE     # e.g. 4G, 16G — resize the RAMstein-managed backing file (TTY confirm)
-ramstein swap-size remove       # turn it off and delete the file
+ramstein swap-size status          # active size, disk headroom, last change's outcome
+ramstein swap-size set SIZE --yes  # e.g. 4G, 16G — resize the RAMstein-managed backing file (dry-run without --yes)
+ramstein swap-size remove          # turn it off and delete the file
 ```
 
-A standalone backing file (`/var/lib/ramstein/extra.img`) and its own standalone systemd `.swap`
+`set` is dry-run by default — run it bare to preview the resize and the disk headroom it would
+leave, add `--yes` to apply. A standalone backing file (`/var/lib/ramstein/extra.img`) and its own standalone systemd `.swap`
 unit — additive to whatever swap the machine already has (this box's own `/swap.img` via
 `/etc/fstab` stays untouched), never an fstab edit, so undoing it is disabling one unit rather than
 untangling a shared file. Creating or resizing the file (`fallocate` + `mkswap`) genuinely scales
@@ -119,10 +127,16 @@ reporting success, same discipline as `oomd enroll` and `swappiness`.
 ## zram
 
 ```
-ramstein zram status      # generator installed?, config state, active size, last change's outcome
-ramstein zram enable      # compressed RAM-backed swap via systemd-zram-generator (TTY confirm)
-ramstein zram disable     # turn it off
+ramstein zram status        # generator installed?, config state, active size, last change's outcome
+ramstein zram enable --yes  # compressed RAM-backed swap via systemd-zram-generator (dry-run without --yes)
+ramstein zram disable       # turn it off
 ```
+
+`enable` is dry-run by default — run it bare to preview it, add `--yes` to apply. It refuses
+outright either way — naming the holding unit, not just declining — if `/dev/zram0` is already
+claimed by something `enable` didn't start (most commonly systemd's own auto-generated
+`dev-zram0.swap`, minted from the device's persisted swap signature): resetting a device something
+else already has active as swap would pull backing store out from under a live swap area.
 
 Writes `/etc/systemd/zram-generator.conf` directly rather than a drop-in — the one deliberate
 exception to that preference in RAMstein: this file is self-contained and inert the moment its

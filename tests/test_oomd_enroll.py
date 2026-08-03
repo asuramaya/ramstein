@@ -202,7 +202,7 @@ def test_enroll_success(tmp):
     os.environ["PATH"] = fakebin + os.pathsep + old_path
     os.environ["RAMSTEIN_SYSTEMD_ROOT"] = systemd_root
     try:
-        result = ramsteind.do_oomd_enroll(lambda: _fake_status(50, 50))
+        result = ramsteind.do_oomd_enroll(lambda: _fake_status(50, 50), dry_run=False)
         if not result.get("ok"):
             fails.append(f"expected success, got: {result!r}")
         if not os.path.exists(dropin):
@@ -234,7 +234,7 @@ def test_preflight_refusal_blocks_the_write(tmp):
     os.environ["PATH"] = fakebin + os.pathsep + old_path
     os.environ["RAMSTEIN_SYSTEMD_ROOT"] = systemd_root
     try:
-        result = ramsteind.do_oomd_enroll(lambda: _fake_status(95, 95))
+        result = ramsteind.do_oomd_enroll(lambda: _fake_status(95, 95), dry_run=False)
         if result.get("ok"):
             fails.append(f"expected a refusal, got success: {result!r}")
         if "error" not in result or "refusing:" not in result["error"]:
@@ -268,7 +268,7 @@ def test_honest_failure_when_world_does_not_move(tmp):
     os.environ["PATH"] = fakebin + os.pathsep + old_path
     os.environ["RAMSTEIN_SYSTEMD_ROOT"] = systemd_root
     try:
-        result = ramsteind.do_oomd_enroll(lambda: _fake_status(50, 50))
+        result = ramsteind.do_oomd_enroll(lambda: _fake_status(50, 50), dry_run=False)
         if result.get("ok"):
             fails.append(f"expected a reported failure (world didn't move), got: {result!r}")
         if not os.path.exists(dropin):
@@ -306,7 +306,7 @@ def test_honest_failure_with_pressure_already_enrolled(tmp):
     os.environ["PATH"] = fakebin + os.pathsep + old_path
     os.environ["RAMSTEIN_SYSTEMD_ROOT"] = systemd_root
     try:
-        result = ramsteind.do_oomd_enroll(lambda: _fake_status(50, 50))
+        result = ramsteind.do_oomd_enroll(lambda: _fake_status(50, 50), dry_run=False)
         if result.get("ok"):
             fails.append(
                 f"pressure being enrolled fooled the swap-specific re-verify"
@@ -340,7 +340,7 @@ def test_disenroll(tmp):
     os.environ["PATH"] = fakebin + os.pathsep + old_path
     os.environ["RAMSTEIN_SYSTEMD_ROOT"] = systemd_root
     try:
-        enrolled = ramsteind.do_oomd_enroll(lambda: _fake_status(50, 50))
+        enrolled = ramsteind.do_oomd_enroll(lambda: _fake_status(50, 50), dry_run=False)
         if not enrolled.get("ok"):
             fails.append(f"setup: enroll should have succeeded, got: {enrolled!r}")
             return fails
@@ -363,6 +363,41 @@ def test_disenroll(tmp):
     return fails
 
 
+def test_default_is_dry_run(tmp):
+    """Requirement 1 of alfred's ratification (msg 3429): the SAFE default
+    is load-bearing, not a formality -- a caller that omits dry_run (a
+    pill's own runRamsteinJson call before this session's CLI fix lands,
+    or any malformed/truncated request) must get a PREVIEW, never a real
+    write. Verified at the do_oomd_enroll layer, which is what the
+    dispatch table's own `req.get("dry_run", True)` ultimately calls."""
+    fails = []
+    systemd_root = tempfile.mkdtemp(dir=tmp)
+    dropin = os.path.join(systemd_root, ramsteind._OOMD_ENROLL_DROPIN_REL)
+    marker = os.path.join(tmp, "oomd-enrolled-marker-default")
+    fakebin = _fake_systemd_pair(tmp, dropin, marker)
+
+    old_path, old_root = os.environ.get("PATH", ""), os.environ.get("RAMSTEIN_SYSTEMD_ROOT")
+    os.environ["PATH"] = fakebin + os.pathsep + old_path
+    os.environ["RAMSTEIN_SYSTEMD_ROOT"] = systemd_root
+    try:
+        result = ramsteind.do_oomd_enroll(lambda: _fake_status(50, 50))  # no dry_run arg
+        if not result.get("dry_run"):
+            fails.append(f"omitting dry_run did not default to a preview: {result!r}")
+        if "would_write" not in result or "note" not in result:
+            fails.append(f"preview missing expected fields: {result!r}")
+        if os.path.exists(dropin):
+            fails.append("the default (no dry_run arg) call wrote the drop-in anyway")
+        if os.path.exists(marker):
+            fails.append("the default (no dry_run arg) call restarted systemd-oomd anyway")
+    finally:
+        os.environ["PATH"] = old_path
+        if old_root is None:
+            os.environ.pop("RAMSTEIN_SYSTEMD_ROOT", None)
+        else:
+            os.environ["RAMSTEIN_SYSTEMD_ROOT"] = old_root
+    return fails
+
+
 def main():
     all_fails = []
     with tempfile.TemporaryDirectory() as tmp:
@@ -374,6 +409,7 @@ def main():
             ("honest failure with pressure already enrolled (real-world case)",
              test_honest_failure_with_pressure_already_enrolled),
             ("disenroll", test_disenroll),
+            ("default (no dry_run arg) is a safe preview", test_default_is_dry_run),
         ]:
             fails = fn(tmp)
             if fails:

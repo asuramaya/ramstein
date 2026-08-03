@@ -126,16 +126,19 @@ unit being manually enabled
 Current enabled/armed state, policy thresholds, and the last cycle's
 outcome.
 .TP
-.B arm
+.BI arm " [\-\-yes]"
 Lets the next triggered cycle act for real (renice and/or a cgroup
 .I memory.high
-squeeze on the top RSS grower). Requires a real TTY and typing
-.B arm
-to confirm \(em lighter than
-.BR \-\-kill 's
-gate since every autocalm step is reversible, but never a bare flag.
-Persists across daemon restarts once confirmed; consent does not expire
-on its own.
+squeeze on the top RSS grower). Dry\-run by default, like every layer\-3
+verb below \(em prints what arming would grant without granting it;
+.B \-\-yes
+applies it for real. This is the repo's highest\-authority verb: it
+grants ramsteind standing permission to act on its own, on a timer,
+without asking again, so it refuses outright if the trigger condition
+(PSI or an active swap\-storm warning) is already firing right now \(em
+arming into an already\-firing trigger would hand the very next
+scheduled tick an immediate, unreviewed action. Persists across daemon
+restarts once armed; consent does not expire on its own.
 .TP
 .B dry
 Back to disarmed \(em cycles keep computing and notifying, never acting.
@@ -168,15 +171,14 @@ never a hand edit; undone the same way it was done.
 Whether systemd\-oomd is actually watching this session right now, not
 merely configured to.
 .TP
-.B enroll
+.BI enroll " [\-\-yes]"
 Writes the drop\-in, restarts
 .B systemd-oomd
 (required for it to notice \(em proven necessary, a config reload alone
 does not trigger re\-discovery of already\-running units), then
-re\-measures before ever reporting success. Requires a real TTY and
-typing
-.B enroll
-to confirm. Refuses outright, naming the remedy, if memory
+re\-measures before ever reporting success. Dry\-run by default \(em
+.B \-\-yes
+applies it. Refuses outright either way, naming the remedy, if memory
 .I and
 swap are already both past systemd\-oomd's own trigger threshold \(em
 enrolling in that moment would hand process selection to a kill with no
@@ -206,11 +208,11 @@ for reboot survival and the live kernel value in the same call.
 Current live value, whether RAMstein's drop\-in is present, and the
 ledgered pre\-RAMstein value if one has been set.
 .TP
-.BI set " N"
+.BI set " N " "[\-\-yes]"
 .I N
-is 0\(en200. Requires a real TTY and typing
-.B set
-to confirm. Ledgers the value from
+is 0\(en200. Dry\-run by default \(em
+.B \-\-yes
+applies it. Ledgers the value from
 .I before
 RAMstein's first change \(em never overwritten by a later
 .BR set ,
@@ -245,13 +247,13 @@ Active size, disk headroom, and the last change's outcome
 .RI ( pending
 while one is running).
 .TP
-.BI set " SIZE"
+.BI set " SIZE " "[\-\-yes]"
 .I SIZE
 is e.g.
 .IR 4G " or " 16G .
-Requires a real TTY and typing
-.B set
-to confirm. Reports
+Dry\-run by default \(em
+.B \-\-yes
+applies it. Once applied, reports
 .I pending
 immediately \(em the daemon runs the real work on a background thread \(em
 and the CLI polls
@@ -300,15 +302,24 @@ section is present, active size, and the last change's outcome
 .RI ( pending
 while one is running).
 .TP
-.B enable
-Requires a real TTY and typing
-.B enable
-to confirm. Writes the config section, reloads (re\-running the
+.BI enable " [\-\-yes]"
+Dry\-run by default \(em
+.B \-\-yes
+applies it: writes the config section, reloads (re\-running the
 generator), and starts
 .IR systemd\-zram\-setup@zram0.service .
 Re\-measures via
 .B swapon \-\-show
-before ever reporting success.
+before ever reporting success. Refuses outright either way, naming the
+holding unit, if
+.I /dev/zram0
+is already claimed by something
+.B enable
+didn't start (most commonly systemd's own auto\-generated
+.IR dev\-zram0.swap ,
+minted from the device's persisted swap signature) \(em resetting a
+device something else already has active as swap would pull backing
+store out from under a live swap area.
 .TP
 .B disable
 Removes the config section and stops the device. No confirmation

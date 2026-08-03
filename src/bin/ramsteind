@@ -1172,6 +1172,72 @@ def do_kill(pid, starttime, confirm, sig):
 # way anything happens on a schedule. Kill is never reachable from here at
 # any setting — the graduated response stops at notify, always.
 
+def _autocalm_trigger(cfg, doc):
+    """The one place that decides whether do_autocalm_run's trigger
+    condition holds -- shared with _autocalm_arm_preflight below so the
+    two can never drift apart into checking slightly different things
+    (the exact risk named in _zram_device_claimed's own docstring).
+    Returns a human-readable trigger name, or None if nothing's firing."""
+    mem = doc.get("memory") if isinstance(doc, dict) else None
+    warning = doc.get("warning") if isinstance(doc, dict) else None
+    if not mem:
+        return None
+    psi = mem.get("psi") or {}
+    some10, full10 = psi.get("some_avg10"), psi.get("full_avg10")
+    if some10 is not None and some10 > cfg["auto_calm_psi_some"]:
+        return (f"PSI some avg10 {some10:.1f}% >"
+                f" {cfg['auto_calm_psi_some']:.1f}%")
+    if full10 is not None and full10 > cfg["auto_calm_psi_full"]:
+        return (f"PSI full avg10 {full10:.1f}% >"
+                f" {cfg['auto_calm_psi_full']:.1f}%")
+    if cfg["auto_calm_use_swap_storm"] and isinstance(warning, dict) \
+            and warning.get("kind") == "swap_storm":
+        return "swap storm active (V2.M1 warning)"
+    return None
+
+
+def _autocalm_arm_preflight(cfg, get_status):
+    """The floor for `autocalm arm` (alfred, msg 3450, same standard held
+    for zram and oomd-enroll -- "nothing to clamp" doesn't answer the
+    question, "under what live state must it refuse" does). Arming grants
+    ramsteind standing permission to act -- renice and squeeze cgroup
+    memory.high -- ON ITS OWN, on a timer, without asking again, and it
+    PERSISTS across restarts (config auto_calm_armed). Arming while
+    _autocalm_trigger already fires hands the very next scheduled tick an
+    immediate, unreviewed action -- the identical shape of danger
+    _oomd_enroll_preflight exists to catch for oomd enrollment. Returns
+    None if safe to arm, else a human-readable refusal naming the live
+    trigger."""
+    trigger = _autocalm_trigger(cfg, get_status())
+    if trigger is None:
+        return None
+    return (f"refusing: {trigger} -- already firing. Arming now would act"
+            f" on the very next scheduled tick with no time to reconsider."
+            f" Wait for it to subside, or act manually first"
+            f" (`ramstein calm <pid>`).")
+
+
+def do_autocalm_arm(cfg, get_status, autocalm_state, config_path, dry_run=True):
+    refusal = _autocalm_arm_preflight(cfg, get_status)
+    if refusal:
+        return {"ok": False, "error": refusal}
+    if dry_run:
+        return {"dry_run": True, "note":
+                 "grants ramsteind standing permission to renice and"
+                 " squeeze cgroup memory.high on its own, on a timer,"
+                 " without asking again -- PERSISTS ACROSS RESTARTS until"
+                 " `autocalm dry` revokes it; kill is never reachable from"
+                 " here at any setting"}
+    autocalm_state["armed"] = True
+    persist_err = _persist_auto_calm_armed(config_path, True)
+    resp = {"ok": True, "armed": True, "dry_run": False}
+    if persist_err:
+        resp["persist_warning"] = (
+            f"armed for this session, but couldn't persist to "
+            f"{config_path} — a restart will forget it: {persist_err}")
+    return resp
+
+
 def do_autocalm_run(cfg, get_status, autocalm_state):
     def _settle(result):
         autocalm_state["last_result"] = result
@@ -1183,23 +1249,10 @@ def do_autocalm_run(cfg, get_status, autocalm_state):
 
     doc = get_status()
     mem = doc.get("memory") if isinstance(doc, dict) else None
-    warning = doc.get("warning") if isinstance(doc, dict) else None
     if not mem:
         return _settle({"ok": True, "acted": False, "reason": "no status yet"})
 
-    psi = mem.get("psi") or {}
-    some10, full10 = psi.get("some_avg10"), psi.get("full_avg10")
-    trigger = None
-    if some10 is not None and some10 > cfg["auto_calm_psi_some"]:
-        trigger = (f"PSI some avg10 {some10:.1f}% >"
-                   f" {cfg['auto_calm_psi_some']:.1f}%")
-    elif full10 is not None and full10 > cfg["auto_calm_psi_full"]:
-        trigger = (f"PSI full avg10 {full10:.1f}% >"
-                   f" {cfg['auto_calm_psi_full']:.1f}%")
-    elif cfg["auto_calm_use_swap_storm"] and isinstance(warning, dict) \
-            and warning.get("kind") == "swap_storm":
-        trigger = "swap storm active (V2.M1 warning)"
-
+    trigger = _autocalm_trigger(cfg, doc)
     if trigger is None:
         return _settle({"ok": True, "acted": False,
                         "reason": "no trigger condition met"})
@@ -1481,11 +1534,23 @@ def _oomd_apply_enrollment(write):
     return result
 
 
-def do_oomd_enroll(get_status):
+def do_oomd_enroll(get_status, dry_run=True):
+    # Ratified by alfred (msg 3429): byebyte's already-shipped shape, not a
+    # new one -- dry_run defaults SAFE (see the dispatch site) and the real
+    # floor is _oomd_enroll_preflight's live conjunction check above, which
+    # runs on BOTH paths, so a preview can never promise what the apply
+    # would actually refuse.
     refusal = _oomd_enroll_preflight(get_status)
     if refusal:
         return {"ok": False, "error": refusal}
+    if dry_run:
+        return {"dry_run": True, "would_write": _oomd_enroll_dropin_path(),
+                "note": "sets ManagedOOMSwap=kill for the user session —"
+                        " PERSISTS ACROSS REBOOT via a systemd drop-in, and"
+                        " applies immediately via a live systemd-oomd"
+                        " restart"}
     result = _oomd_apply_enrollment(write=True)
+    result["dry_run"] = False
     _ledger_write({"ts": time.time(), "verb": "oomd_enroll", "pid": None,
                    "comm": None, "arg": "user@.service ManagedOOMSwap=kill",
                    "result": "ok" if result["ok"] else "error",
@@ -1599,12 +1664,16 @@ def _swappiness_prior_write_once(value):
     sutra.write_status(SWAPPINESS_PRIOR_PATH, {"prior": value}, owner=None)
 
 
-def do_swappiness_set(value):
+def do_swappiness_set(value, dry_run=True):
     if not SWAPPINESS_MIN <= value <= SWAPPINESS_MAX:
         return {"error": f"value must be in {SWAPPINESS_MIN}..{SWAPPINESS_MAX}"}
     current = _read_swappiness()
     if current is None:
         return {"error": "could not read the current vm.swappiness"}
+    if dry_run:
+        return {"dry_run": True, "current": current, "proposed": value,
+                "note": "PERSISTS ACROSS REBOOT via a sysctl.d drop-in and"
+                        " applies immediately, no restart needed"}
     _swappiness_prior_write_once(current)
 
     dropin = _swappiness_dropin_path()
@@ -1618,7 +1687,7 @@ def do_swappiness_set(value):
     live_err = _write_swappiness_live(value)
     measured = _read_swappiness()
     moved = measured == value
-    result = {"ok": moved, "dropin": dropin, "requested": value,
+    result = {"ok": moved, "dry_run": False, "dropin": dropin, "requested": value,
               "measured": measured, "prior": _swappiness_prior_read()}
     if not moved:
         # ruling 41b72476: the pill's own observation must move, or this
@@ -1858,7 +1927,11 @@ def _swap_size_worker(size_bytes, swap_size_state):
                    "detail": result.get("error")})
 
 
-def do_swap_size_set(cfg, size_bytes, swap_size_state):
+def do_swap_size_set(cfg, size_bytes, swap_size_state, dry_run=True):
+    # Both floors run on BOTH paths, so a preview can't promise what an
+    # apply would refuse: the size floor and the disk-headroom floor
+    # (cfg["swap_size_min_disk_headroom_gb"]) are the only things that ever
+    # bounded this verb.
     if size_bytes < SWAP_SIZE_MIN_BYTES:
         return {"error": f"size must be at least {SWAP_SIZE_MIN_BYTES} bytes"}
     if swap_size_state.get("in_progress"):
@@ -1874,11 +1947,18 @@ def do_swap_size_set(cfg, size_bytes, swap_size_state):
             f" disk after this resize (floor {floor_gb:.0f}G) — an oversized"
             f" swap file trades a RAM crisis for a disk crisis"}
 
+    if dry_run:
+        return {"dry_run": True, "requested": size_bytes,
+                "disk_headroom_after_bytes": headroom,
+                "note": "an additive swap file with its own systemd .swap"
+                        " unit, enabled at boot — PERSISTS ACROSS REBOOT,"
+                        " and does not touch swap this machine already has"}
+
     swap_size_state["in_progress"] = True
     swap_size_state["requested"] = size_bytes
     threading.Thread(target=_swap_size_worker, args=(size_bytes, swap_size_state),
                      daemon=True).start()
-    return {"pending": True, "requested": size_bytes}
+    return {"pending": True, "requested": size_bytes, "dry_run": False}
 
 
 def do_swap_size_remove():
@@ -1992,6 +2072,40 @@ def _zram_device_active_bytes():
     return 0
 
 
+# systemd-escape --path --suffix=swap /dev/zram0 -- hardcoded rather than
+# shelled out because _ZRAM_DEVICE is a fixed constant, same precedent as
+# _SWAP_SIZE_UNIT_NAME above. This is systemd's OWN auto-generated unit,
+# minted from the device's persisted swap signature (blkid TYPE="swap"),
+# NOT this verb's own unit (that's _ZRAM_SETUP_UNIT).
+_ZRAM_DEVICE_SWAP_UNIT = "dev-zram0.swap"
+
+
+def _zram_device_claimed():
+    """The real floor for zram enable/disable (alfred, msg 3443, correcting
+    an earlier "no parameter, nothing to clamp" framing that answered the
+    wrong question): /dev/zram0 is a RAW KERNEL BLOCK DEVICE, unnamespaced
+    -- shared with the host even inside a privileged container, per this
+    session's own parked EBUSY finding. TWO independent units can claim
+    it: this verb's own _ZRAM_SETUP_UNIT, and systemd's own
+    dev-zram0.swap, auto-generated from the device's persisted swap
+    signature and entirely outside this verb's control. Resetting or
+    reconfiguring a device something else already has active as swap
+    pulls backing store out from under a live swap area -- the exact
+    mistake made against /extra.img earlier tonight. Returns the holding
+    unit's name if the device is claimed by something this verb did not
+    start, else None. Checked unconditionally in _zram_apply (the actual
+    reset-and-retry path) and mirrored in do_zram_enable's dry-run so a
+    preview never promises what an apply would refuse."""
+    try:
+        r = subprocess.run(["systemctl", "is-active", _ZRAM_DEVICE_SWAP_UNIT],
+                           capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.stdout.strip() == "active":
+        return _ZRAM_DEVICE_SWAP_UNIT
+    return None
+
+
 def _zram_apply(enable):
     """The BOUNDED-WAIT body, run off the request thread (see
     do_zram_enable/do_zram_disable). Stops the setup unit FIRST,
@@ -2012,6 +2126,14 @@ def _zram_apply(enable):
         return {"ok": False, "error":
                 "systemd-zram-generator is not installed"
                 " (apt install systemd-zram-generator)"}
+    holder = _zram_device_claimed()
+    if holder:
+        return {"ok": False, "error":
+                f"refusing: /dev/{_ZRAM_DEVICE} is already claimed by"
+                f" {holder}, not by this verb -- resetting it now would"
+                f" pull backing store out from under a live swap area."
+                f" Resolve {holder} first (`systemctl status {holder}`),"
+                f" then retry."}
     try:
         subprocess.run(["systemctl", "stop", _ZRAM_SETUP_UNIT],
                        capture_output=True, text=True, timeout=30)
@@ -2069,10 +2191,40 @@ def _zram_start(enable, zram_state):
     zram_state["in_progress"] = True
     threading.Thread(target=_zram_worker, args=(enable, zram_state),
                      daemon=True).start()
-    return {"pending": True}
+    return {"pending": True, "dry_run": False}
 
 
-def do_zram_enable(zram_state):
+def do_zram_enable(zram_state, dry_run=True):
+    # dry_run only: an accurate preview mirrors _zram_apply's own two
+    # floors (generator installed, device not already claimed by
+    # dev-zram0.swap) so it can never promise what an apply would refuse.
+    # The real (--yes) path deliberately does NOT duplicate these checks
+    # here -- it stays fire-and-poll like every other BOUNDED-WAIT verb,
+    # and _zram_apply (run on the worker thread) is the actual, only
+    # enforcement point for both floors on that path. Checking twice would
+    # invite the two checks drifting apart; there is exactly one place
+    # that decides.
+    if dry_run:
+        if not _zram_generator_present():
+            return {"error": "systemd-zram-generator is not installed"
+                              " (apt install systemd-zram-generator)"}
+        holder = _zram_device_claimed()
+        if holder:
+            return {"error":
+                    f"refusing: /dev/{_ZRAM_DEVICE} is already claimed by"
+                    f" {holder}, not by this verb -- resetting it now would"
+                    f" pull backing store out from under a live swap area."
+                    f" Resolve {holder} first (`systemctl status {holder}`),"
+                    f" then retry."}
+        if zram_state.get("in_progress"):
+            return {"error": "a zram change is already in progress —"
+                              " see `zram status`"}
+        return {"dry_run": True,
+                "would_configure": "zram-size = ram / 2, compression-algorithm = zstd",
+                "note": "compressed RAM-backed swap via"
+                        " /etc/systemd/zram-generator.conf — PERSISTS"
+                        " ACROSS REBOOT, additive to any swap this machine"
+                        " already has"}
     return _zram_start(True, zram_state)
 
 
@@ -2158,14 +2310,11 @@ def _make_dispatch(cfg, get_status, autocalm_state, config_path, swap_size_state
             if action == "status":
                 return query_autocalm_status(cfg, autocalm_state, get_status)
             if action == "arm":
-                autocalm_state["armed"] = True
-                persist_err = _persist_auto_calm_armed(config_path, True)
-                resp = {"ok": True, "armed": True}
-                if persist_err:
-                    resp["persist_warning"] = (
-                        f"armed for this session, but couldn't persist to "
-                        f"{config_path} — a restart will forget it: {persist_err}")
-                return resp
+                dry_run = req.get("dry_run", True)
+                if not isinstance(dry_run, bool):
+                    raise ValueError("dry_run must be a bool")
+                return do_autocalm_arm(cfg, get_status, autocalm_state,
+                                       config_path, dry_run)
             if action == "dry":
                 autocalm_state["armed"] = False
                 persist_err = _persist_auto_calm_armed(config_path, False)
@@ -2183,7 +2332,13 @@ def _make_dispatch(cfg, get_status, autocalm_state, config_path, swap_size_state
             if action == "status":
                 return query_oomd_status(get_status)
             if action == "enroll":
-                return do_oomd_enroll(get_status)
+                # Explicit default, not inferred from the CLI: a malformed
+                # or truncated request must stay a PREVIEW, never an act
+                # (alfred, msg 3429, item 1).
+                dry_run = req.get("dry_run", True)
+                if not isinstance(dry_run, bool):
+                    raise ValueError("dry_run must be a bool")
+                return do_oomd_enroll(get_status, dry_run)
             if action == "disenroll":
                 return do_oomd_disenroll()
             raise ValueError("unknown oomd action")
@@ -2195,7 +2350,10 @@ def _make_dispatch(cfg, get_status, autocalm_state, config_path, swap_size_state
                 value = req.get("value")
                 if not isinstance(value, int):
                     raise ValueError("value must be an int")
-                return do_swappiness_set(value)
+                dry_run = req.get("dry_run", True)
+                if not isinstance(dry_run, bool):
+                    raise ValueError("dry_run must be a bool")
+                return do_swappiness_set(value, dry_run)
             if action == "reset":
                 return do_swappiness_reset()
             raise ValueError("unknown swappiness action")
@@ -2213,7 +2371,10 @@ def _make_dispatch(cfg, get_status, autocalm_state, config_path, swap_size_state
                     raise ValueError(str(exc))
                 if size_bytes is None:
                     raise ValueError("size must be a concrete value, not 'max'")
-                return do_swap_size_set(cfg, size_bytes, swap_size_state)
+                dry_run = req.get("dry_run", True)
+                if not isinstance(dry_run, bool):
+                    raise ValueError("dry_run must be a bool")
+                return do_swap_size_set(cfg, size_bytes, swap_size_state, dry_run)
             if action == "remove":
                 return do_swap_size_remove()
             raise ValueError("unknown swap-size action")
@@ -2222,7 +2383,10 @@ def _make_dispatch(cfg, get_status, autocalm_state, config_path, swap_size_state
             if action == "status":
                 return query_zram_status(zram_state)
             if action == "enable":
-                return do_zram_enable(zram_state)
+                dry_run = req.get("dry_run", True)
+                if not isinstance(dry_run, bool):
+                    raise ValueError("dry_run must be a bool")
+                return do_zram_enable(zram_state, dry_run)
             if action == "disable":
                 return do_zram_disable(zram_state)
             raise ValueError("unknown zram action")

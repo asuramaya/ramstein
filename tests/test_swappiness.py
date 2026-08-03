@@ -64,7 +64,7 @@ def main():
 
         # range validation: rejected BEFORE anything is touched
         for bad in (-1, 201, 1000):
-            r = m.do_swappiness_set(bad)
+            r = m.do_swappiness_set(bad, dry_run=False)
             if "error" not in r or r.get("ok"):
                 fails.append(f"out-of-range value {bad} not rejected: {r!r}")
         with open(proc_path) as f:
@@ -74,7 +74,7 @@ def main():
             fails.append("an out-of-range set wrote a drop-in anyway")
 
         # a real set: live value moves, drop-in written, prior ledgered
-        r = m.do_swappiness_set(30)
+        r = m.do_swappiness_set(30, dry_run=False)
         if not r.get("ok") or r.get("measured") != 30 or r.get("prior") != 60:
             fails.append(f"clean set(30) wrong: {r!r}")
         with open(proc_path) as f:
@@ -94,10 +94,10 @@ def main():
         # IDEMPOTENT PRIOR: a second, third set must NOT re-ledger — prior
         # stays the TRUE original (60), or reset would restore to the wrong
         # number
-        r2 = m.do_swappiness_set(100)
+        r2 = m.do_swappiness_set(100, dry_run=False)
         if r2.get("prior") != 60:
             fails.append(f"prior got re-ledgered on a second set: {r2!r}")
-        r3 = m.do_swappiness_set(45)
+        r3 = m.do_swappiness_set(45, dry_run=False)
         if r3.get("prior") != 60:
             fails.append(f"prior got re-ledgered on a third set: {r3!r}")
 
@@ -121,6 +121,23 @@ def main():
         if r.get("ok") or "error" not in r:
             fails.append(f"reset with nothing ledgered should error cleanly: {r!r}")
 
+    # --- THE SAFE DEFAULT (alfred's ratification, msg 3429, item 1): a ----
+    # caller that omits dry_run entirely must get a PREVIEW, never a real
+    # write -- the dispatch table's own `req.get("dry_run", True)` exists
+    # for exactly this, verified here at the function layer it calls.
+    with tempfile.TemporaryDirectory() as tmp:
+        m, proc_path, sysctl_root = _fresh_module(tmp)
+        r = m.do_swappiness_set(30)  # no dry_run arg at all
+        if not r.get("dry_run"):
+            fails.append(f"omitting dry_run did not default to a preview: {r!r}")
+        if r.get("current") != 60 or r.get("proposed") != 30:
+            fails.append(f"preview missing/wrong current or proposed: {r!r}")
+        with open(proc_path) as f:
+            if f.read().strip() != "60":
+                fails.append("the default (no dry_run arg) call moved the live value")
+        if os.path.exists(m._swappiness_dropin_path()):
+            fails.append("the default (no dry_run arg) call wrote a drop-in")
+
     # --- THE NEGATIVE CONTROL (ruling 41b72476): the live write silently --
     # doesn't move the value -- a read-only fixture standing in for a
     # write path that isn't actually writable (e.g. a hardening gap).
@@ -129,7 +146,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         m, proc_path, _sysctl_root = _fresh_module(tmp)
         os.chmod(proc_path, stat.S_IRUSR)  # read-only: write() will raise
-        r = m.do_swappiness_set(10)
+        r = m.do_swappiness_set(10, dry_run=False)
         if r.get("ok") or "error" not in r:
             fails.append(
                 f"a live value that didn't actually move was reported as ok:"

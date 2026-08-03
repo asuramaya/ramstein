@@ -378,24 +378,25 @@ def cmd_autocalm(argv):
         return
 
     if sub == "arm":
-        if not sys.stdin.isatty():
-            sys.exit("ramstein: autocalm arm refuses a non-interactive TTY")
-        print("Arming auto-calm lets ramsteind ACT on its own on a timer —")
-        print("renice the top memory grower and/or squeeze its cgroup")
-        print("memory.high — without asking you first. It will NEVER kill")
-        print("anything: kill stays a human verb with a TTY confirm, forever.")
-        print("This choice persists across daemon restarts — consent doesn't")
-        print("expire on its own; disarm any time with `ramstein autocalm dry`.")
-        status = request_or_die({"cmd": "autocalm", "action": "status"})
-        if status.get("live_triggers"):
-            _print_live_triggers(status["live_triggers"])
-        try:
-            typed = input("type 'arm' to confirm: ").strip()
-        except EOFError:
-            typed = ""
-        if typed != "arm":
-            sys.exit("ramstein: autocalm arm not confirmed")
-        doc = request_or_die({"cmd": "autocalm", "action": "arm"})
+        yes = "--yes" in rest
+        doc = request_or_die({"cmd": "autocalm", "action": "arm", "dry_run": not yes})
+        if "--json" in rest:
+            print(json.dumps(doc, indent=2))
+            return
+        if doc.get("dry_run"):
+            print("Arming auto-calm lets ramsteind ACT on its own on a timer —")
+            print("renice the top memory grower and/or squeeze its cgroup")
+            print("memory.high — without asking you first. It will NEVER kill")
+            print("anything: kill stays a human verb with a TTY confirm, forever.")
+            print(f"{doc['note']}")
+            print("disarm any time with `ramstein autocalm dry`"
+                  " (dry-run — add --yes to apply).")
+            status = request_or_die({"cmd": "autocalm", "action": "status"})
+            if status.get("live_triggers"):
+                _print_live_triggers(status["live_triggers"])
+            return
+        if not doc.get("ok"):
+            sys.exit(f"ramstein: autocalm arm failed: {doc.get('error', doc)}")
         print("auto-calm ARMED — it will act for real on its next triggered cycle,")
         print("and stays armed across restarts until you run `ramstein autocalm dry`")
         print("(still needs auto_calm_enabled=true in config, and the"
@@ -447,22 +448,23 @@ def cmd_oomd(argv):
         return
 
     if sub == "enroll":
-        if not sys.stdin.isatty():
-            sys.exit("ramstein: oomd enroll refuses a non-interactive TTY")
-        print("Enrolling asks systemd-oomd to SIGKILL a process in your")
-        print("session if swap AND memory both stay critically full at")
-        print("once — the exact scenario RAMstein exists to catch, which")
-        print("Ubuntu ships configured for memory pressure but NOT for")
-        print("swap. This restarts systemd-oomd (required for it to")
-        print("notice the change) and writes a drop-in that survives")
-        print("reboot; undo any time with `ramstein oomd disenroll`.")
-        try:
-            typed = input("type 'enroll' to confirm: ").strip()
-        except EOFError:
-            typed = ""
-        if typed != "enroll":
-            sys.exit("ramstein: oomd enroll not confirmed")
-        request_or_die({"cmd": "oomd", "action": "enroll"})
+        yes = "--yes" in rest
+        doc = request_or_die({"cmd": "oomd", "action": "enroll", "dry_run": not yes})
+        if "--json" in rest:
+            print(json.dumps(doc, indent=2))
+            return
+        if doc.get("dry_run"):
+            print("Enrolling asks systemd-oomd to SIGKILL a process in your")
+            print("session if swap AND memory both stay critically full at")
+            print("once — the exact scenario RAMstein exists to catch, which")
+            print("Ubuntu ships configured for memory pressure but NOT for")
+            print("swap. This restarts systemd-oomd (required for it to")
+            print(f"notice the change) and writes {doc['would_write']},")
+            print(f"which {doc['note']}; undo any time with")
+            print("`ramstein oomd disenroll` (dry-run — add --yes to apply).")
+            return
+        if not doc.get("ok"):
+            sys.exit(f"ramstein: oomd enroll failed: {doc.get('error', doc)}")
         print("oomd swap-kill protection ENROLLED and confirmed live"
               " (re-measured, not just written).")
         return
@@ -505,17 +507,16 @@ def cmd_swappiness(argv):
         if not rest or not rest[0].lstrip("-").isdigit():
             sys.exit("ramstein: swappiness set needs an integer value")
         value = int(rest[0])
-        if not sys.stdin.isatty():
-            sys.exit("ramstein: swappiness set refuses a non-interactive TTY")
-        print(f"Setting vm.swappiness to {value} -- persists across reboot")
-        print("(sysctl.d drop-in) and applies immediately, no restart needed.")
-        try:
-            typed = input("type 'set' to confirm: ").strip()
-        except EOFError:
-            typed = ""
-        if typed != "set":
-            sys.exit("ramstein: swappiness set not confirmed")
-        doc = request_or_die({"cmd": "swappiness", "action": "set", "value": value})
+        yes = "--yes" in rest
+        doc = request_or_die({"cmd": "swappiness", "action": "set", "value": value,
+                              "dry_run": not yes})
+        if "--json" in rest:
+            print(json.dumps(doc, indent=2))
+            return
+        if doc.get("dry_run"):
+            print(f"vm.swappiness: {doc['current']} -> {doc['proposed']}")
+            print(f"  {doc['note']} (dry-run — add --yes to apply)")
+            return
         if not doc.get("ok"):
             sys.exit(f"ramstein: swappiness set failed: {doc.get('error', doc)}")
         print(f"vm.swappiness -> {doc['measured']} confirmed live"
@@ -585,18 +586,18 @@ def cmd_swap_size(argv):
         if not rest:
             sys.exit("ramstein: swap-size set needs a size, e.g. 4G")
         size = rest[0]
-        if not sys.stdin.isatty():
-            sys.exit("ramstein: swap-size set refuses a non-interactive TTY")
-        print(f"Creating/resizing a RAMstein-managed swap file to {size} —")
-        print("persists across reboot, additive to any swap this machine")
-        print("already has. Refuses if it would leave too little disk free.")
-        try:
-            typed = input("type 'set' to confirm: ").strip()
-        except EOFError:
-            typed = ""
-        if typed != "set":
-            sys.exit("ramstein: swap-size set not confirmed")
-        doc = request_or_die({"cmd": "swap-size", "action": "set", "size": size})
+        yes = "--yes" in rest
+        doc = request_or_die({"cmd": "swap-size", "action": "set", "size": size,
+                              "dry_run": not yes})
+        if "--json" in rest:
+            print(json.dumps(doc, indent=2))
+            return
+        if doc.get("dry_run"):
+            print(f"Creating/resizing a RAMstein-managed swap file to {size} —")
+            print(f"  {doc['note']}")
+            print(f"  disk headroom after: {human_bytes(doc['disk_headroom_after_bytes'])}")
+            print("  (dry-run — add --yes to apply)")
+            return
         if "error" in doc:
             sys.exit(f"ramstein: swap-size set failed: {doc['error']}")
         print(f"Started — resizing to {size}...")
@@ -663,18 +664,16 @@ def cmd_zram(argv):
         return
 
     if sub == "enable":
-        if not sys.stdin.isatty():
-            sys.exit("ramstein: zram enable refuses a non-interactive TTY")
-        print("Enabling compressed RAM-backed swap (systemd-zram-generator) —")
-        print("persists across reboot. Additive to any swap this machine")
-        print("already has.")
-        try:
-            typed = input("type 'enable' to confirm: ").strip()
-        except EOFError:
-            typed = ""
-        if typed != "enable":
-            sys.exit("ramstein: zram enable not confirmed")
-        doc = request_or_die({"cmd": "zram", "action": "enable"})
+        yes = "--yes" in rest
+        doc = request_or_die({"cmd": "zram", "action": "enable", "dry_run": not yes})
+        if "--json" in rest:
+            print(json.dumps(doc, indent=2))
+            return
+        if doc.get("dry_run"):
+            print(f"Enabling compressed RAM-backed swap: {doc.get('would_configure', '')}")
+            print(f"  {doc['note']}")
+            print("  (dry-run — add --yes to apply)")
+            return
         if "error" in doc:
             sys.exit(f"ramstein: zram enable failed: {doc['error']}")
         print("Started — enabling zram...")

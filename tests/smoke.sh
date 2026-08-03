@@ -657,8 +657,24 @@ def config_on_disk():
 
 before = config_on_disk()
 
-armed = ask({"cmd": "autocalm", "action": "arm"})
-assert armed == {"ok": True, "armed": True}, armed
+# the safe default (alfred's ratification, msg 3429/3450): omitting
+# dry_run, and explicit dry_run=True, must both preview over the REAL
+# socket without arming -- this is the one thing static hunk-verification
+# could not prove.
+preview_default = ask({"cmd": "autocalm", "action": "arm"})
+assert preview_default.get("dry_run") is True, preview_default
+assert ask({"cmd": "autocalm", "action": "status"})["armed"] is False, \
+    "the default (no dry_run key) arm call armed anyway"
+preview_explicit = ask({"cmd": "autocalm", "action": "arm", "dry_run": True})
+assert preview_explicit.get("dry_run") is True, preview_explicit
+assert ask({"cmd": "autocalm", "action": "status"})["armed"] is False, \
+    "an explicit dry_run=True arm call armed anyway"
+assert config_on_disk() == before, "a preview call touched config.json"
+print("autocalm arm preview ok: default and explicit dry_run=True both"
+      " preview over the real socket, neither arms nor writes config")
+
+armed = ask({"cmd": "autocalm", "action": "arm", "dry_run": False})
+assert armed == {"ok": True, "armed": True, "dry_run": False}, armed
 assert ask({"cmd": "autocalm", "action": "status"})["armed"] is True, "arm didn't stick"
 after_arm = config_on_disk()
 assert after_arm["auto_calm_armed"] is True, \
