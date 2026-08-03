@@ -613,6 +613,84 @@ def cmd_swap_size(argv):
     sys.exit("ramstein: swap-size needs one of status | set SIZE | remove")
 
 
+def _zram_poll_until_done(timeout_s=60):
+    """Same BOUNDED-WAIT shape as swap-size's own poll — zram device
+    creation is usually fast, but it goes through the identical
+    write-config/daemon-reload/systemctl-start sequence, so it gets the
+    identical pending+poll treatment rather than assuming "usually fast"
+    means "always fast enough to block the socket on"."""
+    start = time.time()
+    while time.time() - start < timeout_s:
+        doc = request_or_die({"cmd": "zram", "action": "status"})
+        if not doc.get("in_progress"):
+            lr = doc.get("last_result")
+            if lr and lr.get("ok"):
+                print(f"done — {human_bytes(lr['measured'])} active"
+                      " (confirmed live, not just written).")
+            else:
+                print(f"FAILED: {lr.get('error') if lr else 'no result recorded'}")
+            return
+        time.sleep(1)
+    print("still running after a minute — check `ramstein zram status` later.")
+
+
+def cmd_zram(argv):
+    """Layer 3, verb #4: compressed RAM-backed swap via systemd-zram-
+    generator. BOUNDED-WAIT like swap-size -- enable/disable report
+    pending immediately, the CLI polls for the real outcome."""
+    sub = argv[0] if argv else "status"
+    rest = argv[1:]
+
+    if sub == "status":
+        doc = request_or_die({"cmd": "zram", "action": "status"})
+        if "--json" in rest:
+            print(json.dumps(doc, indent=2))
+            return
+        if not doc["generator_present"]:
+            print("zram: systemd-zram-generator is not installed")
+            return
+        active = doc["active_bytes"]
+        print(f"zram: {human_bytes(active)} active" if active else
+              "zram: none (device not active)")
+        print(f"  config: {'enabled' if doc['config_enabled'] else 'disabled'}")
+        if doc["in_progress"]:
+            print("  a change is in progress...")
+        lr = doc.get("last_result")
+        if lr and not doc["in_progress"]:
+            outcome = "ok" if lr.get("ok") else f"FAILED: {lr.get('error')}"
+            print(f"  last change: {outcome}")
+        return
+
+    if sub == "enable":
+        if not sys.stdin.isatty():
+            sys.exit("ramstein: zram enable refuses a non-interactive TTY")
+        print("Enabling compressed RAM-backed swap (systemd-zram-generator) —")
+        print("persists across reboot. Additive to any swap this machine")
+        print("already has.")
+        try:
+            typed = input("type 'enable' to confirm: ").strip()
+        except EOFError:
+            typed = ""
+        if typed != "enable":
+            sys.exit("ramstein: zram enable not confirmed")
+        doc = request_or_die({"cmd": "zram", "action": "enable"})
+        if "error" in doc:
+            sys.exit(f"ramstein: zram enable failed: {doc['error']}")
+        print("Started — enabling zram...")
+        _zram_poll_until_done()
+        return
+
+    if sub == "disable":
+        doc = request_or_die({"cmd": "zram", "action": "disable"})
+        if "error" in doc:
+            sys.exit(f"ramstein: zram disable failed: {doc['error']}")
+        print("Started — disabling zram...")
+        _zram_poll_until_done()
+        return
+
+    sys.exit("ramstein: zram needs one of status | enable | disable")
+
+
 def cmd_update(argv):
     """Delegate straight to ramstein-update (execvp — its exit code becomes
     ours). `ramstein update --check --json` is the pill's UpdateSurface
@@ -649,6 +727,7 @@ verbs:
   oomd status|enroll|disenroll    layer-3: enroll this session in systemd-oomd's swap-kill protection
   swappiness status|set N|reset   layer-3: vm.swappiness, persisted + applied live (0-200)
   swap-size status|set SIZE|remove  layer-3: standalone additive swap file, e.g. 4G
+  zram status|enable|disable      layer-3: compressed RAM-backed swap (systemd-zram-generator)
   update [--check]                check for / delegate to ramstein-update
 
 --json applies to any read verb for machine-readable output.
@@ -680,7 +759,8 @@ def main():
              "swap": cmd_swap, "zombies": cmd_zombies, "oom": cmd_oom,
              "advise": cmd_advise, "calm": cmd_calm, "autocalm": cmd_autocalm,
              "oomd": cmd_oomd, "swappiness": cmd_swappiness,
-             "swap-size": cmd_swap_size, "update": cmd_update}
+             "swap-size": cmd_swap_size, "zram": cmd_zram,
+             "update": cmd_update}
     if verb in verbs:
         verbs[verb](rest)
     elif verb in PLANNED:

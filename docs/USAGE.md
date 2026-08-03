@@ -116,7 +116,22 @@ on the backing filesystem — an oversized swap file trading a RAM crisis for a 
 exactly the mistake this exists to block. Every change re-measures via `swapon --show` before
 reporting success, same discipline as `oomd enroll` and `swappiness`.
 
-zram (`zram`) is the last layer-3 verb on the same table (decision f8e7cc5a) — not yet built.
+## zram
+
+```
+ramstein zram status      # generator installed?, config state, active size, last change's outcome
+ramstein zram enable      # compressed RAM-backed swap via systemd-zram-generator (TTY confirm)
+ramstein zram disable     # turn it off
+```
+
+Writes `/etc/systemd/zram-generator.conf` directly rather than a drop-in — the one deliberate
+exception to that preference in RAMstein: this file is self-contained and inert the moment its
+`[zram0]` section is removed, with none of an `/etc/fstab` edit's brick-the-boot risk. `enable`
+writes the section, reloads (which re-runs the generator), and starts the resulting
+`systemd-zram-setup@zram0.service`; genuinely bounded-wait like `swap-size`, so it reports
+`pending` and the CLI polls for the real outcome. Requires the `systemd-zram-generator` package
+(a RAMstein dependency); `status` says so plainly if it's somehow missing. Every change re-measures
+via `swapon --show` before reporting success, same discipline as every other layer-3 verb here.
 
 ## The GNOME pill
 

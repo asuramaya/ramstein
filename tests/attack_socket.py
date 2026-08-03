@@ -32,9 +32,13 @@ RD = tempfile.mkdtemp(prefix="ramstein-attack-")
 atexit.register(shutil.rmtree, RD, ignore_errors=True)
 os.makedirs(os.path.join(RD, "fake_cgroup"), exist_ok=True)
 os.makedirs(os.path.join(RD, "fake_sysctl"), exist_ok=True)
+os.makedirs(os.path.join(RD, "fake_zram_etc"), exist_ok=True)
 os.makedirs(os.path.join(RD, "fakebin"), exist_ok=True)
 with open(os.path.join(RD, "fake_proc_swappiness"), "w") as f:
     f.write("60")
+# left absent on purpose: zram's own generator-present check must refuse
+# cleanly under fuzz, same bar as everything else here
+FAKE_ZRAM_GENERATOR_BIN = os.path.join(RD, "no-such-zram-generator")
 with open(os.path.join(RD, "fakebin", "systemctl"), "w") as f:
     f.write('#!/usr/bin/env bash\n[ "$1" = "is-active" ] && '
             '{ echo "active"; exit 0; }\nexit 1\n')
@@ -50,6 +54,8 @@ env["RAMSTEIN_STATE_DIR"] = os.path.join(RD, "state")
 env["RAMSTEIN_CGROUP_ROOT"] = os.path.join(RD, "fake_cgroup")
 env["RAMSTEIN_SYSCTL_ROOT"] = os.path.join(RD, "fake_sysctl")
 env["RAMSTEIN_PROC_SWAPPINESS"] = os.path.join(RD, "fake_proc_swappiness")
+env["RAMSTEIN_ZRAM_ETC_ROOT"] = os.path.join(RD, "fake_zram_etc")
+env["RAMSTEIN_ZRAM_GENERATOR_BIN"] = FAKE_ZRAM_GENERATOR_BIN
 proc = subprocess.Popen(
     [sys.executable, os.path.join(HERE, "src", "bin", "ramsteind"),
      "--config", os.path.join(RD, "config.json")],
@@ -198,6 +204,16 @@ HOSTILE = [
     {"cmd": "swap-size", "action": "set", "size": "not-a-size"},
     {"cmd": "swap-size", "action": "set", "size": "max"},
     {"cmd": "swap-size", "action": "status", "extra": "garbage"},
+    # zram: generator fixture is deliberately ABSENT (see
+    # FAKE_ZRAM_GENERATOR_BIN above), so enable/disable exercise the
+    # generator-not-installed refusal path under fuzz -- never a real
+    # config write or systemctl call, same as swap-size's fake systemctl
+    # keeping enable/daemon-reload harmless above.
+    {"cmd": "zram"}, {"cmd": "zram", "action": "wat"},
+    {"cmd": "zram", "action": None}, {"cmd": "zram", "action": 123},
+    {"cmd": "zram", "action": "enable", "extra": "garbage"},
+    {"cmd": "zram", "action": "disable", "extra": [1, 2, 3]},
+    {"cmd": "zram", "action": "status", "extra": "garbage"},
     {"cmd": "wat"}, {"cmd": 123}, {"cmd": None}, {}, {"cmd": []},
 ]
 for msg in HOSTILE:

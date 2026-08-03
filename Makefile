@@ -32,6 +32,7 @@ smoke: check-sutra
 	python3 tests/test_header_evidence.py
 	python3 tests/test_swappiness.py
 	python3 tests/test_swap_size.py
+	python3 tests/test_zram.py
 
 # the thorough adversarial pass (full cmd surface + oversized/garbage/
 # invalid-utf8/nested/unknown/rapid-reconnect/half-open-stall); smoke.sh
@@ -130,7 +131,7 @@ deb:
 	  echo "Section: admin"; \
 	  echo "Priority: optional"; \
 	  echo "Architecture: all"; \
-	  echo "Depends: python3 (>= 3.8), systemd, openssh-client"; \
+	  echo "Depends: python3 (>= 3.8), systemd, openssh-client, systemd-zram-generator"; \
 	  echo "Maintainer: asuramaya <asuramaya@users.noreply.github.com>"; \
 	  echo "Homepage: https://github.com/asuramaya/RAMstein"; \
 	  echo "Description: memory as a deadline, not a percentage"; \
@@ -143,9 +144,9 @@ deb:
 	@echo "-- built $(DEBFILE)"
 	@command -v lintian >/dev/null 2>&1 && lintian $(DEBFILE) || echo "-- lintian not installed, skipping"
 
-# Installs the REAL built .deb under a REAL systemd (root, dpkg -i,
-# systemctl) and proves every shipped unit actually works -- not just
-# that its ExecStart text looks right. Family doctrine (commit 2efd0eb):
+# Installs the REAL built .deb under a REAL systemd (root, apt-get
+# install, systemctl) and proves every shipped unit actually works -- not
+# just that its ExecStart text looks right. Family doctrine (commit 2efd0eb):
 # ci.yml invokes Makefile targets, not a copy of the check only CI knows
 # about, so `sudo make check-systemd-live` reproduces exactly what CI runs
 # in the systemd container harness proven out 2026-08-02 (jrei/systemd-
@@ -170,8 +171,15 @@ deb:
 # minutes and dies on its first real poll-loop tick -- different failure,
 # different detector, not covered here.
 check-systemd-live:
-	@test "$$(id -u)" = "0" || { echo "check-systemd-live: needs root (dpkg -i, systemctl)" >&2; exit 1; }
-	dpkg -i $(DEBFILE)
+	@test "$$(id -u)" = "0" || { echo "check-systemd-live: needs root (apt-get install, systemctl)" >&2; exit 1; }
+	# apt-get, not dpkg -i: the zram verb added a real Depends
+	# (systemd-zram-generator), and dpkg -i has no dependency resolver --
+	# it would leave the package unconfigured on any machine that doesn't
+	# already happen to have that package installed, CI included. Found
+	# by running this exact install locally before trusting it, not by
+	# reading the Makefile and assuming dpkg -i still covered it.
+	apt-get update -qq
+	apt-get install -y ./$(DEBFILE)
 	@for i in 1 2 3 4 5 6; do \
 	  active="$$(systemctl show ramsteind.service -p ActiveState --value)"; \
 	  restarts="$$(systemctl show ramsteind.service -p NRestarts --value)"; \

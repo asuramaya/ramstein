@@ -1691,11 +1691,14 @@ def _swap_size_backing_file_path():
     return os.path.join(STATE_DIR, _SWAP_SIZE_BACKING_REL)
 
 
-def _swap_size_rows():
+def _swapon_rows():
     """`swapon --show`, machine-parseable: --bytes/--noheadings/--raw give
     exact integer sizes and one space-separated row per active swap, no
     unit suffix guessing (a human-readable "8G" would need re-parsing the
-    same size logic _parse_size already owns, for no benefit)."""
+    same size logic _parse_size already owns, for no benefit). Shared
+    plumbing -- swap-size's own backing file and zram's device are both
+    just rows in this same table, told apart by NAME (a file path vs.
+    /dev/zramN)."""
     try:
         r = subprocess.run(
             ["swapon", "--show", "--bytes", "--noheadings", "--raw"],
@@ -1718,7 +1721,7 @@ def _swap_size_rows():
 
 def _swap_size_active_bytes():
     path = _swap_size_backing_file_path()
-    for row in _swap_size_rows():
+    for row in _swapon_rows():
         if row["name"] == path:
             return row["size"]
     return 0
@@ -1904,13 +1907,168 @@ def query_swap_size_status(swap_size_state):
     }
 
 
+# --- layer 3, verb #4: zram --------------------------------------------------
+# Approved table (decision f8e7cc5a): TOGGLE, BOUNDED-WAIT, PERSISTENT.
+# Compressed RAM-backed swap via systemd-zram-generator's own mechanism.
+# RAMstein writes /etc/systemd/zram-generator.conf DIRECTLY, not via a
+# drop-in -- the one deliberate exception to that preference (FAMILY.md):
+# this file is self-contained and "deletable", inert the moment its
+# [zram0] section is absent, none of an fstab edit's brick-the-boot risk.
+# daemon-reload re-runs the generator (systemd's own mechanism for
+# picking up a changed config), then start/stop the resulting
+# systemd-zram-setup@zram0.service -- a plain oneshot .service, NOT a
+# .swap unit, so it does NOT hit swap_start()'s container-detection
+# refusal (confirmed by starting it directly in the same container that
+# proved swap-size's ceiling, not inferred from the unit type). What DOES
+# block full activation in every environment available here: the zram
+# kernel module was never loaded on this machine, and loading it is a
+# host-level action outside this verb's own scope to take unasked.
+
+_ZRAM_DEVICE = "zram0"
+_ZRAM_SETUP_UNIT = f"systemd-zram-setup@{_ZRAM_DEVICE}.service"
+_ZRAM_CONFIG_REL = "systemd/zram-generator.conf"
+_ZRAM_GENERATOR_BIN = "/usr/lib/systemd/system-generators/zram-generator"
+_ZRAM_CONFIG_HEADER = ("# Managed by ramstein (`ramstein zram enable|disable`)"
+                        " -- never hand edit.\n")
+_ZRAM_CONFIG_ENABLED_BODY = (
+    _ZRAM_CONFIG_HEADER +
+    f"[{_ZRAM_DEVICE}]\n"
+    "zram-size = ram / 2\n"
+    "compression-algorithm = zstd\n"
+)
+_ZRAM_CONFIG_DISABLED_BODY = (
+    _ZRAM_CONFIG_HEADER +
+    f"# {_ZRAM_DEVICE} section removed -- zram-generator creates nothing.\n"
+)
+
+
+def _zram_config_path():
+    # Mirrors _cgroup_root()/_systemd_root()'s exact safety pattern.
+    root = os.environ.get("RAMSTEIN_ZRAM_ETC_ROOT")
+    if root and os.getuid() != 0:
+        return os.path.join(root, _ZRAM_CONFIG_REL)
+    return os.path.join("/etc", _ZRAM_CONFIG_REL)
+
+
+def _zram_generator_bin():
+    # Mirrors _cgroup_root()'s exact safety pattern -- lets tests fake
+    # "package installed" without touching the real generator path.
+    root = os.environ.get("RAMSTEIN_ZRAM_GENERATOR_BIN")
+    if root and os.getuid() != 0:
+        return root
+    return _ZRAM_GENERATOR_BIN
+
+
+def _zram_generator_present():
+    return os.path.exists(_zram_generator_bin())
+
+
+def _zram_config_has_section():
+    try:
+        with open(_zram_config_path()) as f:
+            content = f.read()
+    except OSError:
+        return False
+    return f"[{_ZRAM_DEVICE}]" in content
+
+
+def _zram_device_active_bytes():
+    dev = f"/dev/{_ZRAM_DEVICE}"
+    for row in _swapon_rows():
+        if row["name"] == dev:
+            return row["size"]
+    return 0
+
+
+def _zram_apply(enable):
+    """The BOUNDED-WAIT body, run off the request thread (see
+    do_zram_enable/do_zram_disable). Writes the config, daemon-reload
+    (re-runs the generator), start/stop the setup unit, then re-measures
+    via swapon --show before ever reporting success (ruling 41b72476) --
+    a rewritten config and a "successful" systemctl call are not success
+    if the device doesn't actually show the expected state."""
+    if not _zram_generator_present():
+        return {"ok": False, "error":
+                "systemd-zram-generator is not installed"
+                " (package: systemd-zram-generator)"}
+    config = _zram_config_path()
+    try:
+        os.makedirs(os.path.dirname(config), exist_ok=True)
+        with open(config, "w") as f:
+            f.write(_ZRAM_CONFIG_ENABLED_BODY if enable else _ZRAM_CONFIG_DISABLED_BODY)
+    except OSError as exc:
+        return {"ok": False, "error": f"config write failed: {exc.strerror}"}
+
+    for step in (["systemctl", "daemon-reload"],
+                 ["systemctl", "start" if enable else "stop", _ZRAM_SETUP_UNIT]):
+        try:
+            r = subprocess.run(step, capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {"ok": False, "error": f"{' '.join(step)} failed: {exc}"}
+        if r.returncode != 0:
+            return {"ok": False, "error":
+                    f"{' '.join(step)} exited {r.returncode}: "
+                    f"{(r.stderr or r.stdout).strip()}"}
+
+    measured = _zram_device_active_bytes()
+    moved = (measured > 0) if enable else (measured == 0)
+    result = {"ok": moved, "enabled": enable, "measured": measured}
+    if not moved:
+        result["error"] = (
+            f"wrote the config and {'started' if enable else 'stopped'}"
+            f" {_ZRAM_SETUP_UNIT}, but swapon --show now reports"
+            f" {measured!r} bytes on /dev/{_ZRAM_DEVICE} — refusing to"
+            f" report success")
+    return result
+
+
+def _zram_worker(enable, zram_state):
+    result = _zram_apply(enable)
+    zram_state["in_progress"] = False
+    zram_state["last_result"] = result
+    _ledger_write({"ts": time.time(),
+                   "verb": "zram_enable" if enable else "zram_disable",
+                   "pid": None, "comm": None, "arg": None,
+                   "result": "ok" if result.get("ok") else "error",
+                   "detail": result.get("error")})
+
+
+def _zram_start(enable, zram_state):
+    if zram_state.get("in_progress"):
+        return {"error": "a zram change is already in progress —"
+                          " see `zram status`"}
+    zram_state["in_progress"] = True
+    threading.Thread(target=_zram_worker, args=(enable, zram_state),
+                     daemon=True).start()
+    return {"pending": True}
+
+
+def do_zram_enable(zram_state):
+    return _zram_start(True, zram_state)
+
+
+def do_zram_disable(zram_state):
+    return _zram_start(False, zram_state)
+
+
+def query_zram_status(zram_state):
+    return {
+        "generator_present": _zram_generator_present(),
+        "config_enabled": _zram_config_has_section(),
+        "active_bytes": _zram_device_active_bytes(),
+        "in_progress": zram_state.get("in_progress", False),
+        "last_result": zram_state.get("last_result"),
+    }
+
+
 # --- control socket ---------------------------------------------------------
 # The security seam (SO_PEERCRED-gated, bounded reads, hostile-input framing,
 # the listen(64) backlog M4's attack suite demanded) lives in
 # sutra.ControlServer now. This dispatch closure carries only the domain
 # commands; ping/status are sutra's job.
 
-def _make_dispatch(cfg, get_status, autocalm_state, config_path, swap_size_state):
+def _make_dispatch(cfg, get_status, autocalm_state, config_path, swap_size_state,
+                   zram_state):
     def dispatch(cmd, req):
         if cmd == "top":
             by_swap = req.get("swap", False)
@@ -2030,6 +2188,15 @@ def _make_dispatch(cfg, get_status, autocalm_state, config_path, swap_size_state
             if action == "remove":
                 return do_swap_size_remove()
             raise ValueError("unknown swap-size action")
+        if cmd == "zram":
+            action = req.get("action")
+            if action == "status":
+                return query_zram_status(zram_state)
+            if action == "enable":
+                return do_zram_enable(zram_state)
+            if action == "disable":
+                return do_zram_disable(zram_state)
+            raise ValueError("unknown zram action")
         return None  # unknown -> sutra frames {"error": "unknown command"}
     return dispatch
 
@@ -2068,9 +2235,11 @@ def main():
     # redoes the whole (idempotent) sequence rather than resuming one.
     swap_size_state = {"in_progress": False, "requested": None,
                        "last_result": None}
+    # zram's own BOUNDED-WAIT state, same shape as swap_size_state.
+    zram_state = {"in_progress": False, "last_result": None}
     sampler = Sampler(cfg)
     dispatch = _make_dispatch(cfg, lambda: latest["doc"], autocalm_state,
-                              args.config, swap_size_state)
+                              args.config, swap_size_state, zram_state)
     ctl = sutra.ControlServer(SOCKET_PATH,
                               sutra.allow_uids({0, os.getuid(), cfg["owner_uid"]}),
                               VERSION, dispatch, lambda: latest["doc"],

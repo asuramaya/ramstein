@@ -270,6 +270,43 @@ Turns the swap off and deletes the backing file. Errors cleanly if
 RAMstein has no managed swap file on this machine.
 .RE
 .TP
+.BI zram " status|enable|disable"
+Compressed RAM\-backed swap via
+.BR systemd\-zram\-generator (8).
+Writes
+.I /etc/systemd/zram\-generator.conf
+directly rather than a drop\-in \(em self\-contained, inert with no
+.I [zram0]
+section, none of an
+.I /etc/fstab
+edit's risk. Genuinely BOUNDED\-WAIT, same shape as
+.BR swap\-size .
+Needs the
+.B systemd\-zram\-generator
+package (a RAMstein dependency).
+.RS
+.TP
+.B status
+Whether the generator package is installed, whether RAMstein's config
+section is present, active size, and the last change's outcome
+.RI ( pending
+while one is running).
+.TP
+.B enable
+Requires a real TTY and typing
+.B enable
+to confirm. Writes the config section, reloads (re\-running the
+generator), and starts
+.IR systemd\-zram\-setup@zram0.service .
+Re\-measures via
+.B swapon \-\-show
+before ever reporting success.
+.TP
+.B disable
+Removes the config section and stops the device. No confirmation
+required \(em undoing a RAMstein\-made change.
+.RE
+.TP
 .BI update " [\-\-check] [\-\-json]"
 Delegates straight to
 .BR ramstein\-update (1)
