@@ -132,6 +132,7 @@ deb:
 	  echo "Priority: optional"; \
 	  echo "Architecture: all"; \
 	  echo "Depends: python3 (>= 3.8), systemd, openssh-client"; \
+	  echo "Suggests: gnome-shell, systemd-zram-generator"; \
 	  echo "Maintainer: asuramaya <asuramaya@users.noreply.github.com>"; \
 	  echo "Homepage: https://github.com/asuramaya/RAMstein"; \
 	  echo "Description: memory as a deadline, not a percentage"; \

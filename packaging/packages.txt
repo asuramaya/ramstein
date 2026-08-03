@@ -16,7 +16,12 @@ openssh-client  # `ssh-keygen -Y verify`: ramstein-update's release-signature
                 # verify_dir() fails closed (refuses to install) rather than
                 # crashing.
 
-# --- optional (make deb's Recommends) --------------------------------------
+# --- optional (make deb's Suggests, never Recommends) -----------------------
+# Operator ruling 2cd900ce, family-wide: NOTHING AUTO-PULLS. apt installs
+# Recommends by default -- a headless install must never pull GNOME in behind
+# it, so every optional package here is Suggests, which apt never installs
+# unasked. Anything actually missing is named, with the install command, in
+# the verb's own refusal -- not silence, not a crash.
 gnome-shell     # the Quick Settings pill (extension/ramstein@asuramaya).
                 # Absent: ramsteind and the `ramstein` CLI work exactly the
                 # same headless; only the GNOME UI is unavailable.
