@@ -1,5 +1,105 @@
 # Changelog
 
+## 0.12.0 — layer 3: configuring the system, and its consent model
+
+FAMILY.md's third layer ("configure the system", not just observe or act on
+processes) is what ramstein was missing, and this release is what closes it:
+four new daemon verbs, a pill control for every one of them, and a converged
+consent model across all five.
+
+### The single most consequential line in this release
+**`ramstein swappiness set`, `swap-size set`, `zram enable`, `oomd enroll`,
+and `autocalm arm` now require `--yes` to apply.** Every one of these used to
+prompt interactively (`type 'set' to confirm`) and act on confirmation; they
+now dry-run by default — printing what the action would do, without doing
+it — and only apply with `--yes` on the command line. This was required to
+make these verbs usable from the GNOME pill, which spawns no TTY, ever, and
+matches the shape ByeByte's `reserve`/`declare` already shipped. Nothing that
+used to act now acts differently in a dangerous direction — a
+non-interactive caller that used to be refused outright now gets a harmless
+preview instead — but **anyone who types `set`/`enroll`/`enable`/`arm`
+expecting the old typed-confirmation prompt will get a preview instead and
+needs to add `--yes`.**
+
+### Layer 3: four new verbs, plus autocalm's first real floor
+- `oomd enroll`/`disenroll` — closes the gap where Ubuntu ships
+  `systemd-oomd` configured to kill on memory pressure but never on
+  sustained swap exhaustion, the exact scenario ramstein exists for. Refuses
+  outright if oomd's own swap-kill trigger already holds.
+- `swappiness status`/`set N`/`reset` — a sysctl.d drop-in for reboot
+  survival plus an immediate live apply; the pre-RAMstein value is ledgered
+  once so `reset` always restores the true original.
+- `swap-size status`/`set SIZE`/`remove` — a standalone, additive swap file
+  with its own systemd `.swap` unit, genuinely BOUNDED-WAIT (`set` reports
+  `pending`, the CLI/pill poll for the real outcome).
+- `zram status`/`enable`/`disable` — compressed RAM-backed swap via
+  `systemd-zram-generator`. New floor: refuses if `/dev/zram0` is already
+  claimed by systemd's own auto-generated `dev-zram0.swap`, naming the
+  holding unit, rather than resetting a device something else has active.
+- `autocalm arm` — the repo's highest-authority verb (standing permission
+  for ramsteind to renice and squeeze cgroup memory.high on its own, on a
+  timer) had only ever had a TTY prompt as its gate. It now has a real one:
+  refuses if the trigger condition (PSI or an active swap-storm warning) is
+  already firing, since arming into it would hand the very next scheduled
+  tick an unreviewed action.
+
+### The pill: from readout to control surface
+Five controls: swap-size (BOUNDED-WAIT preset chips), oomd/zram (TOGGLEs),
+swappiness (a 3-stance SEGMENT — Avoid swap/Balanced/Favor swap), and
+autocalm arm (a real preview-then-confirm flow, not a plain toggle, given
+what it grants). The daemon's status digest (`build_pill_summary`) was
+extended to carry all four configuration verbs' state so the pill never
+needs its own socket client, just the one status.json it already watches.
+
+Found building this: `request_or_die`'s blanket exit-on-error swallowed
+stdout for every `--json` caller, so a real refusal (an out-of-range value,
+a preflight refusal, a failed write) was indistinguishable from "daemon
+unreachable" to the one caller — the pill — that most needs to tell them
+apart. Fixed by porting the same `as_json` shape ByeByte had already shipped
+for the identical gap.
+
+### Correctness fixes found along the way
+- Three separate `ReadWritePaths` gaps under the hardened unit's
+  `ProtectSystem=strict` — each new layer-3 verb touched a path the unit
+  file hadn't been told to allow, and a missing target crash-loops the
+  *whole* daemon, not just one write.
+- The oomd coexistence check now verifies actual enrollment via `oomctl`,
+  not just `systemctl is-active` — it had been reporting swap-kill
+  protection that did not exist.
+- `swap-size`'s backing file: fixed a sparse-file bug (`os.truncate`
+  produces holes; `mkswap`/`swapon` both refuse them) and a `.swap` unit
+  misnaming bug (systemd requires the escaped form of its own `What=`).
+- `zram enable` now stops a pre-existing device before reconfiguring —
+  `systemctl start` on an already-active oneshot unit is a no-op, so the
+  package's own stock default device could silently survive a "successful"
+  reconfigure.
+- A family-wide CI gap: `node --check <path>` silently skips real syntax
+  validation on any file with a top-level `import` — every pill's own
+  "GNOME extension (syntax)" check had validated nothing, ever, for GJS.
+  Fixed here, relayed to every other pill in the family.
+- Dependency discipline: `zram`/`gnome-shell` are `Suggests`, never a hard
+  `Depends` — nothing this package installs should auto-pull a desktop
+  environment onto a headless box.
+
+### Renamed
+RAMstein → ramstein, text-only, family-wide convention (the mixed-case name
+was "a fatal error at inception" — operator). No file paths changed; they
+were already lowercase.
+
+### Also
+- New advise rule: the card stayed silent about Shmem even on a night it was
+  the single largest reclaimable block of RAM on the machine.
+- `make test`: one true entrypoint (`smoke` + `attack`, globbing
+  `tests/test_*.py` instead of a hand-maintained list that had already
+  started drifting), so `python3 -m pytest tests/` — which silently
+  misreports these standalone scripts as passing — is never mistaken for
+  the real signal.
+- Fixed a real leaked-tmpdir bug in `test_shmem_advise.py`.
+
+Verified: `make check` and `make test` (`smoke` + `attack`) both green on
+the real repo; CI green on the tagged commit, checked per-job, not by
+summary alone.
+
 ## 0.11.1 — sutra.mk / pill-ci.yml adoption
 Structural only, no daemon/CLI/pill behavior changed. ramstein piloted the family's shared
 recipe layer ahead of the other four pills, so they could copy this diff rather than a
