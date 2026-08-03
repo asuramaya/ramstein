@@ -1,0 +1,44 @@
+{
+  "v": 1,
+  "ts": 1735000000.0,
+  "daemon": {
+    "version": "0.11.1",
+    "pid": 1,
+    "poll_interval": 10
+  },
+  "memory": {
+    "total": 68719476736,
+    "available": 6871947673,
+    "swap_total": 8589934592,
+    "swap_free": 8589934592,
+    "shmem": 3435973836,
+    "psi": {
+      "some_avg10": 0.0,
+      "some_avg60": 0.0,
+      "some_avg300": 0.0,
+      "full_avg10": 0.0,
+      "full_avg60": 0.0,
+      "full_avg300": 0.0
+    },
+    "burn_bps": 4000000.0,
+    "eta_oom_seconds": 7200,
+    "state": "warn",
+    "state_evidence": [
+      "avail",
+      "eta"
+    ]
+  },
+  "warning": null,
+  "autocalm": {
+    "enabled": false,
+    "armed": false,
+    "last_action_ts": null,
+    "last_result": null
+  },
+  "pill": {
+    "top_process": null,
+    "zombie_count": 0,
+    "advise_headline": null,
+    "advise_count": 0
+  }
+}

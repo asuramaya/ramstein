@@ -1,0 +1,49 @@
+{
+  "v": 1,
+  "ts": 1735000000.0,
+  "daemon": {
+    "version": "0.11.1",
+    "pid": 1,
+    "poll_interval": 10
+  },
+  "memory": {
+    "total": 68719476736,
+    "available": 2061584302,
+    "swap_total": 8589934592,
+    "swap_free": 687194767,
+    "shmem": 3435973836,
+    "psi": {
+      "some_avg10": 15.0,
+      "some_avg60": 15.0,
+      "some_avg300": 15.0,
+      "full_avg10": 9.0,
+      "full_avg60": 9.0,
+      "full_avg300": 9.0
+    },
+    "burn_bps": 45000000.0,
+    "eta_oom_seconds": 480,
+    "state": "hot",
+    "state_evidence": [
+      "psi",
+      "avail",
+      "eta"
+    ]
+  },
+  "warning": null,
+  "autocalm": {
+    "enabled": false,
+    "armed": false,
+    "last_action_ts": null,
+    "last_result": null
+  },
+  "pill": {
+    "top_process": {
+      "pid": 5190,
+      "comm": "python3",
+      "rss": 15800000000
+    },
+    "zombie_count": 4,
+    "advise_headline": "python3 (pid 5190) growing ~900 MiB/h",
+    "advise_count": 3
+  }
+}
