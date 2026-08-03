@@ -647,7 +647,8 @@ def cmd_zram(argv):
             print(json.dumps(doc, indent=2))
             return
         if not doc["generator_present"]:
-            print("zram: systemd-zram-generator is not installed")
+            print("zram: systemd-zram-generator is not installed"
+                  " (apt install systemd-zram-generator)")
             return
         active = doc["active_bytes"]
         print(f"zram: {human_bytes(active)} active" if active else

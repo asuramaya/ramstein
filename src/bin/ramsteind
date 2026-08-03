@@ -1990,7 +1990,7 @@ def _zram_apply(enable):
     if not _zram_generator_present():
         return {"ok": False, "error":
                 "systemd-zram-generator is not installed"
-                " (package: systemd-zram-generator)"}
+                " (apt install systemd-zram-generator)"}
     config = _zram_config_path()
     try:
         os.makedirs(os.path.dirname(config), exist_ok=True)

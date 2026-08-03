@@ -129,9 +129,12 @@ exception to that preference in RAMstein: this file is self-contained and inert 
 `[zram0]` section is removed, with none of an `/etc/fstab` edit's brick-the-boot risk. `enable`
 writes the section, reloads (which re-runs the generator), and starts the resulting
 `systemd-zram-setup@zram0.service`; genuinely bounded-wait like `swap-size`, so it reports
-`pending` and the CLI polls for the real outcome. Requires the `systemd-zram-generator` package
-(a RAMstein dependency); `status` says so plainly if it's somehow missing. Every change re-measures
-via `swapon --show` before reporting success, same discipline as every other layer-3 verb here.
+`pending` and the CLI polls for the real outcome. Needs the `systemd-zram-generator` package —
+deliberately *not* a RAMstein dependency (it backs one opt-in verb, not a subsystem everyone
+touches, so installing RAMstein never puts a boot-time generator on a machine that'll never use
+it): `status`/`enable` refuse with `apt install systemd-zram-generator` when it's absent, and
+nothing else on the card degrades. Every change re-measures via `swapon --show` before reporting
+success, same discipline as every other layer-3 verb here.
 
 ## The GNOME pill
 

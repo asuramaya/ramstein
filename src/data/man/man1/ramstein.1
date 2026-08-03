@@ -283,7 +283,15 @@ edit's risk. Genuinely BOUNDED\-WAIT, same shape as
 .BR swap\-size .
 Needs the
 .B systemd\-zram\-generator
-package (a RAMstein dependency).
+package \(em deliberately
+.I not
+a RAMstein dependency (one opt\-in verb, not a subsystem); absent,
+.B status
+and
+.B enable
+refuse naming the fix
+.RI ( "apt install systemd\-zram\-generator" ),
+nothing else degrades.
 .RS
 .TP
 .B status

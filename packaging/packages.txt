@@ -20,3 +20,10 @@ openssh-client  # `ssh-keygen -Y verify`: ramstein-update's release-signature
 gnome-shell     # the Quick Settings pill (extension/ramstein@asuramaya).
                 # Absent: ramsteind and the `ramstein` CLI work exactly the
                 # same headless; only the GNOME UI is unavailable.
+systemd-zram-generator  # `ramstein zram enable`. Backs ONE opt-in layer-3
+                # verb, not a subsystem every user touches -- a hard Depends
+                # would put a boot-time systemd generator on every install to
+                # avoid a message the verb already gives for free. Absent:
+                # `zram status`/`enable` refuse with "systemd-zram-generator
+                # is not installed (apt install systemd-zram-generator)";
+                # every other verb is unaffected.
