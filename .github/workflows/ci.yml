@@ -84,7 +84,7 @@ jobs:
   # targets rather than carrying a copy CI alone knows about, so the exact
   # same check reproduces locally in the systemd container harness (jrei/
   # systemd-ubuntu:24.04, --cgroupns=host), not just on a GitHub runner.
-  # Reconciled with ByeByte's own version of this check, joint findings
+  # Reconciled with byebyte's own version of this check, joint findings
   # 2026-08-02: the daemon poll window (30s), the per-property systemctl
   # show style, $(DEBFILE) over a glob, and the two-halves timer-resolution
   # split (systemd-analyze verify's OUTPUT, not its exit code, plus a real

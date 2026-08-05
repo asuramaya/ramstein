@@ -182,7 +182,7 @@ deb:
 # exists to root out.
 #
 # The daemon poll is deliberately scoped, not total coverage -- a joint
-# finding with ByeByte's own version of this check, 2026-08-02.
+# finding with byebyte's own version of this check, 2026-08-02.
 # Individual `systemctl show -p <PROP> --value` calls, never a comma-list:
 # `-p A,B,C,D --value` does not preserve the requested order (hit for
 # real on this check's own first CI run -- a positional `read` silently
@@ -239,7 +239,7 @@ check-systemd-live:
 	# systemd's default name-matching convention, correct today, silently
 	# breakable the day one side gets renamed) produce a timer that loads
 	# and enables but never fires -- invisible to everything above. Two
-	# checks, because testing this for real (ByeByte's own version, joint
+	# checks, because testing this for real (byebyte's own version, joint
 	# finding 2026-08-02) showed they catch DIFFERENT halves of it, not the
 	# split originally expected: systemd-analyze verify exits 0 even on a
 	# malformed timer value -- confirmed directly, it only ever prints a

@@ -14,7 +14,7 @@ prompt interactively (`type 'set' to confirm`) and act on confirmation; they
 now dry-run by default — printing what the action would do, without doing
 it — and only apply with `--yes` on the command line. This was required to
 make these verbs usable from the GNOME pill, which spawns no TTY, ever, and
-matches the shape ByeByte's `reserve`/`declare` already shipped. Nothing that
+matches the shape byebyte's `reserve`/`declare` already shipped. Nothing that
 used to act now acts differently in a dangerous direction — a
 non-interactive caller that used to be refused outright now gets a harmless
 preview instead — but **anyone who types `set`/`enroll`/`enable`/`arm`
@@ -27,7 +27,7 @@ needs to add `--yes`.**
   sustained swap exhaustion, the exact scenario ramstein exists for. Refuses
   outright if oomd's own swap-kill trigger already holds.
 - `swappiness status`/`set N`/`reset` — a sysctl.d drop-in for reboot
-  survival plus an immediate live apply; the pre-RAMstein value is ledgered
+  survival plus an immediate live apply; the pre-ramstein value is ledgered
   once so `reset` always restores the true original.
 - `swap-size status`/`set SIZE`/`remove` — a standalone, additive swap file
   with its own systemd `.swap` unit, genuinely BOUNDED-WAIT (`set` reports
@@ -55,7 +55,7 @@ Found building this: `request_or_die`'s blanket exit-on-error swallowed
 stdout for every `--json` caller, so a real refusal (an out-of-range value,
 a preflight refusal, a failed write) was indistinguishable from "daemon
 unreachable" to the one caller — the pill — that most needs to tell them
-apart. Fixed by porting the same `as_json` shape ByeByte had already shipped
+apart. Fixed by porting the same `as_json` shape byebyte had already shipped
 for the identical gap.
 
 ### Correctness fixes found along the way
@@ -243,7 +243,7 @@ ramstein was the last daemon pill still on the 0.1.0-era sutra vendor
   hand-rolled versions (independently convergent), plus a new
   `Pill.UpdateSurface` "update available" row, which needed one new CLI
   verb (`ramstein update`, execvp-delegates to `ramstein-update`, copied
-  ByeByte's `cmd_update`). extension.js: 419 → 343 lines.
+  byebyte's `cmd_update`). extension.js: 419 → 343 lines.
 - **M4 — ship the full set in both layouts.** Found and fixed a real, live
   bug: `install.sh` had **never** actually installed `bin/sutra.py` at
   all, since the original 0.6.0 sutra adoption — it only ever worked on
@@ -302,7 +302,7 @@ Osiris decision record for the full account.
 - **correction**: this was first shipped claiming live pixel verification via `gnome-extensions disable/enable`. That claim was wrong — GNOME Shell's ESM-based extension system doesn't re-import the JS module on disable/enable (confirmed by hand: even the D-Bus `ReloadExtension` method gnome-shell 50.1 advertises returns "not implemented"), it only re-fires the lifecycle hooks on the already-loaded instance. The daemon-side exercise (forced state=hot, a real zombie fixture) was real and did confirm the *daemon* digest shape, but it silently re-exercised the still-running *old* extension code, not this release's rendering — the "zero JS errors" observation proved nothing about which code ran. Actual visual confirmation needs a log out/in (Wayland has no in-place shell restart) and is pending the operator's own look.
 
 ## 0.6.0 — adopt the sutra backbone (behavior-preserving)
-- vendored bin/sutra.py + bin/sutra.version (sutra 0.1.0, ByeByte is the pilot extraction); ramsteind/ramstein now import it as a sibling instead of hand-rolling the same skeleton
+- vendored bin/sutra.py + bin/sutra.version (sutra 0.1.0, byebyte is the pilot extraction); ramsteind/ramstein now import it as a sibling instead of hand-rolling the same skeleton
 - ramsteind: load_config -> sutra.load_config; write_status -> sutra.write_status; the EWMA inline in poll_memory -> sutra.ewma_rate (fed `total - avail`, the used-equivalent whose increase is the burn — mathematically identical to the old avail-falling calc); the Control class deleted in favor of a dispatch closure over cfg/get_status carrying the unchanged domain commands (top/blame/swap/zombies/resolve/oom/advise/calm/kill), served by sutra.ControlServer + allow_uids({0, os.getuid(), owner_uid}) — ping/status are sutra's job now, and the M4 listen(64) fix comes along for free as sutra's own default
 - ramstein: request()/fetch() now call sutra.request / sutra.read_status instead of hand-rolling the socket client and status.json fallback
 - make check-sutra: verifies bin/sutra.py's sha256 against bin/sutra.version (integrity, always) and diffs against ~/code/REPOS/sutra/sutra.py when that checkout is present (freshness); wired into CI and the front of make smoke; make deb now ships bin/sutra.py alongside the bins
