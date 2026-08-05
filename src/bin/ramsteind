@@ -1009,7 +1009,7 @@ def query_advise(cfg, get_status):
     # largest reclaimable block of RAM on the machine. Deliberately
     # SYSTEM-WIDE wording, not "/tmp": /proc/meminfo's Shmem sums every
     # tmpfs mount plus SysV/POSIX shared memory into one number, which is
-    # NOT the same figure a /tmp-scoped tool (e.g. ByeByte's `why`) would
+    # NOT the same figure a /tmp-scoped tool (e.g. byebyte's `why`) would
     # show for that one mount — two pills, two correctly different scopes
     # for the same underlying bytes, not a mismatch (Werner, DM #3228).
     if mem and mem.get("total"):
@@ -1021,7 +1021,7 @@ def query_advise(cfg, get_status):
                 f" memory across the system (tmpfs/dev/shm/shared-memory"
                 f" segments) — correctly excluded from available memory,"
                 f" but some of it may be safely deletable; a disk-focused"
-                f" pill (e.g. ByeByte) can show what's actually in it"})
+                f" pill (e.g. byebyte) can show what's actually in it"})
 
     return {"lines": lines}
 
@@ -1039,7 +1039,7 @@ def build_pill_summary(cfg, get_status, swap_size_state, zram_state):
     socket-read machinery just to know whether a TOGGLE should render on
     or off, which is exactly the "growing its own daemon-protocol client"
     this digest exists to avoid. ACTIONS still go over the control socket
-    (via the CLI, same as ByeByte's runByebyteJson shape) — this only
+    (via the CLI, same as byebyte's runByebyteJson shape) — this only
     covers DISPLAY, so a healthy card stays a pure file-watcher."""
     con = _connect_index()
     try:
@@ -1486,7 +1486,7 @@ def _oomd_apply_enrollment(write):
     the missing observation collapse back down to "untested". Shipped
     either way: the re-verify below is exactly what makes an unobserved
     path safe to ship — it reports FAILURE rather than trusting the
-    write, the property Werner's ByeByte `declare` verb lacked when it
+    write, the property Werner's byebyte `declare` verb lacked when it
     silently ledgered a delete that never happened."""
     dropin = _oomd_enroll_dropin_path()
     try:

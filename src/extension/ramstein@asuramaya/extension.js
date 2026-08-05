@@ -87,7 +87,7 @@ function evidenceTag(mem) {
 
 // ---- layer-3 controls: ramstein's own consumption of the shared
 // affordance vocabulary (alfred's dispatch, thread f10c0cd3). Werner's
-// ByeByte shapes (reserve's SEGMENT chip-strip, declare's Reclaim
+// byebyte shapes (reserve's SEGMENT chip-strip, declare's Reclaim
 // pick-list) both complete in ONE round trip; swap-size/zram don't —
 // they genuinely take real wall-clock time (fallocate+mkswap / the
 // generator's own setup run), hence the BOUNDED-WAIT polling shape below
@@ -118,7 +118,7 @@ function ramsteinCli() {
     return _ramsteinCliPath;
 }
 
-// Runs `ramstein <args>` and parses stdout as JSON -- ByeByte's
+// Runs `ramstein <args>` and parses stdout as JSON -- byebyte's
 // runByebyteJson shape exactly (kast's readKastJson lineage before it):
 // always calls onDone exactly once, with the parsed doc or null on any
 // spawn/communicate/parse failure.
@@ -486,7 +486,7 @@ class ramsteinToggle extends QuickMenuToggle {
     // is enough — no BOUNDED-WAIT polling needed, same shape as oomd's
     // toggle. Shows the live numeric value alongside the chips because,
     // unlike swap-size's exact-size match, a CLI-set custom value (or
-    // anything RAMstein didn't choose) very plausibly matches none of the
+    // anything ramstein didn't choose) very plausibly matches none of the
     // three presets — that should read as "on a custom value", not as a
     // silently blank row.
     _buildSwappinessRow(swappiness) {
@@ -531,7 +531,7 @@ class ramsteinToggle extends QuickMenuToggle {
     // here can't render success synchronously the way his does: fallocate
     // +mkswap genuinely takes real wall-clock time, so `pending` replaces
     // the strip with a busy row instead of highlighting a chip. Neither
-    // ByeByte verb needed this — reserve/declare both settle in one call.
+    // byebyte verb needed this — reserve/declare both settle in one call.
     _buildSwapSizeRow(swapSize) {
         const box = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
         const layout = new St.BoxLayout({x_expand: true});

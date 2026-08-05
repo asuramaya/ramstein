@@ -7,7 +7,7 @@ was the single largest reclaimable block of RAM on a machine (found
 2026-08-02, Werner/alfred). Wording is deliberately SYSTEM-WIDE, never
 implying it's /tmp specifically -- /proc/meminfo's Shmem sums every
 tmpfs mount plus SysV/POSIX shared memory into one number, a different
-scope than a /tmp-only tool like ByeByte's `why` (Werner, DM #3228).
+scope than a /tmp-only tool like byebyte's `why` (Werner, DM #3228).
 
 Run as: python3 tests/test_shmem_advise.py
 """
