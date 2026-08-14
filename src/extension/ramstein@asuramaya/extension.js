@@ -236,18 +236,25 @@ class ramsteinToggle extends QuickMenuToggle {
         // Layer 3 (swappiness/swap-size/oomd/zram/autocalm arm): "set once,
         // don't look at again" knobs, folded behind Advanced so the
         // popup's glance surface stays observation, not observation-plus-
-        // five-knobs (the fit report via alfred, DM 4426). Defaults OPEN,
-        // against family convention (moreMounts/Reclaim/Cast/power all
-        // default closed): oomd/autocalm's own effectiveness-caveat rows
-        // (_captionRow below) live inside this fold, and a caveat that
-        // only shows after a click is the same regression alfred found in
-        // the external-settings shape, one layer softer — default-open
-        // keeps it glanceable while still buying the labeled boundary.
+        // five-knobs (the fit report via alfred, DM 4426). Defaults CLOSED,
+        // matching family convention (moreMounts/Reclaim/Cast/power all
+        // default closed) — a first cut defaulted this open instead, to
+        // keep oomd/autocalm's effectiveness caveats glanceable, but that
+        // just traded the exact regression alfred ruled out for a rarer
+        // copy of itself (a user who collapses Advanced to reduce clutter,
+        // the entire point of a disclosure, loses the caveat again). Fixed
+        // properly below: the fold's own LABEL carries a live caveat
+        // summary (_updateAdvancedHeader) — collapsing can't hide it, the
+        // detail stays next to the control that owns it once opened, and
+        // the widget behaves like every sibling in the family. Same shape
+        // as this pill's own header one level up (`⚠ ETA · 33.8G ·
+        // OOM ~2h` rides the always-visible tile so detail below can be
+        // scrolled past) — a pill.js-shaped rule, not a ramstein one.
         // Built once here, not per refresh — only its CONTENTS (`.menu`)
-        // get rebuilt, so a user's own open/close choice survives a
-        // GFileMonitor tick the same way autocalm arm's own state does.
+        // and its LABEL get rebuilt, so a user's own open/close choice
+        // survives a GFileMonitor tick the same way autocalm arm's own
+        // state does.
         this._controlsSection = new PopupMenu.PopupSubMenuMenuItem('Advanced ▸');
-        this._controlsSection.setSubmenuShown(true);
         this.menu.addMenuItem(this._controlsSection);
         // autocalm arm's own small state machine (NOT rebuilt by every
         // refresh like the rest of this section -- see _renderControls):
@@ -286,6 +293,7 @@ class ramsteinToggle extends QuickMenuToggle {
             this._adviseSection.removeAll();
             this._autocalmSection.removeAll();
             this._controlsSection.menu.removeAll();
+            this._controlsSection.label.text = 'Advanced ▸';
             this._rowSection.addMenuItem(Pill.row(
                 `<span foreground="${DIM}">` +
                 `${stale ? 'ramsteind stopped updating' : 'ramsteind not running'}</span>`));
@@ -468,6 +476,7 @@ class ramsteinToggle extends QuickMenuToggle {
     // silently reset by the next GFileMonitor tick.
 
     _renderControls(pill, ac) {
+        this._updateAdvancedHeader(pill, ac);
         this._controlsSection.menu.removeAll();
         if (!pill)
             return;
@@ -499,6 +508,24 @@ class ramsteinToggle extends QuickMenuToggle {
             onToggle: () => this._onZramToggle(pill.zram),
         }));
         this._renderAutocalmArmControl(ac);
+    }
+
+    // The fold's own label carries a live caveat summary (alfred's rule,
+    // DM 4458): a COLLAPSED Advanced must not hide that oomd or auto-calm
+    // might not be doing what their switch claims — collapsing is the
+    // entire point of a disclosure, so the warning has to survive it.
+    // Same idea as this pill's own header riding an always-visible
+    // summary one level up (`⚠ ETA · 33.8G · OOM ~2h`) so detail below
+    // can be scrolled past — a pill.js-shaped rule, not a ramstein one.
+    _updateAdvancedHeader(pill, ac) {
+        const caveats = [];
+        if (pill?.oomd?.enrolled)
+            caveats.push('oomd effectiveness unknown');
+        if (ac?.armed)
+            caveats.push('auto-calm resets on restart');
+        this._controlsSection.label.text = caveats.length
+            ? `Advanced ▸  ⚠ ${caveats.join(', ')}`
+            : 'Advanced ▸';
     }
 
     // A caveat line under a toggle row: configured and effective-right-now
