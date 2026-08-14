@@ -233,11 +233,21 @@ class ramsteinToggle extends QuickMenuToggle {
         this.menu.addMenuItem(this._autocalmSection);
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        // layer-3: swap-size's BOUNDED-WAIT preset chips, oomd enroll's
-        // and zram's TOGGLEs — persistent rows, always visible (a control
-        // needs to be reachable whether or not the machine is currently
-        // healthy, unlike advise/autocalm's conditional sections above).
-        this._controlsSection = new PopupMenu.PopupMenuSection();
+        // Layer 3 (swappiness/swap-size/oomd/zram/autocalm arm): "set once,
+        // don't look at again" knobs, folded behind Advanced so the
+        // popup's glance surface stays observation, not observation-plus-
+        // five-knobs (the fit report via alfred, DM 4426). Defaults OPEN,
+        // against family convention (moreMounts/Reclaim/Cast/power all
+        // default closed): oomd/autocalm's own effectiveness-caveat rows
+        // (_captionRow below) live inside this fold, and a caveat that
+        // only shows after a click is the same regression alfred found in
+        // the external-settings shape, one layer softer — default-open
+        // keeps it glanceable while still buying the labeled boundary.
+        // Built once here, not per refresh — only its CONTENTS (`.menu`)
+        // get rebuilt, so a user's own open/close choice survives a
+        // GFileMonitor tick the same way autocalm arm's own state does.
+        this._controlsSection = new PopupMenu.PopupSubMenuMenuItem('Advanced ▸');
+        this._controlsSection.setSubmenuShown(true);
         this.menu.addMenuItem(this._controlsSection);
         // autocalm arm's own small state machine (NOT rebuilt by every
         // refresh like the rest of this section -- see _renderControls):
@@ -275,7 +285,7 @@ class ramsteinToggle extends QuickMenuToggle {
             this._rowSection.removeAll();
             this._adviseSection.removeAll();
             this._autocalmSection.removeAll();
-            this._controlsSection.removeAll();
+            this._controlsSection.menu.removeAll();
             this._rowSection.addMenuItem(Pill.row(
                 `<span foreground="${DIM}">` +
                 `${stale ? 'ramsteind stopped updating' : 'ramsteind not running'}</span>`));
@@ -458,18 +468,30 @@ class ramsteinToggle extends QuickMenuToggle {
     // silently reset by the next GFileMonitor tick.
 
     _renderControls(pill, ac) {
-        this._controlsSection.removeAll();
+        this._controlsSection.menu.removeAll();
         if (!pill)
             return;
-        this._controlsSection.addMenuItem(this._buildSwappinessRow(pill.swappiness));
-        this._controlsSection.addMenuItem(this._buildSwapSizeRow(pill.swap_size));
-        this._controlsSection.addMenuItem(this._buildToggleRow({
+        this._controlsSection.menu.addMenuItem(this._buildSwappinessRow(pill.swappiness));
+        this._controlsSection.menu.addMenuItem(this._buildSwapSizeRow(pill.swap_size));
+        this._controlsSection.menu.addMenuItem(this._buildToggleRow({
             label: 'systemd-oomd swap protection',
             enabled: !!pill.oomd?.enrolled,
             pending: false,
             onToggle: () => this._onOomdToggle(pill.oomd),
         }));
-        this._controlsSection.addMenuItem(this._buildToggleRow({
+        // configured and effective-right-now are two different facts (the
+        // fit report, DM 4426 via alfred): systemd-oomd only discovers
+        // ManagedOOM-flagged cgroups at its OWN startup, and ramsteind's
+        // own enrolled check (_oomd_monitored_sections) only proves SOME
+        // cgroup is swap-enrolled — never that THIS session's own cgroup
+        // is — so enrolled=true can never honestly render as a plain
+        // checkmark. Precision (matching the current session's own
+        // cgroup against oomctl's dump) is a daemon-side fix, tracked
+        // separately, not built here.
+        if (pill.oomd?.enrolled)
+            this._controlsSection.menu.addMenuItem(
+                this._captionRow('configured · effective now: unknown'));
+        this._controlsSection.menu.addMenuItem(this._buildToggleRow({
             label: 'zram (compressed swap)',
             enabled: !!pill.zram?.config_enabled,
             pending: !!pill.zram?.in_progress,
@@ -477,6 +499,18 @@ class ramsteinToggle extends QuickMenuToggle {
             onToggle: () => this._onZramToggle(pill.zram),
         }));
         this._renderAutocalmArmControl(ac);
+    }
+
+    // A caveat line under a toggle row: configured and effective-right-now
+    // are two distinct facts a single switch can't both say (ruling
+    // 60bc15db's three-state doctrine, applied to this pill's own two
+    // decaying/uncertain controls). Only shown when the switch is ON —
+    // off has no effectiveness question to caveat.
+    _captionRow(text) {
+        const it = Pill.wrapRow(
+            `<span foreground="${WARN}" size="small">${Pill.esc(text)}</span>`);
+        it.style = 'margin: -6px 0 2px 44px;';
+        return it;
     }
 
     // SEGMENT: a small named-stance set (SWAPPINESS_PRESETS), not the raw
@@ -685,11 +719,11 @@ class ramsteinToggle extends QuickMenuToggle {
         if (this._autocalmArmState === 'loading') {
             const it = new PopupMenu.PopupSwitchMenuItem(
                 'auto-calm (checking…)', !!ac?.armed, {reactive: false});
-            this._controlsSection.addMenuItem(it);
+            this._controlsSection.menu.addMenuItem(it);
             return;
         }
         if (this._autocalmArmState === 'confirm') {
-            this._controlsSection.addMenuItem(Pill.wrapRow(
+            this._controlsSection.menu.addMenuItem(Pill.wrapRow(
                 `<span foreground="${ACCENT}">Arm auto-calm?</span>` +
                 `<span foreground="${DIM}">${NB}—${NB}${Pill.esc(this._autocalmArmNote ?? '')}</span>`));
             const box = new PopupMenu.PopupBaseMenuItem({reactive: false, can_focus: false});
@@ -705,10 +739,10 @@ class ramsteinToggle extends QuickMenuToggle {
             layout.add_child(confirmBtn);
             layout.add_child(cancelBtn);
             box.add_child(layout);
-            this._controlsSection.addMenuItem(box);
+            this._controlsSection.menu.addMenuItem(box);
             return;
         }
-        this._controlsSection.addMenuItem(this._buildToggleRow({
+        this._controlsSection.menu.addMenuItem(this._buildToggleRow({
             label: 'auto-calm (act on memory pressure automatically)',
             enabled: !!ac?.armed,
             pending: false,
@@ -716,6 +750,13 @@ class ramsteinToggle extends QuickMenuToggle {
                 ? this._startAutocalmArmPreview()
                 : this._onAutocalmDisarm(),
         }));
+        // armed is a state that EXPIRES, not just configured-vs-effective
+        // — 0.8.0's own deliberate consent gate resets it to disarmed on
+        // every daemon restart, so "armed" alone overstates how long
+        // that's actually still true.
+        if (ac?.armed)
+            this._controlsSection.menu.addMenuItem(
+                this._captionRow('armed · resets on daemon restart'));
     }
 
     _startAutocalmArmPreview() {
