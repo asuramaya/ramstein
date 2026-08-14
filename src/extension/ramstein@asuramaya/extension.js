@@ -517,14 +517,27 @@ class ramsteinToggle extends QuickMenuToggle {
     // Same idea as this pill's own header riding an always-visible
     // summary one level up (`⚠ ETA · 33.8G · OOM ~2h`) so detail below
     // can be scrolled past — a pill.js-shaped rule, not a ramstein one.
+    //
+    // BOUNDED LENGTH ON PURPOSE (alfred's catch, DM 4466): a
+    // PopupSubMenuMenuItem's own label is a plain St.Label sitting next
+    // to the expander/triangle — not the same widget as _captionRow's
+    // Pill.wrapRow below, which is the ONLY thing this file has actually
+    // measured for wrap-vs-clip behavior. Concatenating both caveats'
+    // full text ("oomd effectiveness unknown, auto-calm resets on
+    // restart", ~68 chars) risks the exact failure this header exists to
+    // prevent: an unmeasured clip silently drops the second warning. A
+    // fixed "N not confirmed" stays short regardless of N (today 1 or 2,
+    // safely so if a third caveat-bearing control ever joins) — the
+    // header is a pointer, the per-control detail already lives one
+    // click in, on the caption rows that name each control specifically.
     _updateAdvancedHeader(pill, ac) {
-        const caveats = [];
+        let n = 0;
         if (pill?.oomd?.enrolled)
-            caveats.push('oomd effectiveness unknown');
+            n++;
         if (ac?.armed)
-            caveats.push('auto-calm resets on restart');
-        this._controlsSection.label.text = caveats.length
-            ? `Advanced ▸  ⚠ ${caveats.join(', ')}`
+            n++;
+        this._controlsSection.label.text = n
+            ? `Advanced ▸  ⚠ ${n} not confirmed`
             : 'Advanced ▸';
     }
 
