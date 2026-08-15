@@ -61,11 +61,53 @@ index at `/var/lib/ramstein/index.db` (`RAMSTEIN_STATE_DIR` env override). The i
 `(pid, starttime)`, not bare pid, so a reused pid is never mistaken for the process that held it
 before. Two rings share one `promoted` flag column: `recent_ring` keeps every sample (about an
 hour at defaults), `hourly_ring` keeps one promoted sample per hour (about a week). Schema stays
-flat (`samples(id, ts, promoted)`, `proc_stats(sample_id, pid, starttime, comm, rss, swap, state,
-ppid)`, `WITHOUT ROWID`), WAL mode, one writer thread, short-lived read connections for queries,
-mirroring byebyte's own sqlite discipline. Only processes clearing `proc_min_bytes` (default 16
-MiB) earn a row; a full pass over `/proc` has to stay comfortably under CI's timing canary even
-on a busy box, since the sampler runs inline with the poll loop.
+flat (`samples(id, ts, promoted, below_floor)`, `proc_stats(sample_id, pid, starttime, comm, rss,
+swap, state, ppid)`, `WITHOUT ROWID`), WAL mode, one writer thread, short-lived read connections
+for queries, mirroring byebyte's own sqlite discipline. Only processes clearing `proc_min_bytes`
+(default 16 MiB) earn a row; a full pass over `/proc` has to stay comfortably under CI's timing
+canary even on a busy box, since the sampler runs inline with the poll loop.
+
+### `proc_min_bytes`: what the floor is for, and what happens under it
+
+Design pass, thread 3dd73060 (alfred's dispatch, DM 4549) — a written finding, not a changed
+constant, per his own instruction not to move the number just to have moved something.
+
+**What it protects against.** Purely a *daemon cost* floor, not a relevance judgment: `_sample()`
+runs inline with the poll loop, so the number of `INSERT`s per tick has to stay small enough that
+a full `/proc` walk never threatens CI's own timing canary on a busy box (confirmed against this
+file's own paragraph above, predating this pass). It was never a claim that a 10 MiB process is
+memory that doesn't matter.
+
+**What happens to what falls under it.** Every process under the floor is silently dropped —
+`_sample()` filters them out of `all_procs` before a single row is written, so nothing about a
+sub-floor process survives: not the process itself, not a count, not an "other" bucket. `top`,
+`blame`, and `swap` all read this same index, and before this pass none of them said so: the CLI's
+own man page never mentioned the floor at all (only `ramsteind(8)`'s config-reference table did,
+which a `ramstein top` user has no reason to open), and the empty-list fallback text already said
+"nothing above the index threshold" while the non-empty case — the one that matters, a handful of
+big processes shown alongside many small ones genuinely invisible — said nothing. That is
+practice 2c45d78e's trap exactly: the surface asserted "nothing here" when the honest claim was
+"nothing above 16 MiB", and the two differ precisely when a machine is dying of a thousand small
+things, which is the case this tool exists for. Measured live on the operator's own machine
+(2026-08-15, default 16 MiB, real `/proc`): 272 of 278 running processes fell under the floor in a
+single sample — not an edge case, the ordinary state of a normal desktop. Fixed by disclosure, not
+a different number: `samples.below_floor` now records how many processes each sample excluded;
+`top`/`swap`/`blame` surface it (JSON `below_floor` / `head_below_floor` + `base_below_floor` for
+`blame`, plus a plain-text caveat line when nonzero), and `blame` additionally names its own
+sharper caveat — a process crossing the floor between the two samples being diffed reads as fully
+new or fully gone rather than partially grown or shrunk, a boundary artifact this pass names
+rather than solves (solving it costs the same per-sample row count the floor exists to bound).
+
+**Absolute, not relative — and that's where the floor's justification is weakest.** 16 MiB is a
+fixed byte count, not a fraction of `MemTotal`; on this operator's 61 GiB machine it is roughly
+0.025% of RAM, essentially costless to accuracy. On a small or memory-constrained box it is a much
+larger bite, and that is exactly the box where the *daemon-cost* argument for having a floor at
+all is weakest — fewer total processes exist to walk, so the `/proc`-walk-speed risk the floor
+protects against barely exists there. The constant is not wrong on the machines this project has
+actually been developed and measured against; it is a live tradeoff on the smaller ones this `.deb`
+could ship onto, undocumented until this pass and still not solved by it — worth a future
+`sample_every`-style config knob (`proc_min_pct` of `MemTotal`, floor'd at some absolute minimum)
+if a small-box report ever surfaces one, but not built speculatively here.
 
 `blame --since T` is a join of two samples: grown, new (absent from the base sample), or gone
 (absent from the latest, shown as freed, negative). `zombies` deliberately does not read the

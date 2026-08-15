@@ -348,7 +348,7 @@ def _top_swap_growers(limit):
         head = _latest_sample(con)
         if head is None:
             return []
-        head_id, head_ts = head
+        head_id, head_ts, _head_below_floor = head
         base = con.execute(
             "SELECT id, ts FROM samples WHERE ts <= ?"
             " ORDER BY ts DESC LIMIT 1", (head_ts - 300,)).fetchone()
@@ -391,7 +391,8 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS samples(
     id INTEGER PRIMARY KEY,
     ts REAL NOT NULL,
-    promoted INTEGER NOT NULL DEFAULT 0);
+    promoted INTEGER NOT NULL DEFAULT 0,
+    below_floor INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS proc_stats(
     sample_id INTEGER NOT NULL,
     pid INTEGER NOT NULL,
@@ -403,6 +404,25 @@ CREATE TABLE IF NOT EXISTS proc_stats(
     ppid INTEGER NOT NULL,
     PRIMARY KEY(sample_id, pid, starttime)) WITHOUT ROWID;
 """
+
+# below_floor: how many processes THIS sample excluded for falling under
+# proc_min_bytes (rss+swap) — the design pass on that floor (thread
+# 3dd73060, alfred's DM 4549): a sub-floor process is dropped with no
+# trace anywhere top/blame/swap's own output, which asserts "nothing
+# here" when the honest claim is "nothing above the floor" — the two
+# differ exactly when a machine is dying of a thousand small things,
+# the case this tool exists for (practice 2c45d78e). The floor's OWN
+# purpose stays performance (ARCHITECTURE.md: keep the per-sample /proc
+# walk + sqlite insert count bounded on a busy box), not a judgment that
+# small processes are irrelevant -- so the fix is disclosure, not a
+# different number. ALTER TABLE, not just the CREATE above: an already-
+# installed database predates this column and CREATE TABLE IF NOT
+# EXISTS never touches an existing table's shape.
+def _ensure_below_floor_column(con):
+    cols = {r[1] for r in con.execute("PRAGMA table_info(samples)")}
+    if "below_floor" not in cols:
+        con.execute(
+            "ALTER TABLE samples ADD COLUMN below_floor INTEGER NOT NULL DEFAULT 0")
 
 
 def _connect_index():
@@ -469,6 +489,7 @@ class Sampler:
         con = _connect_index()
         try:
             con.executescript(_SCHEMA)
+            _ensure_below_floor_column(con)
             con.commit()
         finally:
             con.close()
@@ -482,14 +503,16 @@ class Sampler:
 
     def _sample(self, now):
         floor = self.cfg["proc_min_bytes"]
-        procs = [p for p in _read_procs() if p["rss"] + p["swap"] >= floor]
+        all_procs = list(_read_procs())
+        procs = [p for p in all_procs if p["rss"] + p["swap"] >= floor]
+        below_floor = len(all_procs) - len(procs)
         promote = (self._last_promoted_ts is None
                    or now - self._last_promoted_ts >= 3600)
         con = _connect_index()
         try:
             cur = con.execute(
-                "INSERT INTO samples(ts, promoted) VALUES(?,?)",
-                (now, int(promote)))
+                "INSERT INTO samples(ts, promoted, below_floor) VALUES(?,?,?)",
+                (now, int(promote), below_floor))
             sid = cur.lastrowid
             con.executemany(
                 "INSERT INTO proc_stats VALUES(?,?,?,?,?,?,?,?)",
@@ -521,7 +544,8 @@ class Sampler:
 
 def _latest_sample(con):
     return con.execute(
-        "SELECT id, ts FROM samples ORDER BY ts DESC LIMIT 1").fetchone()
+        "SELECT id, ts, below_floor FROM samples"
+        " ORDER BY ts DESC LIMIT 1").fetchone()
 
 
 def query_top(by_swap, limit):
@@ -530,13 +554,17 @@ def query_top(by_swap, limit):
         latest = _latest_sample(con)
         if latest is None:
             return {"error": "no sample yet — wait for the sampler"}
-        sid, ts = latest
+        sid, ts, below_floor = latest
         col = "swap" if by_swap else "rss"  # by_swap is a validated bool
         rows = con.execute(
             f"SELECT pid, comm, rss, swap, state FROM proc_stats"
             f" WHERE sample_id=? ORDER BY {col} DESC LIMIT ?", (sid, limit)
         ).fetchall()
-        return {"ts": ts, "rows": [
+        # below_floor: processes THIS sample never wrote a row for at all
+        # (rss+swap under proc_min_bytes) — named here rather than left
+        # silent (thread 3dd73060). Distinct from `limit` truncating an
+        # already-written list; this is what never entered it.
+        return {"ts": ts, "below_floor": below_floor, "rows": [
             {"pid": r[0], "comm": r[1], "rss": r[2], "swap": r[3],
              "state": r[4]} for r in rows]}
     finally:
@@ -549,12 +577,12 @@ def query_swap(limit):
         latest = _latest_sample(con)
         if latest is None:
             return {"error": "no sample yet — wait for the sampler"}
-        sid, ts = latest
+        sid, ts, below_floor = latest
         rows = con.execute(
             "SELECT pid, comm, rss, swap, state FROM proc_stats"
             " WHERE sample_id=? AND swap > 0 ORDER BY swap DESC LIMIT ?",
             (sid, limit)).fetchall()
-        return {"ts": ts, "rows": [
+        return {"ts": ts, "below_floor": below_floor, "rows": [
             {"pid": r[0], "comm": r[1], "rss": r[2], "swap": r[3],
              "state": r[4]} for r in rows]}
     finally:
@@ -562,24 +590,36 @@ def query_swap(limit):
 
 
 def query_blame(since, limit):
+    """below_floor caveat (thread 3dd73060): a process that crosses
+    proc_min_bytes BETWEEN base and head — grows into visibility, or
+    shrinks out of it — reads as fully "new" (the whole current size,
+    not just the growth since it became visible) or fully "gone" (freed
+    the whole size, though it may still be running, just sub-floor
+    again). Named here rather than solved: fixing it needs tracking
+    processes below the floor too, which is the exact sqlite-row-count
+    cost proc_min_bytes exists to bound. head_below_floor/base_below_
+    floor tell the reader the boundary exists; they don't identify which
+    rows crossed it."""
     con = _connect_index()
     try:
         head = _latest_sample(con)
         if head is None:
             return {"error": "no sample yet — wait for the sampler"}
-        head_id, head_ts = head
+        head_id, head_ts, head_below_floor = head
         base = con.execute(
-            "SELECT id, ts FROM samples WHERE ts <= ? ORDER BY ts DESC LIMIT 1",
+            "SELECT id, ts, below_floor FROM samples"
+            " WHERE ts <= ? ORDER BY ts DESC LIMIT 1",
             (since,)).fetchone()
         if base is None:
             # every sample is newer than --since: diff from the oldest one we
             # have and report the honest span, rather than refusing
             base = con.execute(
-                "SELECT id, ts FROM samples ORDER BY ts ASC LIMIT 1").fetchone()
+                "SELECT id, ts, below_floor FROM samples"
+                " ORDER BY ts ASC LIMIT 1").fetchone()
         if base is None or base[0] == head_id:
             return {"error": "no earlier sample to diff against"
                              " — need two samples spanning --since"}
-        base_id, base_ts = base
+        base_id, base_ts, base_below_floor = base
         rows = con.execute(
             "SELECT h.pid, h.starttime, h.comm,"
             "       h.rss - COALESCE(b.rss, 0) AS delta, h.rss, h.swap,"
@@ -595,7 +635,9 @@ def query_blame(since, limit):
             (base_id, head_id, base_id, head_id)).fetchall()
         rows.sort(key=lambda r: (-abs(r[3]), 0 if r[3] >= 0 else 1))
         rows = rows[:limit]
-        return {"base_ts": base_ts, "head_ts": head_ts, "rows": [
+        return {"base_ts": base_ts, "head_ts": head_ts,
+                "base_below_floor": base_below_floor,
+                "head_below_floor": head_below_floor, "rows": [
             {"pid": r[0], "starttime": r[1], "comm": r[2], "delta": r[3],
              "rss": r[4], "swap": r[5], "new": bool(r[6]), "gone": bool(r[7])}
             for r in rows]}
@@ -935,7 +977,7 @@ def query_advise(cfg, get_status):
     try:
         head = _latest_sample(con)
         if head is not None:
-            head_id, head_ts = head
+            head_id, head_ts, _head_below_floor = head
             base = con.execute(
                 "SELECT id, ts FROM samples WHERE ts <= ?"
                 " ORDER BY ts DESC LIMIT 1", (head_ts - 3600,)).fetchone()
@@ -1056,7 +1098,7 @@ def build_pill_summary(cfg, get_status, swap_size_state, zram_state):
         top_process = None
         latest = _latest_sample(con)
         if latest is not None:
-            sid, _ts = latest
+            sid, _ts, _below_floor = latest
             row = con.execute(
                 "SELECT pid, comm, rss FROM proc_stats WHERE sample_id=?"
                 " ORDER BY rss DESC LIMIT 1", (sid,)).fetchone()

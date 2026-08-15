@@ -166,6 +166,11 @@ def cmd_top(argv):
               f"   {r['pid']:>7}  {flag}{r['comm']}")
     if not doc["rows"]:
         print("  (nothing above the index threshold yet)")
+    below = doc.get("below_floor", 0)
+    if below:
+        print(f"  ({below} more process{'es' if below != 1 else ''} below"
+              f" the index threshold, not shown — proc_min_bytes in"
+              f" ramsteind's config, see ramsteind(8))")
 
 
 def cmd_swap(argv):
@@ -182,6 +187,11 @@ def cmd_swap(argv):
               f"   {r['pid']:>7}  {r['comm']}")
     if not doc["rows"]:
         print("  nothing parked in swap")
+    below = doc.get("below_floor", 0)
+    if below:
+        print(f"  ({below} more process{'es' if below != 1 else ''} below"
+              f" the index threshold, not shown — proc_min_bytes in"
+              f" ramsteind's config, see ramsteind(8))")
 
 
 def cmd_blame(argv):
@@ -201,6 +211,12 @@ def cmd_blame(argv):
               f" pid {r['pid']:<7} (now {human_bytes(r['rss'])}){tag}")
     if not doc["rows"]:
         print("  nothing moved above the index threshold")
+    below = doc.get("head_below_floor", 0)
+    if below:
+        print(f"  ({below} process{'es' if below != 1 else ''} currently"
+              f" below the index threshold, invisible here — a process"
+              f" crossing that threshold in this window can show as fully"
+              f" new/gone rather than partially grown/shrunk)")
 
 
 def cmd_zombies(argv):

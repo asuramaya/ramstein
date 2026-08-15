@@ -40,6 +40,24 @@ defaults to
 .TP
 .B swap " [\-\-limit N]"
 Who's parked in swap, VmSwap descending.
+.PP
+.BR top ,
+.BR blame ,
+and
+.B swap
+all read the same per-process index, which only rows a process clearing
+.I proc_min_bytes
+(rss+swap; default 16 MiB, see
+.BR ramsteind (8)).
+A process under that floor is omitted with no trace \(em not counted,
+not aggregated \(em so all three verbs print a caveat naming how many
+processes the current sample excluded when that count is nonzero, rather
+than reading as a complete list when it isn't.
+.B blame
+additionally: a process that crosses the floor between the two samples
+being diffed appears fully new (grew into visibility) or fully gone
+(shrank out of it, though it may still be running) rather than partially
+grown or shrunk.
 .TP
 .B zombies
 Defunct processes and the parent not reaping them. Reads live
