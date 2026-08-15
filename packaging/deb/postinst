@@ -30,11 +30,31 @@ case "$1" in
     # package-shipped default (when one exists) survives untouched.
     [ -e /etc/systemd/zram-generator.conf ] || touch /etc/systemd/zram-generator.conf
     systemctl daemon-reload >/dev/null 2>&1 || true
-    systemctl enable ramsteind.service >/dev/null 2>&1 || true
+    if ! systemctl enable ramsteind.service >/dev/null 2>&1; then
+      echo "ramstein postinst: WARNING — systemctl enable ramsteind.service" \
+           "failed; the daemon will not start on boot. Run it by hand:" \
+           "systemctl enable ramsteind.service" >&2
+    fi
     if systemctl is-active --quiet ramsteind.service 2>/dev/null; then
       systemctl restart ramsteind.service || true
     else
       systemctl start ramsteind.service || true
+    fi
+    # THE HONESTY FIX (thread d92d86f2, alfred's DM 4577 — same defect as
+    # `oomd disenroll` printing "confirmed live" without checking, bigger
+    # blast radius: dpkg's own "ramstein set up successfully" line IS the
+    # operator's evidence the daemon is running, and `|| true` above meant
+    # a start/restart failure produced that exact false confidence. NOT a
+    # hard failure (`set -e` stays off this check on purpose) — Debian
+    # convention is a postinst should not abort dpkg's own transaction, and
+    # possibly other packages' configuration with it, over a service that
+    # can be started by hand afterward. The fix is SAYING it, not blocking
+    # it — the same distinction the pill's own oomd caption makes between
+    # a confirmed negative and an unconfirmed one.
+    if ! systemctl is-active --quiet ramsteind.service 2>/dev/null; then
+      echo "ramstein postinst: WARNING — ramsteind.service did not start." \
+           "The package installed but the daemon is not running. Check:" \
+           "systemctl status ramsteind.service" >&2
     fi
     ;;
 esac

@@ -12,7 +12,36 @@ case "$1" in
     # (deleted later, on purge) active underneath a system that no longer
     # has the daemon that manages it.
     systemctl disable --now var-lib-ramstein-extra.img.swap >/dev/null 2>&1 || true
+    # HONESTY CHECK, HARD FAIL ON PURPOSE (thread d92d86f2, alfred's DM
+    # 4577): the `|| true` above only means "don't let disable's own
+    # nonzero exit abort prerm" -- it says nothing about whether the swap
+    # actually came off, and `swapoff` genuinely CAN fail (not enough free
+    # RAM to hold what's currently parked in that swap area -- the exact
+    # condition ramstein exists to catch, so not a hypothetical on this
+    # package's own userbase). Unlike ramsteind.service below, this one
+    # doesn't just get to warn: postrm's purge step deletes the backing
+    # file (/var/lib/ramstein/extra.img) outright, and deleting a file
+    # still backing live swap risks corrupting whatever processes have
+    # pages parked there. A postinst-style warn-and-continue is the wrong
+    # shape here -- refusing removal until the operator swaps it off by
+    # hand is the honest, safe response to a check that can't confirm it.
+    if systemctl is-active --quiet var-lib-ramstein-extra.img.swap 2>/dev/null; then
+      echo "ramstein prerm: REFUSING to continue -- the ramstein-managed" \
+           "swap file is still active (swapoff failed, likely not enough" \
+           "free RAM to hold what's parked in it right now). Removing" \
+           "this package while it's still swap-backed risks corrupting" \
+           "whatever is using that memory. Free some memory and swap it" \
+           "off by hand first: systemctl stop" \
+           "var-lib-ramstein-extra.img.swap" >&2
+      exit 1
+    fi
     systemctl disable --now ramsteind.service >/dev/null 2>&1 || true
+    if systemctl is-active --quiet ramsteind.service 2>/dev/null; then
+      echo "ramstein prerm: WARNING — ramsteind.service is still active;" \
+           "continuing removal anyway (stopping it isn't the physical" \
+           "risk the swap unit above is). Check afterward: systemctl" \
+           "status ramsteind.service" >&2
+    fi
     ;;
 esac
 

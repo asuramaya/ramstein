@@ -70,8 +70,15 @@ check: check-sutra check-vendored-path-all
 	@for f in "src/extension/ramstein@asuramaya/extension.js" "src/extension/ramstein@asuramaya/pill.js"; do \
 	  node --input-type=module --check < "$$f" || exit 1; \
 	done
-	bash -n install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh tests/test_signing.sh
-	shellcheck install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh tests/test_signing.sh
+	# packaging/deb/{postinst,prerm,postrm} were shipped, real scripts dpkg
+	# actually runs, but never checked here (thread d92d86f2) -- caught
+	# while auditing them for the same silent-failure class as `oomd
+	# disenroll`, same reasoning as the JS check above: unexercised
+	# doesn't mean correct.
+	bash -n install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh tests/test_signing.sh \
+	    packaging/deb/postinst packaging/deb/prerm packaging/deb/postrm
+	shellcheck install.sh uninstall.sh packaging/release-signing/sync-signers.sh tests/smoke.sh tests/test_signing.sh \
+	    packaging/deb/postinst packaging/deb/prerm packaging/deb/postrm
 	groff -man -Tutf8 -ww src/data/man/man1/ramstein.1 > /dev/null
 	groff -t -man -Tutf8 -ww src/data/man/man8/ramsteind.8 > /dev/null
 	@echo "all static checks passed"
