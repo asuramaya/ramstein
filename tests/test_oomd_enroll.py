@@ -67,7 +67,7 @@ ENROLLED_DUMP = UNENROLLED_DUMP.replace(
 
 # THE PRECISION FIX'S OWN CASE (thread 5607ab3c): a cgroup IS swap-
 # enrolled, but it's a leftover from before oomd's last restart -- some
-# OTHER user's session, never this one. _oomd_swap_enrolled (aggregate)
+# OTHER user's session, never this one. _oomd_any_swap_cgroup_enrolled (aggregate)
 # reads this as enrolled=true; _oomd_session_swap_effective must not.
 OTHER_SESSION_ENROLLED_DUMP = UNENROLLED_DUMP.replace(
     "Swap Monitored CGroups:\n",
@@ -222,7 +222,7 @@ def test_enroll_success(tmp):
     os.environ["PATH"] = fakebin + os.pathsep + old_path
     os.environ["RAMSTEIN_SYSTEMD_ROOT"] = systemd_root
     try:
-        result = ramsteind.do_oomd_enroll(lambda: _fake_status(50, 50), dry_run=False)
+        result = ramsteind.do_oomd_enroll(lambda: _fake_status(50, 50), _FAKE_CFG, dry_run=False)
         if not result.get("ok"):
             fails.append(f"expected success, got: {result!r}")
         if not os.path.exists(dropin):
@@ -257,7 +257,7 @@ def test_preflight_refusal_blocks_the_write(tmp):
     os.environ["PATH"] = fakebin + os.pathsep + old_path
     os.environ["RAMSTEIN_SYSTEMD_ROOT"] = systemd_root
     try:
-        result = ramsteind.do_oomd_enroll(lambda: _fake_status(95, 95), dry_run=False)
+        result = ramsteind.do_oomd_enroll(lambda: _fake_status(95, 95), _FAKE_CFG, dry_run=False)
         if result.get("ok"):
             fails.append(f"expected a refusal, got success: {result!r}")
         if "error" not in result or "refusing:" not in result["error"]:
@@ -291,7 +291,7 @@ def test_honest_failure_when_world_does_not_move(tmp):
     os.environ["PATH"] = fakebin + os.pathsep + old_path
     os.environ["RAMSTEIN_SYSTEMD_ROOT"] = systemd_root
     try:
-        result = ramsteind.do_oomd_enroll(lambda: _fake_status(50, 50), dry_run=False)
+        result = ramsteind.do_oomd_enroll(lambda: _fake_status(50, 50), _FAKE_CFG, dry_run=False)
         if result.get("ok"):
             fails.append(f"expected a reported failure (world didn't move), got: {result!r}")
         if not os.path.exists(dropin):
@@ -329,7 +329,7 @@ def test_honest_failure_with_pressure_already_enrolled(tmp):
     os.environ["PATH"] = fakebin + os.pathsep + old_path
     os.environ["RAMSTEIN_SYSTEMD_ROOT"] = systemd_root
     try:
-        result = ramsteind.do_oomd_enroll(lambda: _fake_status(50, 50), dry_run=False)
+        result = ramsteind.do_oomd_enroll(lambda: _fake_status(50, 50), _FAKE_CFG, dry_run=False)
         if result.get("ok"):
             fails.append(
                 f"pressure being enrolled fooled the swap-specific re-verify"
@@ -355,6 +355,105 @@ def test_honest_failure_with_pressure_already_enrolled(tmp):
     return fails
 
 
+def test_enroll_fooled_by_other_session_enrollment(tmp):
+    """THE PUSH-BACK CASE (alfred, DM 4527): _oomd_apply_enrollment used
+    to re-verify with the AGGREGATE predicate (_oomd_any_swap_cgroup_enrolled --
+    "is ANY cgroup swap-enrolled"), the same aggregate/instance collapse
+    thread 5607ab3c fixed for the status read, just sitting in a more
+    consequential place -- an acceptance test whose entire job is
+    telling "my act worked" from "the state was already true". A
+    machine where some OTHER session's cgroup is already swap-enrolled
+    (a leftover from before oomd's last restart, modeled here by
+    OTHER_SESSION_ENROLLED_DUMP staying stuck regardless of what this
+    verb writes) must NOT pass this verb's acceptance test just because
+    the aggregate reads true. Same shape as the pressure-only case
+    above, one layer more specific: not a different SECTION fooling the
+    check, but a different CGROUP inside the right section."""
+    fails = []
+    systemd_root = tempfile.mkdtemp(dir=tmp)
+    dropin = os.path.join(systemd_root, ramsteind._OOMD_ENROLL_DROPIN_REL)
+    marker = os.path.join(tmp, "oomd-enrolled-marker-other-session")
+    fakebin = _fake_systemd_pair(tmp, dropin, marker,
+                                  stuck_dump=OTHER_SESSION_ENROLLED_DUMP)
+
+    old_path, old_root = os.environ.get("PATH", ""), os.environ.get("RAMSTEIN_SYSTEMD_ROOT")
+    os.environ["PATH"] = fakebin + os.pathsep + old_path
+    os.environ["RAMSTEIN_SYSTEMD_ROOT"] = systemd_root
+    try:
+        result = ramsteind.do_oomd_enroll(lambda: _fake_status(50, 50), _FAKE_CFG, dry_run=False)
+        if result.get("ok"):
+            fails.append(
+                f"someone else's cgroup being enrolled fooled the"
+                f" session-specific re-verify into reporting success: {result!r}")
+        if result.get("indeterminate"):
+            fails.append(f"this is a CONFIRMED false, not an indeterminate --"
+                          f" oomctl and systemctl both answered cleanly: {result!r}")
+        if "error" not in result or "the world didn't" not in result["error"]:
+            fails.append(f"failure message doesn't name the write/measure"
+                          f" disagreement: {result!r}")
+        # confirms the fixture models the real bug, not a strawman: the
+        # OLD aggregate predicate genuinely would have been fooled here
+        if not ramsteind._oomd_any_swap_cgroup_enrolled():
+            fails.append("fixture is wrong: the aggregate check should"
+                          " read enrolled=true for this dump")
+    finally:
+        os.environ["PATH"] = old_path
+        if old_root is None:
+            os.environ.pop("RAMSTEIN_SYSTEMD_ROOT", None)
+        else:
+            os.environ["RAMSTEIN_SYSTEMD_ROOT"] = old_root
+    return fails
+
+
+def test_enroll_indeterminate_when_effectiveness_cannot_be_confirmed(tmp):
+    """Alfred's second option, taken where it applies: when the
+    precision predicate itself can't answer (here: the session cgroup's
+    systemctl lookup fails, right after an otherwise-successful write +
+    restart), the verb must report ok=False WITH indeterminate=True --
+    not a confirmed failure (the world might be fine, we just can't see
+    it) and never ok=True (ruling 41b72476: an unconfirmed observation
+    is not a confirmed change)."""
+    fails = []
+    systemd_root = tempfile.mkdtemp(dir=tmp)
+    dropin = os.path.join(systemd_root, ramsteind._OOMD_ENROLL_DROPIN_REL)
+    d = tempfile.mkdtemp(dir=tmp)
+    _write_exec(os.path.join(d, "systemctl"), """#!/usr/bin/env bash
+if [ "$1" = "is-active" ]; then echo active; exit 0; fi
+if [ "$1" = "daemon-reload" ]; then exit 0; fi
+if [ "$1" = "restart" ]; then exit 0; fi
+exit 1
+""")
+    _write_exec(os.path.join(d, "oomctl"), f"""#!/usr/bin/env bash
+cat <<'FIXTURE_EOF'
+{ENROLLED_DUMP}
+FIXTURE_EOF
+""")
+
+    old_path, old_root = os.environ.get("PATH", ""), os.environ.get("RAMSTEIN_SYSTEMD_ROOT")
+    os.environ["PATH"] = d + os.pathsep + old_path
+    os.environ["RAMSTEIN_SYSTEMD_ROOT"] = systemd_root
+    try:
+        result = ramsteind.do_oomd_enroll(lambda: _fake_status(50, 50), _FAKE_CFG, dry_run=False)
+        if result.get("ok"):
+            fails.append(f"expected ok=False on an unconfirmable write, got: {result!r}")
+        if not result.get("indeterminate"):
+            fails.append(f"expected indeterminate=True (couldn't confirm either"
+                          f" direction, not a confirmed failure): {result!r}")
+        if result.get("measured_effective") is not None:
+            fails.append(f"measured_effective should be None when unconfirmable:"
+                          f" {result!r}")
+        if not os.path.exists(dropin):
+            fails.append("the drop-in should still have been written -- the"
+                          " write itself succeeded, only verification didn't")
+    finally:
+        os.environ["PATH"] = old_path
+        if old_root is None:
+            os.environ.pop("RAMSTEIN_SYSTEMD_ROOT", None)
+        else:
+            os.environ["RAMSTEIN_SYSTEMD_ROOT"] = old_root
+    return fails
+
+
 def test_disenroll(tmp):
     fails = []
     systemd_root = tempfile.mkdtemp(dir=tmp)
@@ -366,11 +465,11 @@ def test_disenroll(tmp):
     os.environ["PATH"] = fakebin + os.pathsep + old_path
     os.environ["RAMSTEIN_SYSTEMD_ROOT"] = systemd_root
     try:
-        enrolled = ramsteind.do_oomd_enroll(lambda: _fake_status(50, 50), dry_run=False)
+        enrolled = ramsteind.do_oomd_enroll(lambda: _fake_status(50, 50), _FAKE_CFG, dry_run=False)
         if not enrolled.get("ok"):
             fails.append(f"setup: enroll should have succeeded, got: {enrolled!r}")
             return fails
-        result = ramsteind.do_oomd_disenroll()
+        result = ramsteind.do_oomd_disenroll(_FAKE_CFG)
         if not result.get("ok"):
             fails.append(f"expected disenroll success, got: {result!r}")
         if os.path.exists(dropin):
@@ -425,7 +524,7 @@ exit 0
 
 def test_effective_false_for_someone_elses_leftover_cgroup(tmp):
     """THE BUG THIS FIX EXISTS TO CLOSE (the fit report, DM 4426):
-    _oomd_swap_enrolled (aggregate) reads OTHER_SESSION_ENROLLED_DUMP as
+    _oomd_any_swap_cgroup_enrolled (aggregate) reads OTHER_SESSION_ENROLLED_DUMP as
     enrolled=true -- SOME cgroup is swap-monitored. But it isn't THIS
     session's own cgroup (a leftover enrollment from before oomd's last
     restart, or someone else's). The precise check must say False, not
@@ -450,7 +549,7 @@ exit 0
                           f" not this session's own), got: {got!r}")
         # the aggregate question genuinely IS true here -- confirms the
         # fixture models the real bug, not a strawman
-        if not ramsteind._oomd_swap_enrolled():
+        if not ramsteind._oomd_any_swap_cgroup_enrolled():
             fails.append("fixture is wrong: the aggregate check should"
                           " read enrolled=true for this dump")
     finally:
@@ -558,7 +657,7 @@ def test_default_is_dry_run(tmp):
     os.environ["PATH"] = fakebin + os.pathsep + old_path
     os.environ["RAMSTEIN_SYSTEMD_ROOT"] = systemd_root
     try:
-        result = ramsteind.do_oomd_enroll(lambda: _fake_status(50, 50))  # no dry_run arg
+        result = ramsteind.do_oomd_enroll(lambda: _fake_status(50, 50), _FAKE_CFG)  # no dry_run arg
         if not result.get("dry_run"):
             fails.append(f"omitting dry_run did not default to a preview: {result!r}")
         if "would_write" not in result or "note" not in result:
@@ -586,6 +685,10 @@ def main():
             ("honest failure when the world doesn't move", test_honest_failure_when_world_does_not_move),
             ("honest failure with pressure already enrolled (real-world case)",
              test_honest_failure_with_pressure_already_enrolled),
+            ("enroll fooled by someone else's session enrollment (push-back case)",
+             test_enroll_fooled_by_other_session_enrollment),
+            ("enroll indeterminate when effectiveness can't be confirmed",
+             test_enroll_indeterminate_when_effectiveness_cannot_be_confirmed),
             ("disenroll", test_disenroll),
             ("default (no dry_run arg) is a safe preview", test_default_is_dry_run),
             ("effective: true for own session", test_effective_true_for_own_session),

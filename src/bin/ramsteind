@@ -705,7 +705,17 @@ def _oomd_monitored_sections():
             "pressure": "\tPath: " in pressure_section}
 
 
-def _oomd_swap_enrolled():
+def _oomd_any_swap_cgroup_enrolled():
+    """Is ANY cgroup swap-enrolled -- a system-wide aggregate, not a claim
+    about this session. RENAMED from _oomd_swap_enrolled (alfred's
+    push-back, DM 4527, option 3): the old name read as a claim about
+    THIS session and got used that way, in the one place that mattered
+    most (the enroll verb's own acceptance test, now pointed at
+    _oomd_session_swap_effective instead). This is what's left after
+    that fix -- one caller, query_oomd_status's own "enrolled" field,
+    which genuinely wants the aggregate fact as one of three
+    complementary status reads (alongside ramstein_dropin_present and
+    effective) -- kept, renamed to say what it actually answers."""
     return _oomd_monitored_sections()["swap"]
 
 
@@ -1457,14 +1467,26 @@ def _oomd_enroll_preflight(get_status):
     return None
 
 
-def _oomd_apply_enrollment(write):
+def _oomd_apply_enrollment(write, cfg):
     """Shared by enroll/disenroll: daemon-reload + restart systemd-oomd —
     the two steps proven necessary this session (a config-only write, or
     daemon-reload alone, does not make oomd re-discover units; only its
-    own process restarting does) — then re-verify with the SAME detector
-    built this morning as this afternoon's acceptance test (ruling
-    41b72476) rather than trust the write. `write` is True for enroll
-    (create the drop-in first), False for disenroll (remove it first).
+    own process restarting does) — then re-verify with
+    _oomd_session_swap_effective (ruling 41b72476's acceptance-test
+    discipline, pointed at the precise predicate rather than trusting
+    the write). `write` is True for enroll (create the drop-in first),
+    False for disenroll (remove it first).
+
+    RE-POINTED FROM THE AGGREGATE CHECK (alfred's push-back, DM 4527):
+    this used to measure `_oomd_any_swap_cgroup_enrolled()` — is ANY cgroup swap-
+    enrolled — which is the SAME aggregate/instance collapse thread
+    5607ab3c fixed for the status read, just sitting in a more
+    consequential place: an acceptance test whose entire job is telling
+    "my act worked" from "the state was already true". A machine with
+    some OTHER session's cgroup already swap-enrolled would have passed
+    this test regardless of whether THIS enroll did anything at all —
+    see test_enroll_fooled_by_other_session_enrollment (the fixture
+    that would have silently passed under the old predicate).
 
     HONEST VERIFICATION STATUS (alfred's review, DM #3240/#3243, source
     checked against both systemd main and the v259 tag the operator
@@ -1512,29 +1534,50 @@ def _oomd_apply_enrollment(write):
                              f"{(r.stderr or r.stdout).strip()}"}
 
     time.sleep(1)  # let oomd finish its own startup re-discovery
-    # SWAP-specific, not _coexisting_oom_fighter's broad either-section
-    # question — this verb enrolls ManagedOOMSwap=kill, so its own
-    # acceptance test must measure the swap section alone, or a machine
-    # with pressure already enrolled (every real machine, once verb #1's
-    # own restart populates it) would report swap-protected when it is
-    # not (alfred, DM #3250 — found live on the operator's machine).
-    enrolled = _oomd_swap_enrolled()
-    moved = enrolled if write else not enrolled
+    # SESSION-SPECIFIC, not the aggregate "is any cgroup swap-enrolled"
+    # question — this verb enrolls THIS SESSION's own cgroup
+    # (user@<owner_uid>.service), so its own acceptance test must
+    # measure THAT cgroup specifically, or a machine with some OTHER
+    # cgroup already swap-enrolled (pressure being one instance of that,
+    # alfred DM #3250; a leftover unrelated session being another,
+    # alfred DM 4527) would report success regardless of whether this
+    # write did anything at all.
+    effective = _oomd_session_swap_effective(cfg)
+    if effective is None:
+        # Can't confirm either direction (oomctl unreachable, its dump
+        # didn't parse, or this session's own cgroup couldn't be
+        # resolved) — ruling 41b72476 says a verb succeeds only when the
+        # pill's own observation CONFIRMS it changed; an unconfirmable
+        # observation is not a confirmed change, so this is neither ok
+        # nor a proven failure. `indeterminate` lets a caller tell the
+        # two apart instead of reading a bare ok=False as "it didn't
+        # take" when the honest answer is "couldn't tell".
+        return {"ok": False, "indeterminate": True, "wrote": write,
+                "dropin": dropin, "measured_effective": None,
+                "error": (
+                    f"{'wrote' if write else 'removed'} {dropin} and "
+                    f"restarted systemd-oomd, but whether this session's "
+                    f"own enrollment took could not be confirmed "
+                    f"(oomctl unreachable, its dump didn't parse, or "
+                    f"the session's own cgroup couldn't be resolved) — "
+                    f"refusing to report success on an unconfirmed "
+                    f"write.")}
+    moved = effective if write else not effective
     result = {"ok": moved, "wrote": write, "dropin": dropin,
-              "measured_enrolled": enrolled}
+              "measured_effective": effective}
     if not moved:
         # Ruling 41b72476: a verb succeeds when the pill's own observation
         # changes, never merely because a file was written — name what
         # was written, what was measured, and that they disagree.
         result["error"] = (
             f"{'wrote' if write else 'removed'} {dropin} and restarted "
-            f"systemd-oomd, but its Swap Monitored CGroups still reports "
-            f"{'enrolled' if enrolled else 'not enrolled'} — the file "
+            f"systemd-oomd, but this session's own cgroup still reports "
+            f"{'enrolled' if effective else 'not enrolled'} — the file "
             f"changed, the world didn't. Refusing to report success.")
     return result
 
 
-def do_oomd_enroll(get_status, dry_run=True):
+def do_oomd_enroll(get_status, cfg, dry_run=True):
     # Ratified by alfred (msg 3429): byebyte's already-shipped shape, not a
     # new one -- dry_run defaults SAFE (see the dispatch site) and the real
     # floor is _oomd_enroll_preflight's live conjunction check above, which
@@ -1549,7 +1592,7 @@ def do_oomd_enroll(get_status, dry_run=True):
                         " PERSISTS ACROSS REBOOT via a systemd drop-in, and"
                         " applies immediately via a live systemd-oomd"
                         " restart"}
-    result = _oomd_apply_enrollment(write=True)
+    result = _oomd_apply_enrollment(write=True, cfg=cfg)
     result["dry_run"] = False
     _ledger_write({"ts": time.time(), "verb": "oomd_enroll", "pid": None,
                    "comm": None, "arg": "user@.service ManagedOOMSwap=kill",
@@ -1558,8 +1601,8 @@ def do_oomd_enroll(get_status, dry_run=True):
     return result
 
 
-def do_oomd_disenroll():
-    result = _oomd_apply_enrollment(write=False)
+def do_oomd_disenroll(cfg):
+    result = _oomd_apply_enrollment(write=False, cfg=cfg)
     _ledger_write({"ts": time.time(), "verb": "oomd_disenroll", "pid": None,
                    "comm": None, "arg": "user@.service ManagedOOMSwap=kill",
                    "result": "ok" if result["ok"] else "error",
@@ -1614,13 +1657,16 @@ def _oomd_session_cgroup_path(cfg):
 def _oomd_session_swap_effective(cfg):
     """THE precision fix (alfred's dispatch, thread 5607ab3c): whether
     systemd-oomd is watching THIS SESSION's own cgroup for swap-kill —
-    not merely whether SOME cgroup is, which is _oomd_swap_enrolled's
-    older, aggregate question (left unchanged; still what the enroll
-    verb's own acceptance test uses — a different, narrower job: "did
-    the write I just made take effect", asked once, right after a fresh
-    restart, not "is protection in force right now for an arbitrary
-    session"). A leftover-enrolled cgroup from before oomd's last
-    restart can make the aggregate question read true while THIS session
+    not merely whether SOME cgroup is, which is
+    _oomd_any_swap_cgroup_enrolled's older, aggregate question. Now ALSO
+    what the enroll verb's own acceptance test uses (alfred's push-back,
+    DM 4527, on the FIRST version of this fix: the acceptance test was
+    left pointed at the aggregate predicate, which meant it could answer
+    "my act worked" and "the state was already true" identically — the
+    exact bug this function exists to close, sitting in the one place
+    whose entire job is catching it). A leftover-enrolled cgroup from
+    before oomd's last restart can make the aggregate question read true
+    while THIS session
     was never discovered — the gap named in the fit report, DM 4426.
 
     Returns True/False when the question can actually be answered, None
@@ -1652,10 +1698,12 @@ def _oomd_session_swap_effective(cfg):
 
 def query_oomd_status(get_status, cfg):
     return {
-        # SWAP-specific — see _oomd_swap_enrolled's docstring on
-        # _oomd_monitored_sections (alfred, DM #3250): this verb is about
-        # swap protection, not "is oomd doing anything at all".
-        "enrolled": _oomd_swap_enrolled(),
+        # AGGREGATE, not session-specific -- see _oomd_any_swap_cgroup_
+        # enrolled's docstring (renamed from _oomd_swap_enrolled, alfred's
+        # push-back DM 4527, option 3: kept for this one legitimate use,
+        # named to say what it actually answers). "effective" below is
+        # the session-specific fact this field is NOT.
+        "enrolled": _oomd_any_swap_cgroup_enrolled(),
         "ramstein_dropin_present": os.path.exists(_oomd_enroll_dropin_path()),
         "preflight_would_refuse": _oomd_enroll_preflight(get_status),
         # True/False/None (unknown) — see _oomd_session_swap_effective.
@@ -2425,9 +2473,9 @@ def _make_dispatch(cfg, get_status, autocalm_state, config_path, swap_size_state
                 dry_run = req.get("dry_run", True)
                 if not isinstance(dry_run, bool):
                     raise ValueError("dry_run must be a bool")
-                return do_oomd_enroll(get_status, dry_run)
+                return do_oomd_enroll(get_status, cfg, dry_run)
             if action == "disenroll":
-                return do_oomd_disenroll()
+                return do_oomd_disenroll(cfg)
             raise ValueError("unknown oomd action")
         if cmd == "swappiness":
             action = req.get("action")
