@@ -495,6 +495,18 @@ def cmd_oomd(argv):
         if "--json" in rest:
             print(json.dumps(doc, indent=2))
             return
+        # Mirrors enroll's own check — this used to print "confirmed live"
+        # unconditionally, the same defect enroll's acceptance test had,
+        # made worse by saying "confirmed" about a check it never ran
+        # (alfred, DM 4546): disenroll changes a PROTECTION state, so an
+        # operator told "confirmed" here stops thinking about it — a
+        # silent failure they were told was verified is worse than one
+        # they know might have happened. doc["error"] already
+        # distinguishes confirmed-still-enrolled from couldn't-confirm
+        # (_oomd_apply_enrollment's own two branches), so this needs no
+        # separate indeterminate-vs-failure text of its own.
+        if not doc.get("ok"):
+            sys.exit(f"ramstein: oomd disenroll failed: {doc.get('error', doc)}")
         print("oomd swap-kill protection removed and confirmed live —"
               " restored to this machine's default (unenrolled unless"
               " something else enrolls it).")
