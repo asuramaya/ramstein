@@ -27,7 +27,7 @@ import * as Pill from './pill.js';
 
 const STATUS_PATH = '/run/ramstein/status.json';
 const {PALETTE, NB} = Pill;
-const {ACCENT, DIM, WARN} = PALETTE;
+const {ACCENT, DIM, WARN, BAD} = PALETTE;
 
 const ICON = 'utilities-system-monitor-symbolic';
 
@@ -489,17 +489,26 @@ class ramsteinToggle extends QuickMenuToggle {
             onToggle: () => this._onOomdToggle(pill.oomd),
         }));
         // configured and effective-right-now are two different facts (the
-        // fit report, DM 4426 via alfred): systemd-oomd only discovers
-        // ManagedOOM-flagged cgroups at its OWN startup, and ramsteind's
-        // own enrolled check (_oomd_monitored_sections) only proves SOME
-        // cgroup is swap-enrolled — never that THIS session's own cgroup
-        // is — so enrolled=true can never honestly render as a plain
-        // checkmark. Precision (matching the current session's own
-        // cgroup against oomctl's dump) is a daemon-side fix, tracked
-        // separately, not built here.
-        if (pill.oomd?.enrolled)
-            this._controlsSection.menu.addMenuItem(
-                this._captionRow('configured · effective now: unknown'));
+        // fit report, DM 4426 via alfred) — and now that ramsteind can
+        // answer the second one for real (thread 5607ab3c: matching this
+        // session's own cgroup against oomctl's swap-enrolled list, not
+        // just asking whether SOME cgroup is), the pill renders whichever
+        // of THREE states the daemon actually reports. `effective` is
+        // True/False/null; null (unknown) survives every failure mode the
+        // daemon can hit (oomctl unreachable, its dump unparseable, the
+        // session cgroup unresolvable) — ruling 60bc15db's drift class,
+        // never silently narrowed to false here either.
+        if (pill.oomd?.enrolled) {
+            const eff = pill.oomd?.effective;
+            if (eff === false)
+                this._controlsSection.menu.addMenuItem(this._captionRow(
+                    'configured · NOT effective this session', BAD));
+            else if (eff !== true)
+                this._controlsSection.menu.addMenuItem(this._captionRow(
+                    'configured · effective now: unknown', WARN));
+            // eff === true: fully backed by the daemon now — a plain
+            // checkmark is honest, no caption needed.
+        }
         this._controlsSection.menu.addMenuItem(this._buildToggleRow({
             label: 'zram (compressed swap)',
             enabled: !!pill.zram?.config_enabled,
@@ -532,7 +541,11 @@ class ramsteinToggle extends QuickMenuToggle {
     // click in, on the caption rows that name each control specifically.
     _updateAdvancedHeader(pill, ac) {
         let n = 0;
-        if (pill?.oomd?.enrolled)
+        // oomd.effective === true is fully resolved now (thread 5607ab3c)
+        // -- only false (confirmed not in force) or null/undefined
+        // (unknown) still warrant a flag; a resolved-true control is no
+        // longer a caveat, same as it never rendering a caption row above.
+        if (pill?.oomd?.enrolled && pill.oomd?.effective !== true)
             n++;
         if (ac?.armed)
             n++;
@@ -545,10 +558,13 @@ class ramsteinToggle extends QuickMenuToggle {
     // are two distinct facts a single switch can't both say (ruling
     // 60bc15db's three-state doctrine, applied to this pill's own two
     // decaying/uncertain controls). Only shown when the switch is ON —
-    // off has no effectiveness question to caveat.
-    _captionRow(text) {
+    // off has no effectiveness question to caveat. `color` defaults to
+    // WARN (an open question); oomd's confirmed-not-effective case passes
+    // BAD explicitly -- a resolved negative is a stronger claim than an
+    // unresolved one and should read as one.
+    _captionRow(text, color = WARN) {
         const it = Pill.wrapRow(
-            `<span foreground="${WARN}" size="small">${Pill.esc(text)}</span>`);
+            `<span foreground="${color}" size="small">${Pill.esc(text)}</span>`);
         it.style = 'margin: -6px 0 2px 44px;';
         return it;
     }
