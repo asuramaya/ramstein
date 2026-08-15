@@ -1062,7 +1062,7 @@ def build_pill_summary(cfg, get_status, swap_size_state, zram_state):
         "zombie_count": zombie_count,
         "advise_headline": lines[0]["text"] if lines else None,
         "advise_count": len(lines),
-        "oomd": query_oomd_status(get_status),
+        "oomd": query_oomd_status(get_status, cfg),
         "swappiness": query_swappiness_status(),
         "swap_size": query_swap_size_status(swap_size_state),
         "zram": query_zram_status(zram_state),
@@ -1567,7 +1567,90 @@ def do_oomd_disenroll():
     return result
 
 
-def query_oomd_status(get_status):
+def _oomd_swap_enrolled_paths(dump_text):
+    """The cgroup PATHS oomctl's own dump lists under Swap Monitored
+    CGroups, bounded at the Pressure header the same way
+    _oomd_monitored_sections is (that fix, this file's own history,
+    applies identically here — a scoop to EOF would swallow the whole
+    Memory Pressure section too). Returns None, not [], when the SWAP
+    header itself never appears — an oomctl output shape this parser
+    doesn't recognize is a DIFFERENT fact from "recognized the shape,
+    zero cgroups enrolled", and the caller downstream (thread 5607ab3c)
+    needs to tell the two apart."""
+    if _OOMD_SWAP_HEADER not in dump_text:
+        return None
+    _, _, after_swap = dump_text.partition(_OOMD_SWAP_HEADER)
+    swap_section = after_swap.split(_OOMD_PRESSURE_HEADER, 1)[0]
+    return [line.split("Path:", 1)[1].strip()
+            for line in swap_section.splitlines()
+            if line.strip().startswith("Path:")]
+
+
+def _oomd_session_cgroup_path(cfg):
+    """The cgroup ramstein's own oomd enrollment actually targets —
+    _OOMD_ENROLL_DROPIN_BODY sets ManagedOOMSwap=kill on user@.service,
+    so THIS is the unit whose enrollment matters, not any other cgroup
+    that happens to be swap-monitored. Read live via `systemctl show`,
+    the same path representation oomctl's own Path: lines use (confirmed
+    live on the operator's machine: both print
+    /user.slice/user-<uid>.slice/user@<uid>.service byte-for-byte, no
+    normalization needed). Returns None if systemctl can't answer —
+    unit doesn't exist, not running, or the call itself fails."""
+    unit = f"user@{cfg['owner_uid']}.service"
+    try:
+        r = subprocess.run(["systemctl", "show", "-p", "ControlGroup", unit],
+                            capture_output=True, text=True, timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    line = r.stdout.strip()
+    if not line.startswith("ControlGroup="):
+        return None
+    path = line.split("=", 1)[1].strip()
+    return path or None
+
+
+def _oomd_session_swap_effective(cfg):
+    """THE precision fix (alfred's dispatch, thread 5607ab3c): whether
+    systemd-oomd is watching THIS SESSION's own cgroup for swap-kill —
+    not merely whether SOME cgroup is, which is _oomd_swap_enrolled's
+    older, aggregate question (left unchanged; still what the enroll
+    verb's own acceptance test uses — a different, narrower job: "did
+    the write I just made take effect", asked once, right after a fresh
+    restart, not "is protection in force right now for an arbitrary
+    session"). A leftover-enrolled cgroup from before oomd's last
+    restart can make the aggregate question read true while THIS session
+    was never discovered — the gap named in the fit report, DM 4426.
+
+    Returns True/False when the question can actually be answered, None
+    when it can't. Ruling 60bc15db's drift class, named directly by
+    alfred (DM 4506): a function that cannot distinguish "no" from "I
+    don't know" and reports "no" is a NEWER, MORE CONFIDENT specimen of
+    the exact defect this whole redesign exists to fix. Every failure
+    mode below — oomctl unreachable or non-zero, its dump missing the
+    swap section header entirely, systemctl unable to resolve the
+    session unit's cgroup — returns None, never False. Only two things
+    produce a real answer: the session path IS in the enrolled list
+    (True), or oomctl's swap section parsed cleanly and it's ABSENT
+    (False)."""
+    try:
+        r = subprocess.run(["oomctl"], capture_output=True, text=True,
+                            timeout=2)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    paths = _oomd_swap_enrolled_paths(r.stdout)
+    if paths is None:
+        return None
+    session_path = _oomd_session_cgroup_path(cfg)
+    if session_path is None:
+        return None
+    return session_path in paths
+
+
+def query_oomd_status(get_status, cfg):
     return {
         # SWAP-specific — see _oomd_swap_enrolled's docstring on
         # _oomd_monitored_sections (alfred, DM #3250): this verb is about
@@ -1575,6 +1658,10 @@ def query_oomd_status(get_status):
         "enrolled": _oomd_swap_enrolled(),
         "ramstein_dropin_present": os.path.exists(_oomd_enroll_dropin_path()),
         "preflight_would_refuse": _oomd_enroll_preflight(get_status),
+        # True/False/None (unknown) — see _oomd_session_swap_effective.
+        # None must reach the pill as JSON null, never a silently
+        # substituted False; the caption's whole point is not doing that.
+        "effective": _oomd_session_swap_effective(cfg),
     }
 
 
@@ -2330,7 +2417,7 @@ def _make_dispatch(cfg, get_status, autocalm_state, config_path, swap_size_state
         if cmd == "oomd":
             action = req.get("action")
             if action == "status":
-                return query_oomd_status(get_status)
+                return query_oomd_status(get_status, cfg)
             if action == "enroll":
                 # Explicit default, not inferred from the CLI: a malformed
                 # or truncated request must stay a PREVIEW, never an act

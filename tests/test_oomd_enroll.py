@@ -56,12 +56,28 @@ Swap Monitored CGroups:
 Memory Pressure Monitored CGroups:
 """
 
+SESSION_CGROUP_PATH = "/user.slice/user-1000.slice/user@1000.service"
+
 ENROLLED_DUMP = UNENROLLED_DUMP.replace(
     "Swap Monitored CGroups:\n",
     "Swap Monitored CGroups:\n"
-    "\tPath: /user.slice/user-1000.slice/user@1000.service\n"
+    f"\tPath: {SESSION_CGROUP_PATH}\n"
     "\t\tSwap Usage: 4.0K\n",
 )
+
+# THE PRECISION FIX'S OWN CASE (thread 5607ab3c): a cgroup IS swap-
+# enrolled, but it's a leftover from before oomd's last restart -- some
+# OTHER user's session, never this one. _oomd_swap_enrolled (aggregate)
+# reads this as enrolled=true; _oomd_session_swap_effective must not.
+OTHER_SESSION_ENROLLED_DUMP = UNENROLLED_DUMP.replace(
+    "Swap Monitored CGroups:\n",
+    "Swap Monitored CGroups:\n"
+    "\tPath: /user.slice/user-999.slice/user@999.service\n"
+    "\t\tSwap Usage: 4.0K\n",
+)
+
+# cfg only ever needs owner_uid for anything in this file.
+_FAKE_CFG = {"owner_uid": 1000}
 
 # REAL, LIVE-CAPTURED (2026-08-02, same as test_oom_coexist.py): pressure
 # enrolled, swap genuinely empty -- the exact dump that made `ramstein
@@ -162,6 +178,10 @@ if [ "$1" = "restart" ] && [ "$2" = "systemd-oomd" ]; then
   if [ -f "{dropin_path}" ]; then touch "{marker_path}"; else rm -f "{marker_path}"; fi
   exit 0
 fi
+if [ "$1" = "show" ] && [ "$4" = "user@1000.service" ]; then
+  echo "ControlGroup={SESSION_CGROUP_PATH}"
+  exit 0
+fi
 exit 1
 """)
     if stuck_dump is not None:
@@ -209,9 +229,12 @@ def test_enroll_success(tmp):
             fails.append("drop-in file was not written")
         elif open(dropin).read() != ramsteind._OOMD_ENROLL_DROPIN_BODY:
             fails.append("drop-in content doesn't match the expected body")
-        status = ramsteind.query_oomd_status(lambda: _fake_status(50, 50))
+        status = ramsteind.query_oomd_status(lambda: _fake_status(50, 50), _FAKE_CFG)
         if not status["enrolled"]:
             fails.append(f"query_oomd_status disagrees after a successful enroll: {status!r}")
+        if status["effective"] is not True:
+            fails.append(f"session cgroup is genuinely enrolled -- effective should be"
+                          f" True, not {status['effective']!r}")
     finally:
         os.environ["PATH"] = old_path
         if old_root is None:
@@ -311,10 +334,13 @@ def test_honest_failure_with_pressure_already_enrolled(tmp):
             fails.append(
                 f"pressure being enrolled fooled the swap-specific re-verify"
                 f" into reporting success: {result!r}")
-        status = ramsteind.query_oomd_status(lambda: _fake_status(50, 50))
+        status = ramsteind.query_oomd_status(lambda: _fake_status(50, 50), _FAKE_CFG)
         if status["enrolled"]:
             fails.append(f"query_oomd_status also fooled by the pressure"
                           f" section: {status!r}")
+        if status["effective"] is not False:
+            fails.append(f"swap section parsed cleanly and is genuinely empty --"
+                          f" effective should be False, not {status['effective']!r}")
         # the broad coexistence question is a SEPARATE, correct concern --
         # pressure alone is a real backstop, just not this verb's backstop
         if ramsteind._coexisting_oom_fighter() != "systemd-oomd":
@@ -349,17 +375,169 @@ def test_disenroll(tmp):
             fails.append(f"expected disenroll success, got: {result!r}")
         if os.path.exists(dropin):
             fails.append("drop-in still present after disenroll")
-        status = ramsteind.query_oomd_status(lambda: _fake_status(50, 50))
+        status = ramsteind.query_oomd_status(lambda: _fake_status(50, 50), _FAKE_CFG)
         if status["enrolled"]:
             fails.append(f"still reports enrolled after disenroll: {status!r}")
         if status["ramstein_dropin_present"]:
             fails.append(f"still reports the drop-in present after disenroll: {status!r}")
+        if status["effective"] is not False:
+            fails.append(f"swap section empty after disenroll -- effective should be"
+                          f" False, not {status['effective']!r}")
     finally:
         os.environ["PATH"] = old_path
         if old_root is None:
             os.environ.pop("RAMSTEIN_SYSTEMD_ROOT", None)
         else:
             os.environ["RAMSTEIN_SYSTEMD_ROOT"] = old_root
+    return fails
+
+
+# --- the precision fix itself (thread 5607ab3c): _oomd_session_swap_
+# effective's three states, tested directly rather than only through the
+# enroll/disenroll flow above. Alfred's own instruction (DM 4506): "I'd
+# rather see the unknown branch tested than the happy path" -- so the
+# unknown cases below outnumber the resolved ones on purpose.
+
+def test_effective_true_for_own_session(tmp):
+    """The precision case working as intended: the session's own cgroup
+    IS in oomctl's swap-enrolled list."""
+    d = tempfile.mkdtemp(dir=tmp)
+    _write_exec(os.path.join(d, "oomctl"), f"""#!/usr/bin/env bash
+cat <<'FIXTURE_EOF'
+{ENROLLED_DUMP}
+FIXTURE_EOF
+""")
+    _write_exec(os.path.join(d, "systemctl"), f"""#!/usr/bin/env bash
+echo "ControlGroup={SESSION_CGROUP_PATH}"
+exit 0
+""")
+    old_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = d + os.pathsep + old_path
+    fails = []
+    try:
+        got = ramsteind._oomd_session_swap_effective(_FAKE_CFG)
+        if got is not True:
+            fails.append(f"expected True, got: {got!r}")
+    finally:
+        os.environ["PATH"] = old_path
+    return fails
+
+
+def test_effective_false_for_someone_elses_leftover_cgroup(tmp):
+    """THE BUG THIS FIX EXISTS TO CLOSE (the fit report, DM 4426):
+    _oomd_swap_enrolled (aggregate) reads OTHER_SESSION_ENROLLED_DUMP as
+    enrolled=true -- SOME cgroup is swap-monitored. But it isn't THIS
+    session's own cgroup (a leftover enrollment from before oomd's last
+    restart, or someone else's). The precise check must say False, not
+    be fooled the same way the aggregate one always was."""
+    d = tempfile.mkdtemp(dir=tmp)
+    _write_exec(os.path.join(d, "oomctl"), f"""#!/usr/bin/env bash
+cat <<'FIXTURE_EOF'
+{OTHER_SESSION_ENROLLED_DUMP}
+FIXTURE_EOF
+""")
+    _write_exec(os.path.join(d, "systemctl"), f"""#!/usr/bin/env bash
+echo "ControlGroup={SESSION_CGROUP_PATH}"
+exit 0
+""")
+    old_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = d + os.pathsep + old_path
+    fails = []
+    try:
+        got = ramsteind._oomd_session_swap_effective(_FAKE_CFG)
+        if got is not False:
+            fails.append(f"expected False (a DIFFERENT cgroup is enrolled,"
+                          f" not this session's own), got: {got!r}")
+        # the aggregate question genuinely IS true here -- confirms the
+        # fixture models the real bug, not a strawman
+        if not ramsteind._oomd_swap_enrolled():
+            fails.append("fixture is wrong: the aggregate check should"
+                          " read enrolled=true for this dump")
+    finally:
+        os.environ["PATH"] = old_path
+    return fails
+
+
+def test_effective_unknown_when_oomctl_missing(tmp):
+    """oomctl not on PATH at all -- OSError, not a parse failure. Must
+    be None, never silently False."""
+    d = tempfile.mkdtemp(dir=tmp)  # empty -- no oomctl, no systemctl
+    old_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = d
+    fails = []
+    try:
+        got = ramsteind._oomd_session_swap_effective(_FAKE_CFG)
+        if got is not None:
+            fails.append(f"expected None (oomctl unreachable), got: {got!r}")
+    finally:
+        os.environ["PATH"] = old_path
+    return fails
+
+
+def test_effective_unknown_when_oomctl_exits_nonzero(tmp):
+    """oomctl runs but fails -- a real, distinct failure mode from
+    "not found at all"; both must land on None."""
+    d = tempfile.mkdtemp(dir=tmp)
+    _write_exec(os.path.join(d, "oomctl"), "#!/usr/bin/env bash\nexit 1\n")
+    old_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = d + os.pathsep + old_path
+    fails = []
+    try:
+        got = ramsteind._oomd_session_swap_effective(_FAKE_CFG)
+        if got is not None:
+            fails.append(f"expected None (oomctl exited nonzero), got: {got!r}")
+    finally:
+        os.environ["PATH"] = old_path
+    return fails
+
+
+def test_effective_unknown_when_dump_unparseable(tmp):
+    """oomctl succeeds but its output doesn't carry a Swap Monitored
+    CGroups header at all -- an output shape this parser doesn't
+    recognize is NOT the same fact as "recognized it, zero entries"."""
+    d = tempfile.mkdtemp(dir=tmp)
+    _write_exec(os.path.join(d, "oomctl"), """#!/usr/bin/env bash
+echo "unexpected future oomctl output format, no known headers at all"
+""")
+    _write_exec(os.path.join(d, "systemctl"), f"""#!/usr/bin/env bash
+echo "ControlGroup={SESSION_CGROUP_PATH}"
+exit 0
+""")
+    old_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = d + os.pathsep + old_path
+    fails = []
+    try:
+        got = ramsteind._oomd_session_swap_effective(_FAKE_CFG)
+        if got is not None:
+            fails.append(f"expected None (unrecognized oomctl output shape),"
+                          f" got: {got!r}")
+    finally:
+        os.environ["PATH"] = old_path
+    return fails
+
+
+def test_effective_unknown_when_session_cgroup_unresolvable(tmp):
+    """oomctl parses cleanly, but systemctl can't resolve user@.service's
+    own cgroup (unit doesn't exist, systemctl itself fails) -- the
+    daemon can't ask "is MINE in the list" without knowing what "mine"
+    is, so this must be None too, not a guess in either direction."""
+    d = tempfile.mkdtemp(dir=tmp)
+    _write_exec(os.path.join(d, "oomctl"), f"""#!/usr/bin/env bash
+cat <<'FIXTURE_EOF'
+{ENROLLED_DUMP}
+FIXTURE_EOF
+""")
+    _write_exec(os.path.join(d, "systemctl"), "#!/usr/bin/env bash\nexit 1\n")
+    old_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = d + os.pathsep + old_path
+    fails = []
+    try:
+        got = ramsteind._oomd_session_swap_effective(_FAKE_CFG)
+        if got is not None:
+            fails.append(f"expected None (session cgroup unresolvable),"
+                          f" got: {got!r}")
+    finally:
+        os.environ["PATH"] = old_path
     return fails
 
 
@@ -410,6 +588,16 @@ def main():
              test_honest_failure_with_pressure_already_enrolled),
             ("disenroll", test_disenroll),
             ("default (no dry_run arg) is a safe preview", test_default_is_dry_run),
+            ("effective: true for own session", test_effective_true_for_own_session),
+            ("effective: false for someone else's leftover cgroup",
+             test_effective_false_for_someone_elses_leftover_cgroup),
+            ("effective: unknown when oomctl is missing", test_effective_unknown_when_oomctl_missing),
+            ("effective: unknown when oomctl exits nonzero",
+             test_effective_unknown_when_oomctl_exits_nonzero),
+            ("effective: unknown when the dump is unparseable",
+             test_effective_unknown_when_dump_unparseable),
+            ("effective: unknown when the session cgroup is unresolvable",
+             test_effective_unknown_when_session_cgroup_unresolvable),
         ]:
             fails = fn(tmp)
             if fails:
@@ -423,8 +611,9 @@ def main():
             for f in fails:
                 print(f"  - [{name}] {f}")
         sys.exit(1)
-    print("oomd enroll ok: preflight conjunction, enroll/disenroll, and the"
-          " honest-failure-on-a-world-that-didn't-move case all correct")
+    print("oomd enroll ok: preflight conjunction, enroll/disenroll, the"
+          " honest-failure-on-a-world-that-didn't-move case, and the"
+          " session-precision fix's true/false/unknown states all correct")
 
 
 if __name__ == "__main__":
