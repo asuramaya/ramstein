@@ -112,12 +112,26 @@ pill:
 # is meant to be run directly by a human or systemd — none is an internal
 # helper, so a private libdir + symlink layer would only add indirection
 # nothing here needs. Builds only; never installs the result.
+#
+# THE GNOME EXTENSION WAS MISSING HERE (thread d92d86f2, alfred's dispatch
+# DM 4577): this target shipped a daemon and a CLI with no pill at all --
+# `make pill` (above) installs it per-account under $(HOME)/.local/share/
+# gnome-shell/extensions/, a path this system-wide package build can't
+# write to (no "the user" exists at dpkg-install time). System-wide GNOME
+# Shell extensions live under /usr/share/gnome-shell/extensions/<uuid>/,
+# which Shell scans alongside the per-account path -- coldspot's and
+# phanspeed's own packaging/build-deb.sh already do exactly this; this
+# target adopts the same shape rather than inventing a second one. Only
+# extension.js/pill.js/metadata.json ship -- pill.version/pill.commit are
+# a dev-time check-sutra freshness anchor, read by nothing at runtime
+# (confirmed: no import of either file anywhere in src/bin/).
 deb:
 	rm -rf $(DEBROOT)
 	install -d -m 0755 $(DEBROOT)/DEBIAN
 	install -d -m 0755 $(DEBROOT)/usr/bin
 	install -d -m 0755 $(DEBROOT)/usr/share/ramstein/scripts
 	install -d -m 0755 $(DEBROOT)/usr/share/ramstein/lib
+	install -d -m 0755 $(DEBROOT)/usr/share/gnome-shell/extensions/ramstein@asuramaya
 	install -d -m 0755 $(DEBROOT)/usr/share/man/man1
 	install -d -m 0755 $(DEBROOT)/usr/share/man/man8
 	install -d -m 0755 $(DEBROOT)/etc/ramstein
@@ -130,6 +144,9 @@ deb:
 	install -m 0644 packaging/VERSION $(DEBROOT)/usr/share/ramstein/VERSION
 	install -m 0644 packaging/release-signing/allowed_signers $(DEBROOT)/usr/share/ramstein/allowed_signers
 	install -m 0755 packaging/seed-owner-uid.py $(DEBROOT)/usr/share/ramstein/scripts/
+	install -m 0644 src/extension/ramstein@asuramaya/extension.js src/extension/ramstein@asuramaya/pill.js \
+	    src/extension/ramstein@asuramaya/metadata.json \
+	    $(DEBROOT)/usr/share/gnome-shell/extensions/ramstein@asuramaya/
 	install -m 0644 src/data/man/man1/ramstein.1 $(DEBROOT)/usr/share/man/man1/ramstein.1
 	install -m 0644 src/data/man/man8/ramsteind.8 $(DEBROOT)/usr/share/man/man8/ramsteind.8
 	install -m 0644 src/data/config/config.json $(DEBROOT)/etc/ramstein/config.json
