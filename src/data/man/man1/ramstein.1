@@ -38,6 +38,53 @@ or
 defaults to
 .IR 10m .
 .TP
+.B kills " [\-\-since T] [\-\-limit N]"
+Kernel memcg OOM-kill events since
+.IR T ,
+parsed from
+.BR journalctl (1)'s
+kernel log \(em process, RSS at time of death, and the owning cgroup/
+systemd scope.
+.I T
+is
+.IR Ns / Nm / Nh / Nd
+or
+.IR YYYY-MM-DD ;
+defaults to
+.IR 1d .
+Unlike
+.BR top ,
+.BR blame ,
+and
+.BR swap ,
+which read live or sampled
+.I /proc
+state (what's alive right now),
+.B kills
+answers a different question \(em what the kernel already killed \(em
+and is the only verb that can, since a killed process leaves no
+.I /proc
+entry to sample.
+Diagnostic only: a hard memcg
+.I MemoryMax
+kill is enforced entirely inside the kernel, in a cgroup
+.B ramstein
+does not own or monitor: this verb reports a kill after the fact, it
+cannot prevent one, and it is unrelated to
+.BR ramsteind (8)'s
+own
+.I oomd
+swap-kill enrollment (see
+.B oomd
+below), which answers a different failure class (swap/pressure-triggered
+kills, not a hard per-cgroup memory ceiling).
+Requires
+.B journalctl
+on
+.IR PATH ;
+if it's unreachable or exits nonzero, prints an error rather than a
+silently empty list.
+.TP
 .B swap " [\-\-limit N]"
 Who's parked in swap, VmSwap descending.
 .PP

@@ -13,6 +13,7 @@ stdlib only, by constitution.
 import argparse
 import json
 import os
+import re
 import signal
 import sqlite3
 import subprocess
@@ -687,6 +688,90 @@ def _limit(req):
     if not isinstance(lim, int) or not 1 <= lim <= 1000:
         raise ValueError("limit must be an int in 1..1000")
     return lim
+
+
+# journalctl -k -o short-unix's kernel OOM burst is always this shape, three
+# lines in order for one kill (verified live, 2026-08-18 field incident --
+# hector-vector's test_agent_access.py, 5 kills, same three-line shape every
+# time):
+#   "<comm> invoked oom-killer: ..."
+#   "oom-kill:constraint=...,oom_memcg=<cgroup>,...,task=<comm>,pid=<pid>,..."
+#   "Memory cgroup out of memory: Killed process <pid> (<comm>)"
+#     " total-vm:...kB, anon-rss:<N>kB, ..."
+# The middle line carries the cgroup a plain `ramstein top`/`blame` can't
+# see (process-level RSS, not per-scope) -- pid ties it to the kill line's
+# rss. _OOM_KILL_RE anchors on oom_memcg= rather than task_memcg= (the two
+# are equal for every kill this daemon has ever observed, but oom_memcg is
+# the one systemd's own source names as the accounting scope, docs/
+# ARCHITECTURE.md's citation).
+_OOM_KILL_LINE_RE = re.compile(
+    r"oom-kill:constraint=\S+,.*?oom_memcg=(?P<cgroup>\S+?),"
+    r".*?pid=(?P<pid>\d+),uid=(?P<uid>\d+)")
+_OOM_KILLED_PROCESS_RE = re.compile(
+    r"Killed process (?P<pid>\d+) \((?P<comm>[^)]+)\)"
+    r".*?anon-rss:(?P<anon_rss_kb>\d+)kB")
+
+
+def query_kills(since, limit):
+    """Kernel memcg OOM-kill events since `since` (epoch seconds) --
+    diagnostic-only, read straight from the kernel ring buffer via
+    journalctl, never sampled or persisted by this daemon.
+
+    Exists because `top`/`blame` are BLIND to this failure class by
+    design: both read live/sampled /proc RSS, which tells you what's
+    ALIVE right now, never what the kernel already killed. The field
+    incident that motivated this (2026-08-18, hector-vector's
+    test_agent_access.py OOM-killing a headless-Chrome child 5x) was
+    diagnosed entirely by hand -- `journalctl -k | grep -i oom` -- because
+    ramstein itself had nothing to say about it. This closes that gap by
+    parsing the same kernel lines a human would have grepped, not by
+    adding new sampling: a kill is a rare, bursty, already-logged event,
+    not something worth a poll-loop cost.
+
+    Deliberately NOT wired into ramsteind's own oomd enrollment or
+    swap-kill protection (thread 3dd73060's oomd precision fix, decision
+    5607ab3c) -- a hard memcg MemoryMax kill is enforced by the kernel's
+    own OOM killer inside a cgroup ramstein doesn't own or monitor,
+    orthogonal to systemd-oomd's swap/pressure-triggered kills. This verb
+    tells you a kill happened and where; it does not, and structurally
+    cannot, prevent one."""
+    try:
+        r = subprocess.run(
+            ["journalctl", "-k", "-o", "short-unix", "--no-pager",
+             "--since", f"@{since:.0f}"],
+            capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"error": f"journalctl unavailable: {exc}"}
+    if r.returncode != 0:
+        return {"error": f"journalctl exited {r.returncode}: "
+                          f"{r.stderr.strip()[:200]}"}
+    pending_cgroup = {}  # pid -> (ts, cgroup) from the oom-kill: line
+    kills = []
+    for line in r.stdout.splitlines():
+        ts_str, _, rest = line.partition(" ")
+        try:
+            ts = float(ts_str)
+        except ValueError:
+            continue
+        m = _OOM_KILL_LINE_RE.search(rest)
+        if m:
+            pending_cgroup[int(m.group("pid"))] = (ts, m.group("cgroup"))
+            continue
+        m = _OOM_KILLED_PROCESS_RE.search(rest)
+        if not m:
+            continue
+        pid = int(m.group("pid"))
+        cgroup_ts, cgroup = pending_cgroup.pop(pid, (ts, None))
+        kills.append({
+            "ts": cgroup_ts,
+            "pid": pid,
+            "comm": m.group("comm"),
+            "rss": int(m.group("anon_rss_kb")) * 1024,
+            "cgroup": cgroup,
+            "unit": cgroup.rsplit("/", 1)[-1] if cgroup else None,
+        })
+    kills.sort(key=lambda k: k["ts"], reverse=True)
+    return {"since": since, "rows": kills[:limit]}
 
 
 # --- hands: calm / oom / advise (M3) ----------------------------------------
@@ -2442,6 +2527,11 @@ def _make_dispatch(cfg, get_status, autocalm_state, config_path, swap_size_state
             return query_blame(float(since), _limit(req))
         if cmd == "zombies":
             return query_zombies()
+        if cmd == "kills":
+            since = req.get("since")
+            if not isinstance(since, (int, float)) or since <= 0:
+                raise ValueError("since must be a positive epoch timestamp")
+            return query_kills(float(since), _limit(req))
         if cmd == "resolve":
             target = req.get("target")
             if not isinstance(target, str) or not target:

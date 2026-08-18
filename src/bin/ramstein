@@ -219,6 +219,26 @@ def cmd_blame(argv):
               f" new/gone rather than partially grown/shrunk)")
 
 
+def cmd_kills(argv):
+    now = time.time()
+    since = parse_since(_flag_val(argv, "--since", "1d"), now)
+    limit = int(_flag_val(argv, "--limit", "20"))
+    doc = request_or_die({"cmd": "kills", "since": since, "limit": limit})
+    if "--json" in argv:
+        print(json.dumps(doc, indent=2))
+        return
+    rows = doc["rows"]
+    if not rows:
+        print("no OOM kills in that window")
+        return
+    print(f"{'AGE':>6} {'RSS':>8}   {'PID':>7}  PROC              UNIT")
+    for r in rows:
+        age = human_eta(int(now - r["ts"])).lstrip("~") or "0s"
+        unit = r["unit"] or "?"
+        print(f"{age:>6} {human_bytes(r['rss']):>8}   {r['pid']:>7}"
+              f"  {r['comm']:<16}  {unit}")
+
+
 def cmd_zombies(argv):
     doc = request_or_die({"cmd": "zombies"})
     if "--json" in argv:
@@ -774,6 +794,7 @@ verbs:
   top [--swap] [--limit N]        biggest RSS (or --swap) consumers
   swap [--limit N]                processes parked in swap
   blame [--since T] [--limit N]   RSS movers since T (30s / 10m / 2h / 1d / YYYY-MM-DD)
+  kills [--since T] [--limit N]   kernel OOM-kills since T (default 1d) — top/blame can't see these
   zombies                         unreaped zombie processes, grouped by parent
   oom                             who dies first, by oom_score
   advise                          rule-based notices (pressure/growth/swap/zombies/...)
@@ -812,6 +833,7 @@ def main():
     verb = argv[0] if argv else "status"
     rest = argv[1:] if argv else []
     verbs = {"status": cmd_status, "top": cmd_top, "blame": cmd_blame,
+             "kills": cmd_kills,
              "swap": cmd_swap, "zombies": cmd_zombies, "oom": cmd_oom,
              "advise": cmd_advise, "calm": cmd_calm, "autocalm": cmd_autocalm,
              "oomd": cmd_oomd, "swappiness": cmd_swappiness,

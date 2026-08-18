@@ -53,6 +53,22 @@ rather than every tick. cgroup v2 `memory.current`/`memory.pressure` gives per-c
 the write target for `calm`. `oom_score`/`oom_score_adj` ground `oom`'s ranking in the kernel's
 own math rather than reinventing it.
 
+`kills` reads a different source entirely: the kernel ring buffer, via `journalctl -k` (on-demand
+subprocess call, not sampled or persisted — a kill is a rare, bursty, already-logged event, not
+worth a poll-loop cost). Every other verb above answers "what's alive right now"; `kills` exists
+because that question is structurally blind to a process the kernel already killed — there is no
+`/proc/<pid>` left to read. Motivated by a live field incident (2026-08-18): a repo's e2e test was
+OOM-killing a headless-Chrome child repeatedly (hard `memory.max` inside its own transient systemd
+scope), diagnosed entirely by hand (`journalctl -k | grep -i oom`) because no verb here had
+anything to say about it. Parses the three-line kernel burst a human would have grepped (`<comm>
+invoked oom-killer`, the `oom-kill:constraint=...,oom_memcg=...,pid=...` accounting line, `Memory
+cgroup out of memory: Killed process ...`), correlating the middle line's cgroup path onto the
+kill line's pid — the one piece of context `top`/`blame` can never carry, since they're per-process
+RSS with no cgroup/scope attribution at all. Diagnostic only, deliberately not wired into `oomd`
+enrollment: a hard memcg kill is enforced by the kernel inside a cgroup ramstein doesn't own or
+monitor, orthogonal to `systemd-oomd`'s own swap/pressure-triggered kills (see "The watchman and
+auto-calm" below) — this verb explains a kill after the fact, it cannot prevent one.
+
 ## The index
 
 The per-process sampler walks `/proc/[0-9]*/status` and `stat` every `sample_every` poll ticks
