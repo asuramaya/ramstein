@@ -118,6 +118,10 @@ def human_psi(psi):
 
 
 def human_eta(seconds):
+    """Generic exact duration formatter -- sample age, blame span, kills
+    age, autocalm age. These are all plain elapsed-time subtractions, not
+    estimates, so they get exact-minute display; see human_oom_eta for
+    the one caller (eta_oom_seconds) that must NOT."""
     if seconds is None:
         return "—"
     if seconds >= 2 * 86400:
@@ -127,6 +131,43 @@ def human_eta(seconds):
     if seconds >= 120:
         return f"~{seconds // 60}m"
     return f"~{seconds}s"
+
+
+def human_oom_eta(seconds):
+    """eta_oom_seconds ONLY -- coarsened by design between 2m and 2h
+    (alfred's ruling, 2026-09-02, msg 6394): eta_oom_seconds = headroom /
+    a smoothed-but-still-noisy burn rate (sutra.ewma_rate) -- a straight
+    division whose error amplifies nonlinearly as the rate wobbles,
+    live-observed swinging 61m -> 69m inside 30 seconds under a churning
+    workload. Exact-minute display there ("~61m") claims a precision the
+    estimator provably doesn't have, worst exactly when the reader is
+    most likely to act on the digit. Below 2h, buckets carry the
+    actionable content (tens-of-minutes vs approaching an hour vs
+    approaching two) without asserting a false one. 2h+ was already
+    hour-granularity and stays there; under 2m stays exact seconds -- at
+    that horizon the response ("act now") doesn't change with the exact
+    digit, unlike the 2m-2h band this fixes. Deliberately a SEPARATE
+    function from human_eta, not a shared one with a flag: human_eta's
+    other five callers (sample age, blame span, kills age, autocalm age)
+    are exact elapsed-time subtractions with no estimator noise to hide,
+    and coarsening them would be a pure regression, not a fix."""
+    if seconds is None:
+        return "—"
+    if seconds >= 2 * 86400:
+        return f"~{seconds // 86400}d"
+    if seconds >= 2 * 3600:
+        return f"~{seconds // 3600}h"
+    if seconds < 120:
+        return f"~{seconds}s"
+    if seconds < 300:
+        return "<5m"
+    if seconds < 900:
+        return "<15m"
+    if seconds < 1800:
+        return "<30m"
+    if seconds < 3600:
+        return "<1h"
+    return "<2h"
 
 
 FLAGS = {"ok": " ", "warn": "!", "hot": "‼"}
@@ -147,7 +188,7 @@ def cmd_status(argv):
           f"of {human_bytes(m['swap_total'])}   "
           f"pressure {human_psi(m['psi'])}   "
           f"burn {human_burn(m['burn_bps'])}   "
-          f"OOM {human_eta(m['eta_oom_seconds'])}")
+          f"OOM {human_oom_eta(m['eta_oom_seconds'])}")
 
 
 def cmd_top(argv):
@@ -265,7 +306,7 @@ def cmd_oom(argv):
               f"{human_bytes(mem.get('total', 0))}   "
               f"pressure {human_psi(mem.get('psi', {}))}   "
               f"burn {human_burn(mem.get('burn_bps', 0))}   "
-              f"OOM {human_eta(mem.get('eta_oom_seconds'))}")
+              f"OOM {human_oom_eta(mem.get('eta_oom_seconds'))}")
     print("who dies first (by oom_score):")
     for c in doc.get("candidates", []):
         print(f"  {c['oom_score']:>5}  {human_bytes(c['rss']):>8}"

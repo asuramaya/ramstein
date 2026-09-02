@@ -183,14 +183,31 @@ function fmtBurn(bps) {
     return `${Pill.fmtBytes(bps)}/s`;
 }
 function fmtEta(s) {
-    // OOM horizons are minutes and hours, not days and weeks
+    // Coarsened by design between 2m and 2h (alfred's ruling, 2026-09-02,
+    // msg 6394; mirrors ramstein CLI's human_oom_eta -- see its own
+    // comment for the full mechanism): eta_oom_seconds = headroom / a
+    // smoothed-but-still-noisy burn rate, live-observed swinging 61m ->
+    // 69m in 30s under a churning workload. Exact-minute display there
+    // claims precision the estimator doesn't have, worst exactly when
+    // the pill's reader is most likely to act on the digit. Duplicated
+    // from the CLI rather than shared -- this file already carries its
+    // own independent fmtBurn/fmtBytes for the same reason (no daemon-
+    // protocol client here, GJS reads status.json directly).
     if (s == null)
         return '—';
     if (s >= 2 * 3600)
         return `~${Math.floor(s / 3600)}h`;
-    if (s >= 120)
-        return `~${Math.floor(s / 60)}m`;
-    return `~${Math.max(1, Math.floor(s))}s`;
+    if (s < 120)
+        return `~${Math.max(1, Math.floor(s))}s`;
+    if (s < 300)
+        return '<5m';
+    if (s < 900)
+        return '<15m';
+    if (s < 1800)
+        return '<30m';
+    if (s < 3600)
+        return '<1h';
+    return '<2h';
 }
 // severity order for the heat and the alert banner
 const RANK = {ok: 0, warn: 1, hot: 2};

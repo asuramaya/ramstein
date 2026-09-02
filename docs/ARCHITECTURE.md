@@ -44,7 +44,14 @@ now. Two edge cases are deliberately not deduplicated between the two tools:
 
 `/proc/meminfo` (`MemAvailable`/`SwapFree`, cheap, read every tick) and `/proc/pressure/memory`
 (PSI some/full at avg10/60/300, kernel-computed, needs `CONFIG_PSI`, on by default for years)
-feed the burn-rate EWMA and the ETA-to-OOM. `/proc/<pid>/status` (`VmRSS`/`VmSwap`/`VmHWM`) is
+feed the burn-rate EWMA and the ETA-to-OOM. `eta_oom_seconds` is a straight division (headroom /
+the EWMA'd rate), which amplifies any residual wobble in that rate nonlinearly — live-observed
+swinging 61m → 69m within 30 seconds under a churning workload (alfred's finding, msg 6386,
+2026-09-02). The daemon's own JSON keeps the raw number; the CLI (`human_oom_eta` in `src/bin/
+ramstein`) and the daemon's own advise rule 6 (`_eta_bucket_text`) both coarsen it to a bucket
+between 2 minutes and 2 hours (`<5m`/`<15m`/`<30m`/`<1h`/`<2h`) rather than show an exact minute
+count the estimator can't back — the same discipline as the shmem split below, an honest number
+kept from wearing an overconfident sentence. `/proc/<pid>/status` (`VmRSS`/`VmSwap`/`VmHWM`) is
 the workhorse for `top`/`blame`/`swap`, one read per pid; summed `VmSwap` will not exactly equal
 `SwapTotal - SwapFree`, since shared/CoW pages count against each holder (the swap analogue of
 byebyte's df-vs-du honesty). `/proc/<pid>/smaps_rollup` gives an accurate PSS with shared pages
@@ -52,6 +59,17 @@ divided fairly, an order of magnitude more expensive than `status`, so it is sam
 rather than every tick. cgroup v2 `memory.current`/`memory.pressure` gives per-cgroup PSI and is
 the write target for `calm`. `oom_score`/`oom_score_adj` ground `oom`'s ranking in the kernel's
 own math rather than reinventing it.
+
+The `advise` shmem rule (rule 7) points a reader at byebyte for `/proc/meminfo`'s `Shmem`, but
+byebyte is a path-indexing tool and roughly half of a real machine's Shmem is memfd/anonymous
+shared segments with no filesystem path at all (chrome's and postgres's own shared mappings,
+live-measured 2026-09-02: 4.17G tmpfs-reachable of 9.22G total, alfred's msg 6386) — a referral
+covering under half a number while reading as though it covers all of it. `_tmpfs_reachable_bytes()`
+sums every mounted tmpfs's used bytes via `statvfs` (the exact ceiling byebyte can ever itemise);
+the rule then names both halves explicitly rather than handing the whole number to a tool that
+can only account for part of it, falling back to the old undifferentiated wording when the split
+can't be measured or disagrees with `Shmem`'s own snapshot (two separate kernel reads a moment
+apart, under load, can disagree) rather than fabricate one.
 
 `kills` reads a different source entirely: the kernel ring buffer, via `journalctl -k` (on-demand
 subprocess call, not sampled or persisted — a kill is a rare, bursty, already-logged event, not

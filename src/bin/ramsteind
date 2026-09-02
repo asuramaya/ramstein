@@ -219,6 +219,62 @@ def read_psi():
     return psi
 
 
+def _eta_bucket_text(seconds):
+    """eta_oom_seconds's own error grows without bound as the estimator's
+    smoothed-but-still-noisy burn rate wobbles (live-observed 61m -> 69m
+    in 30s under a churning workload) -- raw seconds here ("OOM ETA
+    2340s") was an even sharper false-precision claim than the CLI's old
+    exact-minute display, same underlying cause. Mirrors ramstein CLI's
+    human_oom_eta bucket scheme (alfred's ruling, msg 6394) so the
+    daemon's advise text and the CLI's status line agree on how confident
+    to sound about the same number -- duplicated rather than shared, the
+    same shape as the GNOME extension's own independent fmtEta. Only
+    called for eta < 3600 (rule 6's own guard), so the >=1h buckets this
+    scheme would otherwise need never apply here."""
+    if seconds < 120:
+        return f"{seconds}s"
+    if seconds < 300:
+        return "under 5m"
+    if seconds < 900:
+        return "under 15m"
+    if seconds < 1800:
+        return "under 30m"
+    return "under 1h"
+
+
+def _tmpfs_reachable_bytes():
+    """Sum of USED bytes across every currently-mounted tmpfs -- the exact
+    ceiling a path-indexing pill (byebyte) can ever itemise out of
+    /proc/meminfo's Shmem, since tmpfs (which backs /dev/shm and every
+    plain tmpfs mount, POSIX shm included) is the only shmem-backing
+    filesystem with a real mount point at all. SysV shared memory and
+    memfd/anonymous segments have no path and are NEVER counted here --
+    live-measured on the operator's own machine (2026-09-02): 4.17G tmpfs
+    vs 9.22G total Shmem, the other ~5.05G being exactly this unreachable
+    kind (alfred's finding, msg 6386).
+
+    Returns None if /proc/mounts can't be read -- the caller's job to fall
+    back to an undifferentiated line rather than fabricate a split from a
+    partial read."""
+    try:
+        with open("/proc/mounts") as f:
+            lines = f.readlines()
+    except OSError:
+        return None
+    total = 0
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 3 or parts[2] != "tmpfs":
+            continue
+        mnt = parts[1].replace("\\040", " ")
+        try:
+            st = os.statvfs(mnt)
+        except OSError:
+            continue
+        total += (st.f_blocks - st.f_bfree) * st.f_frsize
+    return total
+
+
 def poll_memory(state, cfg, now):
     mi = read_meminfo()
     total = mi.get("MemTotal", 0)
@@ -1137,7 +1193,8 @@ def query_advise(cfg, get_status):
         eta = mem.get("eta_oom_seconds")
         if eta is not None and eta < 3600:
             lines.append({"rule": "eta", "text":
-                f"OOM ETA {eta}s — see `ramstein oom` for kill candidates"})
+                f"OOM ETA {_eta_bucket_text(eta)} — see `ramstein oom` for"
+                f" kill candidates"})
 
     # rule 7: shared memory (tmpfs/dev/shm/SysV+POSIX shm) is correctly
     # excluded from MemAvailable — the kernel can't reclaim it without
@@ -1153,12 +1210,41 @@ def query_advise(cfg, get_status):
         shmem = mem.get("shmem", 0)
         shmem_pct = 100.0 * shmem / mem["total"]
         if shmem_pct > cfg["advise_shmem_pct"]:
-            lines.append({"rule": "shmem", "text":
-                f"{shmem / 1024**3:.1f}G ({shmem_pct:.0f}% of RAM) is shared"
-                f" memory across the system (tmpfs/dev/shm/shared-memory"
-                f" segments) — correctly excluded from available memory,"
-                f" but some of it may be safely deletable; a disk-focused"
-                f" pill (e.g. byebyte) can show what's actually in it"})
+            # SPLIT BEFORE HANDOFF (alfred's ruling, 2026-09-02, msg 6394):
+            # the old wording pointed at byebyte for the WHOLE shmem number,
+            # but byebyte is a path-indexing tool and roughly half of Shmem
+            # on a real machine is memfd/anonymous shared segments with no
+            # filesystem path at all (chrome's and postgres's own shared
+            # mappings, live-measured: 4.17G tmpfs-reachable of 9.22G total).
+            # A referral covering 45% of a number while reading as though it
+            # covers all of it is an unbacked clearing condition -- the same
+            # cut as 2c45d78e, on the advice surface instead of a control's
+            # own state. Keep the referral (it's the right pointer for the
+            # part it actually covers); just stop it overpromising.
+            tmpfs = _tmpfs_reachable_bytes()
+            if tmpfs is not None and 0 <= tmpfs <= shmem:
+                anon = shmem - tmpfs
+                lines.append({"rule": "shmem", "text":
+                    f"{shmem / 1024**3:.1f}G ({shmem_pct:.0f}% of RAM) is"
+                    f" shared memory — {tmpfs / 1024**3:.1f}G in tmpfs"
+                    f" mounts (byebyte can itemise this part: /tmp,"
+                    f" /dev/shm, ...), {anon / 1024**3:.1f}G in"
+                    f" anonymous/memfd segments with no filesystem path (no"
+                    f" pill can itemise these; they belong to their owning"
+                    f" processes — see `ramstein top`)"})
+            else:
+                # tmpfs measurement unavailable, or inconsistent with
+                # Shmem's own snapshot (two separate kernel reads a moment
+                # apart can disagree under load) -- an honest
+                # undifferentiated line, never a fabricated split.
+                lines.append({"rule": "shmem", "text":
+                    f"{shmem / 1024**3:.1f}G ({shmem_pct:.0f}% of RAM) is"
+                    f" shared memory across the system (tmpfs/dev/shm/"
+                    f" anonymous shared-memory segments) — correctly"
+                    f" excluded from available memory, but some of it may"
+                    f" be safely deletable; a disk-focused pill (e.g."
+                    f" byebyte) can itemise the tmpfs-backed part of it,"
+                    f" not necessarily all of it"})
 
     return {"lines": lines}
 

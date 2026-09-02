@@ -17,7 +17,15 @@ for machine-readable output.
 .SH VERBS
 .TP
 .B status
-Available memory, PSI pressure, burn rate, and ETA-to-OOM.
+Available memory, PSI pressure, burn rate, and ETA-to-OOM. The ETA is
+headroom divided by a smoothed but still-noisy burn rate, so between 2
+minutes and 2 hours it renders as a bucket
+.RI ( "<5m, <15m, <30m, <1h, <2h" )
+rather than an exact minute count \(em the exact form (e.g. "~61m")
+claimed a precision the estimator provably doesn't have, most visibly
+wrong right when its digit is likeliest to be acted on. 2 hours and
+above (and under 2 minutes) already carried enough natural coarseness
+and render as before.
 .TP
 .B top " [\-\-swap] [\-\-limit N]"
 Live per-process RSS, ranked (or swap-ranked with
