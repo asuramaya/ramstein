@@ -12,7 +12,7 @@ trap 'kill "${DPID:-0}" "${ZPID:-0}" 2>/dev/null || true; rm -rf "$RD"' EXIT
 # fixture processes below show up within a single poll tick
 cat > "$RD/config.json" <<EOF
 {"poll_interval": 1, "owner_uid": $(id -u), "sample_every": 1,
- "proc_min_bytes": 1048576}
+ "proc_min_bytes": 1048576, "notify_kill_enabled": false}
 EOF
 
 # M3 fixtures: a fake `systemctl` (always reports oomd active, for the

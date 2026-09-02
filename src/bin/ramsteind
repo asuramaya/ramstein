@@ -7,6 +7,16 @@ current pressure, and publishes status.json for the CLI and the GNOME
 pill. The daemon is the only privileged actor; the CLI and pill only
 read status and poke the control socket.
 
+V3 (alfred's ruling, msg 6500, 2026-09-02): the daemon also SPEAKS,
+unprompted, straight to the owner's desktop notification bus, for a
+narrow class of finding earned by a month of honesty work elsewhere in
+this file (the oomd precision fix, the shmem split, the ETA coarsening)
+-- an alert is only trustworthy if built on a number that's already
+been made honest. SPEAKING, NOT ACTING: nothing here reads or writes
+the kill gate or autocalm's three gates; a notification is advisory
+exhaust from the same poll loop that already computes everything it
+needs, never a second decision-making path.
+
 stdlib only, by constitution.
 """
 
@@ -17,6 +27,7 @@ import re
 import signal
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 
@@ -101,6 +112,16 @@ DEFAULTS = {
                                # % of total RAM is worth naming: correctly
                                # excluded from MemAvailable, so it never shows
                                # up as "the problem" anywhere else on the card
+    # V3: post-kill desktop notification (alfred's ruling, msg 6500). ON by
+    # default -- unlike the forecast-based notify categories this precedes
+    # (not yet built), a post-kill notice is a kernel FACT about the user's
+    # own machine after the event, with no false-positive surface and no
+    # action demanded; requiring an opt-in to be told the kernel killed
+    # your process is exactly the shape that produced "ramstein feels
+    # useless" (the operator's own verdict). Per-category, not a global
+    # notify switch -- a user who trusts this and distrusts a later
+    # forecast-based category must not have to choose one row.
+    "notify_kill_enabled": True,
     # V2.M2: auto-calm — the master switch. Even fully armed (see
     # auto_calm_armed below) and even with the opt-in systemd timer
     # enabled, a cycle does nothing unless this is also true. Kill is
@@ -2590,6 +2611,126 @@ def query_zram_status(zram_state):
     }
 
 
+# --- V3: speaking, not acting ------------------------------------------------
+# The daemon's own unprompted voice (alfred's ruling, msg 6500). One category
+# so far: a post-kill desktop notice, built on query_kills above. Deliberately
+# NOT wired into the kill gate or autocalm's three gates -- this section only
+# ever reads (query_kills, /proc/meminfo via poll_memory's own doc) and sends
+# a best-effort notification; it writes nothing any other verb reads back.
+
+KILL_NOTIFY_STATE_PATH = os.path.join(STATE_DIR, "kill_notify.json")
+
+
+def _load_kill_notify_high_water():
+    """The persisted "last kill we already reported" timestamp -- ON DISK,
+    not in-memory-only (disclosed tradeoff, alfred's msg 6500: an
+    in-memory mark resets on every daemon restart and would re-report a
+    recent kill; persisting removes that gap at the cost of one small
+    file write per NEW kill found, not per poll). Missing or corrupt ->
+    None, the caller's job to bootstrap from "now" rather than crash or
+    silently rescan all history back to whenever the machine booted."""
+    try:
+        with open(KILL_NOTIFY_STATE_PATH) as f:
+            doc = json.load(f)
+        return float(doc["last_ts"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _save_kill_notify_high_water(last_ts):
+    tmp = KILL_NOTIFY_STATE_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"last_ts": last_ts}, f)
+    os.replace(tmp, KILL_NOTIFY_STATE_PATH)
+
+
+def _send_desktop_notification(owner_uid, summary, body):
+    """Best-effort desktop notification straight to the owner's own D-Bus
+    session bus -- going around the GNOME extension entirely, which is
+    the right call for a machine whose shell has not reloaded in three
+    days (the pill's own code is never the deciding factor in whether
+    this reaches the desktop). `env VAR=val cmd`, not a bare `VAR=val`
+    argument to sudo itself: sudo's env_reset security policy filters the
+    environment IT inherits before exec'ing the target command, but an
+    explicit argument to `env` is unaffected by that filter regardless of
+    sudoers' env_keep list -- the standard shape for "become another user
+    and hand them a D-Bus address," verified live (2026-09-02) rather
+    than assumed: sent a real notification and the operator confirmed it
+    rendered on the actual desktop before this was called done (alfred's
+    explicit condition, msg 6500 -- "do not ship on [verified-reachable,
+    not verified-working]").
+
+    Never raises and never blocks the poll loop on failure -- a silent
+    notifier would be exactly the class of defect this family has spent
+    a month eliminating, so a failure is at least printed to stderr
+    (journald, under the real systemd unit) even though there's no
+    richer place to surface it today. Returns True/False, never raises."""
+    bus = f"unix:path=/run/user/{owner_uid}/bus"
+    try:
+        r = subprocess.run(
+            ["sudo", "-u", f"#{owner_uid}", "env",
+             f"DBUS_SESSION_BUS_ADDRESS={bus}",
+             "notify-send", "--app-name=ramstein", "--urgency=critical",
+             summary, body],
+            capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"ramsteind: notify-send failed: {exc}", file=sys.stderr)
+        return False
+    if r.returncode != 0:
+        print(f"ramsteind: notify-send exited {r.returncode}: "
+              f"{r.stderr.strip()[:200]}", file=sys.stderr)
+        return False
+    return True
+
+
+def _kill_notify_text(rows):
+    """rows: query_kills' own row shape, oldest first. A single kill gets
+    its own sentence; a burst (this session's own hector-vector incident
+    found 5 in under 30 minutes) collapses to one notification naming the
+    most recent, not one notification per kill -- the whole point of
+    speaking unprompted is trust, and five back-to-back popups for one
+    underlying incident spends that trust rather than building it."""
+    if len(rows) == 1:
+        r = rows[0]
+        return ("ramstein: process killed (out of memory)",
+                f"the kernel OOM-killed {r['comm']} (pid {r['pid']}, "
+                f"{r['rss'] / 1024**3:.1f}G) — see `ramstein kills` for detail")
+    latest = rows[-1]
+    return (f"ramstein: {len(rows)} processes killed (out of memory)",
+            f"most recent: {latest['comm']} (pid {latest['pid']}, "
+            f"{latest['rss'] / 1024**3:.1f}G) — see `ramstein kills` for detail")
+
+
+def check_kill_notifications(cfg, kill_notify_state):
+    """Called once per poll tick from main(). kill_notify_state is the
+    in-process cache of the high-water mark (avoids a disk read every
+    tick when there's nothing new); the FILE is the durable copy a
+    restart reads back. First-ever run (no persisted file) bootstraps
+    the mark to "now" rather than the beginning of time -- a fresh
+    install must never open with a flood of notifications for kills
+    from days before ramstein even existed on this machine."""
+    if not cfg.get("notify_kill_enabled", True):
+        return
+    last_ts = kill_notify_state.get("last_ts")
+    if last_ts is None:
+        last_ts = _load_kill_notify_high_water()
+    if last_ts is None:
+        last_ts = time.time()
+        kill_notify_state["last_ts"] = last_ts
+        _save_kill_notify_high_water(last_ts)
+        return
+    doc = query_kills(last_ts, limit=50)
+    rows = [r for r in doc.get("rows", []) if r["ts"] > last_ts]
+    if not rows:
+        return
+    rows.sort(key=lambda r: r["ts"])  # oldest first, for _kill_notify_text
+    summary, body = _kill_notify_text(rows)
+    _send_desktop_notification(cfg["owner_uid"], summary, body)
+    new_last_ts = rows[-1]["ts"]
+    kill_notify_state["last_ts"] = new_last_ts
+    _save_kill_notify_high_water(new_last_ts)
+
+
 # --- control socket ---------------------------------------------------------
 # The security seam (SO_PEERCRED-gated, bounded reads, hostile-input framing,
 # the listen(64) backlog M4's attack suite demanded) lives in
@@ -2783,6 +2924,10 @@ def main():
                        "last_result": None}
     # zram's own BOUNDED-WAIT state, same shape as swap_size_state.
     zram_state = {"in_progress": False, "last_result": None}
+    # V3's in-process cache of the post-kill notification high-water mark
+    # (see check_kill_notifications) -- the file under STATE_DIR is the
+    # durable copy; this dict just avoids a disk read every tick.
+    kill_notify_state = {}
     sampler = Sampler(cfg)
     dispatch = _make_dispatch(cfg, lambda: latest["doc"], autocalm_state,
                               args.config, swap_size_state, zram_state)
@@ -2821,6 +2966,10 @@ def main():
         doc["pill"] = pill_cache["summary"]
         latest["doc"] = doc
         write_status(doc, cfg)
+        # V3: speaking, not acting -- after status is published, never
+        # before (a slow/hanging journalctl or notify-send must not delay
+        # the read surface every other verb depends on).
+        check_kill_notifications(cfg, kill_notify_state)
         if args.once:
             break
         stop.wait(cfg["poll_interval"])

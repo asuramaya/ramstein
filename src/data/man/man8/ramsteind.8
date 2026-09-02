@@ -66,6 +66,7 @@ auto_calm_step_squeeze@true@bool
 auto_calm_nice@15@0\(en19
 auto_calm_squeeze_pct@130.0@110\(en500
 auto_calm_cooldown_seconds@300.0@30\(en86400
+notify_kill_enabled@true@bool
 .TE
 .PP
 Units are seconds unless named otherwise.
@@ -101,6 +102,12 @@ is the master switch; even armed (see
 verb) and even with
 .B ramstein\-autocalm.timer
 enabled, a cycle does nothing while this is false.
+.I notify_kill_enabled
+governs V3's post-kill desktop notification (see
+.B SPEAKING, NOT ACTING (V3)
+below); true by default, unlike every other opt-in feature above, since a
+kernel OOM-kill is a fact about the user's own machine with no
+false-positive surface, not a forecast that can be wrong.
 .SH FILES
 .TP
 .I /etc/ramstein/config.json
@@ -193,6 +200,29 @@ squeeze \(em the daemon never kills anything on its own, at any setting;
 it only ever surfaces a suggested
 .I calm \-\-kill
 command for a human to run.
+.SH SPEAKING, NOT ACTING (V3)
+Every finding above is otherwise available only to someone who runs
+.BR ramstein (1)
+by hand. When
+.I notify_kill_enabled
+is true (the default), a new kernel OOM-kill sends a real desktop
+notification to
+.I owner_uid's
+own session \(em straight over D\-Bus
+.RI ( "sudo \-u '#<owner_uid>' env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/<uid>/bus notify\-send" ),
+going around the GNOME pill entirely, so it reaches the desktop even on
+a shell that has not reloaded in days. Best\-effort: a failure is logged
+to stderr (journald, under the real unit) and never blocks the poll
+loop. The high\-water mark (last\-reported kill) persists to
+.IR /var/lib/ramstein/kill_notify.json ,
+not memory only, so a daemon restart does not re\-report a kill from
+hours ago; a fresh install bootstraps the mark to the daemon's own start
+time rather than scanning the machine's entire kill history on first
+boot. A burst of kills collapses to one notification naming the most
+recent, never one popup per kill. This reads
+.I kills
+and writes nothing any other verb reads back \(em it touches neither the
+kill gate nor auto\-calm's three gates above.
 .SH SECURITY
 The relevant attacker is an unprivileged local process abusing the root
 daemon; ramsteind has no network attack surface at all \(em the only

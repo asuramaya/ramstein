@@ -200,10 +200,54 @@ no-op. There is no step past squeeze. The daemon never kills anything on its own
 a triggered cycle only ever surfaces the one `calm --kill` command it will not run itself, as a
 desktop notification.
 
-That notification is architecturally interesting: a root daemon cannot reach a user's desktop
-session, so `ramsteind` only ever writes the suggested action into `status.json`'s `autocalm`
-field. It is the pill, running in the user's own session, that turns that into a real
-`Main.notify()` call. The daemon computes; the pill speaks.
+That notification goes through the pill for a design reason, not a technical one: `ramsteind`
+only ever writes the suggested action into `status.json`'s `autocalm` field, and it is the pill,
+running in the user's own session, that turns that into a real `Main.notify()` call. This was
+believed to be a hard constraint ("a root daemon cannot reach a user's desktop session") until
+V3 (below) disproved it directly — the daemon computes here because autocalm's suggestion is
+tied to the kill gate's own machinery and belongs next to it, not because the daemon has no other
+way to speak.
+
+## V3: the daemon's own unprompted voice
+
+Alfred's ruling (msg 6500, 2026-09-02), after the operator's verdict that ramstein and byebyte
+both "feel kind of useless": every finding above is available only to someone who types a
+command. `grep -c notify_owner src/bin/ramsteind` returned 0 before this section existed — zero
+paths by which ramstein could tell its owner anything, unprompted, ever.
+
+The mechanism: `ramsteind` connects straight to the owner's own D-Bus session bus and calls
+`notify-send`, going around the GNOME pill entirely — `sudo -u '#<owner_uid>' env
+DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/<uid>/bus notify-send ...`, best-effort, a warning
+to stderr (journald, under the real unit) on failure, never blocking the poll loop. This directly
+falsifies the "a root daemon cannot reach a user's desktop session" belief the autocalm
+notification above was built around — verified live, not assumed: a real notification was sent
+and the operator confirmed it rendered on the actual desktop before this was called done (alfred's
+explicit condition; a notification path that is reachable but silent would be the exact defect
+class this family spent the whole preceding month eliminating, shipped inside the tool built to
+stop it). Right for the current machine's own state, too: its GNOME Shell has not reloaded in
+three days, so every pill's extension code is staged-but-never-executed — a notification that
+went through the pill would be provably invisible here regardless of how correct its logic was.
+
+One category ships first: a post-kill notice, built on `kills` (fa65eb2). It is a kernel FACT
+about the user's own machine after the event, not a forecast that can be wrong, which is why it
+ships ON by default while later, forecast-based categories (an ETA crossing, a named runaway
+process) ship OFF until this one has been trusted for a while — a wrong forecast poisons trust in
+everything ramstein says afterward, but a kill notice has no false-positive surface at all: it
+either happened or it didn't. The high-water mark (last-reported kill timestamp) persists to
+`STATE_DIR/kill_notify.json` rather than staying in-memory, specifically so a daemon restart does
+not re-report a kill from hours ago; a fresh install bootstraps the mark to "now" on its first
+tick rather than scanning back through the machine's whole kill history. A burst of kills (this
+session's own field incident: 5 in under 30 minutes) collapses to one notification naming the
+most recent, not one popup per kill — five back-to-back interruptions for one underlying incident
+would spend the trust this feature exists to build, not build it.
+
+Deliberately SPEAKING, NOT ACTING: this reads `query_kills` and sends a best-effort notification;
+it writes nothing any other verb reads back, and touches neither the kill gate nor autocalm's
+three gates. Per-category config keys (`notify_kill_enabled` today), never a single global
+switch — a user who trusts the kill notice and distrusts a later forecast-based category must not
+have to choose one row. The CLI and `status.json` remain the full record regardless of whether a
+notification fires or is silenced; a notification is advisory exhaust from computation the poll
+loop already does, never a second source of truth.
 
 ## The sutra backbone
 
