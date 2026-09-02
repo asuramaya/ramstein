@@ -67,7 +67,11 @@ _SUTRA_CANON := $(HOME)/code/REPOS/sutra
 # real signal, not staleness. An unarmed canonical anchor (empty or
 # missing) reads as provenance unknown, not a warning: there is nothing to
 # check against yet, same armed/unarmed doctrine as sutra_update.py's own
-# armed().
+# armed(). Missing ssh-keygen ALSO reads as unknown, never as "not
+# reachable" (msg 4573 via Alfred: a monitor must not report a confident
+# NO when the truth is COULDN'T-TELL -- verify-tag with gpg.format=ssh
+# shells out to ssh-keygen, and a machine without it would otherwise see
+# every genuinely-signed tag fail identically to an actually-unsigned one).
 #
 # Freshness: the .commit anchor compared against canonical sutra's history
 # for THAT FILE SPECIFICALLY -- `git -C "$canon" log -1 --format=%H --
@@ -154,6 +158,9 @@ check-sutra:
 	            canon_anchor="$$canon/packaging/release-signing/allowed_signers"; \
 	            if [ ! -s "$$canon_anchor" ]; then \
 	                echo "check-sutra: provenance unknown ($$label -- canonical signing anchor not armed yet)"; \
+	            elif ! command -v ssh-keygen >/dev/null 2>&1; then \
+	                echo "check-sutra: provenance unknown ($$label -- ssh-keygen not available," \
+	                     "cannot verify any signature; not the same as unreachable)"; \
 	            else \
 	                ptag=""; \
 	                for t in $$(git -C "$$canon" tag --contains "$$recorded" 2>/dev/null); do \
