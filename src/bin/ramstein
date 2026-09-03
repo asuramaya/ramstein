@@ -280,6 +280,60 @@ def cmd_kills(argv):
               f"  {r['comm']:<16}  {unit}")
 
 
+def cmd_standing(argv):
+    """V3's 'stock, not flow' report (alfred's ruling, msg 6644). Three
+    tiers, each rendered in its own confidence register on purpose --
+    stock/anon are direct reads of sampled fact; swap is a disclosed
+    number with no verdict attached, and must never share a sentence
+    shape with the other two or a reader can't tell strong from weak."""
+    doc = request_or_die({"cmd": "standing"})
+    if "--json" in argv:
+        print(json.dumps(doc, indent=2))
+        return
+
+    stock = doc["stock"]
+    print("stock — large and holding steady (>=500M, flat for a day or more):")
+    if "error" in stock:
+        print(f"  ({stock['error']})")
+    elif not stock["rows"]:
+        print("  nothing both this large and this flat right now")
+    else:
+        for r in stock["rows"]:
+            sign = "+" if r["delta"] >= 0 else ""
+            print(f"  {human_bytes(r['size']):>8}  {r['comm']:<16} pid {r['pid']:<7}"
+                  f" (steady, {sign}{human_bytes(r['delta'])} over the window)")
+
+    print()
+    anon = doc["anon"]
+    print("anonymous/memfd — no filesystem path; byebyte cannot see this at all:")
+    if "error" in anon:
+        print(f"  ({anon['error']})")
+    elif not anon["rows"]:
+        print("  nothing holding a meaningful amount right now")
+    else:
+        for r in anon["rows"]:
+            print(f"  {human_bytes(r['anon_shared_bytes']):>8}  {r['comm']:<16}"
+                  f" pid {r['pid']}")
+    tmpfs = doc.get("tmpfs_reachable_bytes")
+    if tmpfs is not None:
+        print(f"  ({human_bytes(tmpfs)} of shared memory is tmpfs-backed instead —"
+              f" byebyte can, in principle, itemise the files there)")
+
+    print()
+    wm = doc.get("swap_watermark")
+    if wm is None:
+        print("swap: no watermark yet — the daemon just started tracking")
+    else:
+        watched = human_eta(int(time.time() - wm["since_ts"])).lstrip("~") or "0s"
+        peak = wm["peak_used_bytes"]
+        if peak == 0:
+            print(f"swap: never engaged in the {watched} ramstein has been"
+                  f" watching — a disclosed fact, not a sizing recommendation")
+        else:
+            print(f"swap: peaked at {human_bytes(peak)} used in the {watched}"
+                  f" ramstein has been watching")
+
+
 def cmd_zombies(argv):
     doc = request_or_die({"cmd": "zombies"})
     if "--json" in argv:
@@ -836,6 +890,7 @@ verbs:
   swap [--limit N]                processes parked in swap
   blame [--since T] [--limit N]   RSS movers since T (30s / 10m / 2h / 1d / YYYY-MM-DD)
   kills [--since T] [--limit N]   kernel OOM-kills since T (default 1d) — top/blame can't see these
+  standing                        stock, not flow: what's large and has stopped moving (V3)
   zombies                         unreaped zombie processes, grouped by parent
   oom                             who dies first, by oom_score
   advise                          rule-based notices (pressure/growth/swap/zombies/...)
@@ -874,7 +929,7 @@ def main():
     verb = argv[0] if argv else "status"
     rest = argv[1:] if argv else []
     verbs = {"status": cmd_status, "top": cmd_top, "blame": cmd_blame,
-             "kills": cmd_kills,
+             "kills": cmd_kills, "standing": cmd_standing,
              "swap": cmd_swap, "zombies": cmd_zombies, "oom": cmd_oom,
              "advise": cmd_advise, "calm": cmd_calm, "autocalm": cmd_autocalm,
              "oomd": cmd_oomd, "swappiness": cmd_swappiness,

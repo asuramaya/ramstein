@@ -67,6 +67,9 @@ auto_calm_nice@15@0\(en19
 auto_calm_squeeze_pct@130.0@110\(en500
 auto_calm_cooldown_seconds@300.0@30\(en86400
 notify_kill_enabled@true@bool
+standing_flat_pct@0.05@0\(en1
+standing_window_hours@24.0@1\(en8760
+standing_min_bytes@500MiB@1MiB\(en2^40
 .TE
 .PP
 Units are seconds unless named otherwise.
@@ -108,6 +111,17 @@ governs V3's post-kill desktop notification (see
 below); true by default, unlike every other opt-in feature above, since a
 kernel OOM-kill is a fact about the user's own machine with no
 false-positive surface, not a forecast that can be wrong.
+The
+.I standing_*
+keys govern
+.BR ramstein (1)'s
+.I standing
+verb's "stock" tier \(em how large
+.RI ( standing_min_bytes ")"
+and how flat
+.RI ( standing_flat_pct " over " standing_window_hours ")"
+a process must be to count as dead weight rather than an ordinary
+resident process.
 .SH FILES
 .TP
 .I /etc/ramstein/config.json
@@ -130,6 +144,18 @@ One JSON line per
 or
 .I kill
 action: timestamp, verb, pid, comm, argument, result.
+.TP
+.I /var/lib/ramstein/kill_notify.json
+V3's post-kill notification high-water mark (last-reported kill
+timestamp) \(em on disk, not memory-only, so a daemon restart doesn't
+re-report a kill from hours ago.
+.TP
+.I /var/lib/ramstein/swap_watermark.json
+.I standing 's
+swap tier: since-timestamp and peak bytes used, updated once per poll
+tick (an in-memory compare; a disk write only when the peak actually
+rises \(em on a machine that never touches swap, exactly one write,
+ever).
 .TP
 .I /run/ramstein/status.json
 0640, owned by

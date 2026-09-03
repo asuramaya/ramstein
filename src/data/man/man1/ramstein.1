@@ -93,6 +93,69 @@ on
 if it's unreachable or exits nonzero, prints an error rather than a
 silently empty list.
 .TP
+.B standing
+Stock, not flow (alfred's ruling, 2026-09-03): every verb above measures a
+RATE \(em burn, PSI, ETA, swap velocity \(em and a rate-watcher cannot see
+a pile that has stopped growing.
+.B standing
+answers a different question: what is holding memory that is already
+dead weight, three tiers rendered in three different confidence
+registers on purpose:
+.RS
+.TP
+.B stock
+Processes clearing
+.I standing_min_bytes
+(500 MiB default) whose size hasn't moved more than
+.I standing_flat_pct
+(5% default) across at least
+.I standing_window_hours
+(24h default) \(em
+.BR blame 's
+exact inverse over the same sampled index, sign flipped: "what grew"
+becomes "what's just sitting there." A process present in only the base
+or only the head sample is
+.BR blame 's
+new/gone case, not stock \(em only a process present in BOTH counts,
+since a genuinely new process cannot have been flat for a day. A direct
+read of sampled fact.
+.TP
+.B anonymous/memfd
+Every process holding pathless shared memory \(em memfd/SysV segments
+with no filesystem path at all, walking each process's full
+.I /proc/<pid>/smaps
+on demand (there is no cheaper source of per-mapping path information).
+This is the half of the shmem split
+.RI ( advise 's
+rule 7)
+.B byebyte
+can never duplicate: it has no visibility into anonymous memory, path or
+no path. A tmpfs-backed mapping (even if unlinked) is excluded here \(em
+already counted by the shmem split's own tmpfs figure, never double-
+counted under a different name. A new capability, but the same
+direct-read confidence as stock.
+.TP
+.B swap
+The peak fraction of swap ever used since ramstein started watching \(em
+a
+.B disclosed fact with no recommendation attached.
+"Swap has never moved" is worth knowing; it is not evidence the
+configured size is wrong \(em absence of use says nothing about whether
+a future burst will need it, and whether the disk space is worth
+reclaiming is
+.BR byebyte 's
+valuation, not
+.BR ramstein 's.
+Forward-looking only: this is not a retroactive reconstruction of
+boot-spanning history, it starts counting from whenever this feature
+first ran.
+.RE
+.PP
+Never kills, never reclaims, never suggests either \(em
+.B speaking, not acting
+applies doubly here. On-demand only; no periodic timer ships with this
+verb.
+.TP
 .B swap " [\-\-limit N]"
 Who's parked in swap, VmSwap descending.
 .PP

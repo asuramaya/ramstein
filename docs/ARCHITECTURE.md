@@ -249,6 +249,53 @@ have to choose one row. The CLI and `status.json` remain the full record regardl
 notification fires or is silenced; a notification is advisory exhaust from computation the poll
 loop already does, never a second source of truth.
 
+### `standing`: stock, not flow
+
+Alfred's ruling, msg 6644, after the operator said "keep digging" past the notification gap:
+every verb above measures a RATE — burn, PSI, ETA, swap velocity — and a rate-watcher is
+structurally blind to a pile that has stopped growing. Measured live: this machine had zero real
+OOM events across five boots, swap never engaged, yet 3.4G of `/tmp` was held by 226 abandoned
+pytest-xdist directories from finished test runs — dead weight that never crosses a threshold and
+therefore can never trip an alarm. `standing` answers "what is holding memory that is already
+dead" instead of "is memory about to run out," on demand, never on a timer (an accounting is not
+a monitor).
+
+Three tiers, deliberately rendered in three different confidence registers so a reader can tell a
+sampled fact from a new attribution from a disclosed-but-unverdicted number:
+
+- **stock** — `blame`'s exact inverse over the same sampled index, sign flipped: a process
+  counts only if it clears `standing_min_bytes`, is present in BOTH the base and head samples
+  (a genuinely new process can't have been flat for a day — that's `blame`'s own new/gone case),
+  and hasn't moved more than `standing_flat_pct` across at least `standing_window_hours`. Costs no
+  new instrumentation — "what grew" and "what's just sitting there" are the same index read.
+- **anonymous/memfd** — the half of the shmem split (rule 7, above) byebyte can never duplicate,
+  path or no path: which PID is actually holding the pathless-shared bytes `_tmpfs_reachable_bytes`
+  already proved aren't in any real mount. `smaps_rollup`'s own `Shared_Clean`/`Shared_Dirty`
+  fields (used elsewhere for PSS) can't do this job — they're an aggregate across every mapping,
+  memfd and ordinary shared libraries alike, with no way to tell them apart — so this walks each
+  process's full `/proc/<pid>/smaps` on demand instead, filtering VMAs by path shape verified live
+  on the operator's own machine (2026-09-03): chrome's `/dev/shm/.com.google.Chrome.*` segments
+  (even `(deleted)`, since unlinking a tmpfs file doesn't free its tmpfs blocks) are tmpfs-backed
+  and excluded; pulseaudio/wayland's `/memfd:*` segments have no backing mount at all and are
+  exactly the unattributed remainder. This is the strongest claim to necessity in the whole
+  feature — byebyte has no visibility into anonymous memory regardless of path.
+- **swap watermark** — the peak fraction of swap ever used, persisted to
+  `STATE_DIR/swap_watermark.json` (updated once per poll tick, an in-memory compare, a disk write
+  only when the peak rises), reported as a disclosed fact with NO recommendation attached. "Swap
+  has never moved" is worth knowing; it is not evidence the configured size is wrong — absence of
+  use says nothing about whether a future burst will need it (this session's own hector-vector
+  incident hit an 8G cgroup ceiling, precisely the event swap exists to catch), and whether the
+  disk space is worth reclaiming is byebyte's valuation, not ramstein's. Forward-looking only, not
+  a retroactive reconstruction of boot-spanning history: day one can only say "since tracking
+  began."
+
+A fourth, related half was explicitly DECLINED: naming which files sit in `/tmp` and how old they
+are (the 226 pytest-xdist directories themselves) is a filesystem question that happens to be
+about a tmpfs — exactly the "Boundary, versus byebyte" doctrine above, and building it here would
+have quietly duplicated byebyte's own index in a second daemon that would then have to be kept
+correct forever. `standing`'s own tmpfs figure names the aggregate byebyte can, in principle,
+itemise, and stops there — never promising coverage on the other side that hasn't been verified.
+
 ## The sutra backbone
 
 `src/share/ramstein/lib/sutra.py`, `sutra_update.py`, and `sutra_xen.py` (plus

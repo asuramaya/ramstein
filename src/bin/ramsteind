@@ -163,6 +163,16 @@ DEFAULTS = {
                                        # an oversized swap file trading a RAM
                                        # crisis for a disk crisis is exactly
                                        # what this exists to block
+    # `ramstein standing` (alfred's ruling, msg 6644): stock, not flow --
+    # what's holding memory that has stopped moving. Starting positions,
+    # alfred's own numbers pending real-use data to move them.
+    "standing_flat_pct": 0.05,     # "flat" = delta under 5% of current size
+    "standing_window_hours": 24.0, # a process flat for an hour is idle; flat
+                                    # for a day is furniture -- only the
+                                    # second is worth a human's attention
+    "standing_min_bytes": 500 * 1024 * 1024,  # below this, "large and flat"
+                                    # is just a normal resident process and
+                                    # the report drowns
 }
 
 CLAMPS = {
@@ -195,6 +205,9 @@ CLAMPS = {
     "auto_calm_squeeze_pct": (110.0, 500.0),
     "auto_calm_cooldown_seconds": (30.0, 86400.0),
     "swap_size_min_disk_headroom_gb": (0.1, 100000.0),
+    "standing_flat_pct": (0.0, 1.0),
+    "standing_window_hours": (1.0, 8760.0),
+    "standing_min_bytes": (1 << 20, 1 << 40),
 }
 
 
@@ -263,6 +276,25 @@ def _eta_bucket_text(seconds):
     return "under 1h"
 
 
+def _tmpfs_mount_points():
+    """Every currently-mounted tmpfs's mount point, straight off
+    /proc/mounts -- the shared enumeration behind both
+    _tmpfs_reachable_bytes (the shmem split) and _anon_shared_bytes (the
+    standing anon-memory attribution): a tmpfs-backed VMA's path always
+    starts with one of these, and anything that doesn't is exactly the
+    "no real mount at all" bucket both features care about. Returns None
+    on an unreadable /proc/mounts (a callers' job to fall back honestly
+    rather than treat a failed read as "zero tmpfs mounts exist")."""
+    try:
+        with open("/proc/mounts") as f:
+            lines = f.readlines()
+    except OSError:
+        return None
+    return [parts[1].replace("\\040", " ")
+            for parts in (line.split() for line in lines)
+            if len(parts) >= 3 and parts[2] == "tmpfs"]
+
+
 def _tmpfs_reachable_bytes():
     """Sum of USED bytes across every currently-mounted tmpfs -- the exact
     ceiling a path-indexing pill (byebyte) can ever itemise out of
@@ -277,23 +309,184 @@ def _tmpfs_reachable_bytes():
     Returns None if /proc/mounts can't be read -- the caller's job to fall
     back to an undifferentiated line rather than fabricate a split from a
     partial read."""
-    try:
-        with open("/proc/mounts") as f:
-            lines = f.readlines()
-    except OSError:
+    mounts = _tmpfs_mount_points()
+    if mounts is None:
         return None
     total = 0
-    for line in lines:
-        parts = line.split()
-        if len(parts) < 3 or parts[2] != "tmpfs":
-            continue
-        mnt = parts[1].replace("\\040", " ")
+    for mnt in mounts:
         try:
             st = os.statvfs(mnt)
         except OSError:
             continue
         total += (st.f_blocks - st.f_bfree) * st.f_frsize
     return total
+
+
+# --- standing: anonymous-shared-memory attribution (V3, alfred's ruling, --
+# msg 6644) ------------------------------------------------------------------
+# The half of the shmem split byebyte can NEVER duplicate, path or no path:
+# which PID is actually holding the anonymous/memfd bytes _tmpfs_reachable_
+# bytes already proved aren't in any real mount. Verified against REAL VMA
+# shapes on the operator's own machine (2026-09-03), not assumed: chrome's
+# `/dev/shm/.com.google.Chrome.* (deleted)` segments ARE tmpfs-backed (device
+# with a real mount, already counted by _tmpfs_reachable_bytes -- unlinking a
+# tmpfs file doesn't stop it occupying tmpfs blocks) and must NOT be double-
+# counted here; pulseaudio/wayland's `/memfd:pulseaudio (deleted)` segments
+# have NO backing mount at all (memfd's own anon_inode filesystem) and are
+# exactly the unattributed remainder this exists to name. smaps_rollup's own
+# Shared_Clean/Shared_Dirty fields (used elsewhere for PSS) CANNOT do this
+# job -- they're an aggregate across every mapping, memfd and ordinary shared
+# libraries alike, with no way to tell them apart; this walks the full,
+# per-VMA /proc/<pid>/smaps instead, an order of magnitude more expensive
+# per process (see ARCHITECTURE.md's Data sources), acceptable because
+# `standing` is on-demand only, never sampled per tick.
+
+_SMAPS_HEADER_RE = re.compile(
+    r"^[0-9a-f]+-[0-9a-f]+\s+\S+\s+\S+\s+\S+\s+\S+\s*(?P<path>.*)$")
+
+
+def _pathless_shared_vma(path, tmpfs_mounts):
+    """True iff a VMA at this path is the "anonymous/memfd, no filesystem
+    path" kind -- see the module note above for the live-verified shapes
+    this is built from. A real file under a real tmpfs mount (even
+    unlinked, "(deleted)") is already counted by _tmpfs_reachable_bytes
+    and must return False here or the two features would double-count
+    the same bytes under different names."""
+    path = path.strip()
+    if not path:
+        return True
+    if path.startswith("/memfd:"):
+        return True
+    if path.startswith("/SYSV") or path.startswith("/dev/zero"):
+        return True
+    for mnt in tmpfs_mounts:
+        if path == mnt or path.startswith(mnt.rstrip("/") + "/"):
+            return False
+    return False  # a real file on a real (non-tmpfs) filesystem -- not ours
+
+
+def _anon_shared_bytes(pid, tmpfs_mounts):
+    """Sum of Shared_Clean+Shared_Dirty across every pathless-shared VMA
+    in one process -- CAP_SYS_PTRACE (already granted, M2's sampler and
+    M3's oom/zombies scan every process's /proc/<pid>/* the same way)
+    covers the permission this needs on another user's process. None on
+    a read failure (gone mid-scan, or genuinely unreadable) -- the
+    caller's job to skip, never to report a fabricated zero."""
+    total = 0
+    counting = False
+    try:
+        with open(f"/proc/{pid}/smaps") as f:
+            for line in f:
+                m = _SMAPS_HEADER_RE.match(line)
+                if m:
+                    counting = _pathless_shared_vma(m.group("path"), tmpfs_mounts)
+                    continue
+                if not counting:
+                    continue
+                if line.startswith("Shared_Clean:") or line.startswith("Shared_Dirty:"):
+                    total += int(line.split()[1]) * 1024
+    except OSError:
+        return None
+    return total
+
+
+def query_standing_anon(min_bytes, limit):
+    """Every process holding at least `min_bytes` of pathless-shared
+    memory, ranked descending -- the attribution the shmem advise line
+    (rule 7) can only ever gesture at in aggregate. Scans every PID's
+    full smaps on demand; there is no cheaper way to get per-VMA path
+    information, and this is never called from the poll loop."""
+    tmpfs_mounts = _tmpfs_mount_points()
+    if tmpfs_mounts is None:
+        return {"error": "couldn't read /proc/mounts -- refusing to guess"
+                          " which VMAs are tmpfs-backed"}
+    rows = []
+    for entry in os.scandir("/proc"):
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        anon = _anon_shared_bytes(pid, tmpfs_mounts)
+        if anon is None or anon < min_bytes:
+            continue
+        comm = "?"
+        try:
+            with open(f"/proc/{pid}/status") as f:
+                for line in f:
+                    if line.startswith("Name:"):
+                        comm = line.partition(":")[2].strip()
+                        break
+        except OSError:
+            pass
+        rows.append({"pid": pid, "comm": comm, "anon_shared_bytes": anon})
+    rows.sort(key=lambda r: -r["anon_shared_bytes"])
+    return {"rows": rows[:limit]}
+
+
+# --- standing: swap-utilization watermark (V3, alfred's ruling, msg 6644) --
+# "Swap has moved 0 bytes since tracking began" is worth knowing; "you
+# should shrink it" is a claim ramstein can't back (alfred's own ruling: the
+# disk-cost half of that judgment is byebyte's valuation, and absence of use
+# says nothing about whether a future burst will need it). This is a
+# FORWARD-LOOKING watermark starting from whenever this ships, not a
+# retroactive reconstruction of alfred's own 5-boot dmesg archaeology --
+# ramstein has never persisted system-wide swap history before now, so day
+# one can only honestly say "since tracking began," growing more informative
+# over time rather than claiming a boot-spanning history it doesn't have.
+# SWAP_WATERMARK_PATH itself is defined further down, alongside STATE_DIR and
+# KILL_NOTIFY_STATE_PATH -- these functions only look it up when actually
+# CALLED, well after the whole module (and STATE_DIR) has finished loading.
+
+
+def _load_swap_watermark():
+    try:
+        with open(SWAP_WATERMARK_PATH) as f:
+            doc = json.load(f)
+        return {"since_ts": float(doc["since_ts"]),
+                "peak_used_bytes": int(doc["peak_used_bytes"])}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _save_swap_watermark(doc):
+    tmp = SWAP_WATERMARK_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(doc, f)
+    os.replace(tmp, SWAP_WATERMARK_PATH)
+
+
+def update_swap_watermark(now, swap_total, swap_free):
+    """Called once per poll tick from main() -- cheap (in-memory compare,
+    disk write only when the peak actually moves, which on a machine that
+    never touches swap means exactly one write, at bootstrap, ever)."""
+    used = swap_total - swap_free
+    doc = _load_swap_watermark()
+    if doc is None:
+        doc = {"since_ts": now, "peak_used_bytes": used}
+        _save_swap_watermark(doc)
+        return doc
+    if used > doc["peak_used_bytes"]:
+        doc["peak_used_bytes"] = used
+        _save_swap_watermark(doc)
+    return doc
+
+
+def query_standing(cfg):
+    """The combined `standing` report: stock (strong, index-derived),
+    anon-memory attribution (strong, uniquely ramstein's), and the swap
+    watermark (weak, disclosed, no recommendation attached) -- three
+    tiers, independently gated so one needing more history than exists
+    yet (stock, on a freshly-installed daemon) never blocks the other
+    two from answering. `tmpfs_reachable_bytes` rides along so the CLI
+    can render the SAME honest referral shape the shmem split already
+    uses: name what byebyte can see in principle, never claim what it
+    will actually find (alfred's explicit correction, msg 6644 -- "do
+    not write 'byebyte will show you the 226 dirs'")."""
+    return {
+        "stock": query_standing_stock(cfg, limit=20),
+        "anon": query_standing_anon(cfg["standing_min_bytes"], limit=20),
+        "swap_watermark": _load_swap_watermark(),
+        "tmpfs_reachable_bytes": _tmpfs_reachable_bytes(),
+    }
 
 
 def poll_memory(state, cfg, now):
@@ -719,6 +912,53 @@ def query_blame(since, limit):
             {"pid": r[0], "starttime": r[1], "comm": r[2], "delta": r[3],
              "rss": r[4], "swap": r[5], "new": bool(r[6]), "gone": bool(r[7])}
             for r in rows]}
+    finally:
+        con.close()
+
+
+def query_standing_stock(cfg, limit):
+    """`blame`'s exact inverse, same index, sign flipped (alfred's ruling,
+    msg 6644): "what grew" becomes "what's large and has just been
+    sitting there." A process counts as STOCK only if it's present in
+    BOTH the base and head samples (a genuinely new process can't have
+    been flat for a day — that's `blame`'s "new" case, a different
+    question) and its size hasn't moved more than standing_flat_pct
+    since a sample at least standing_window_hours ago. The base-sample
+    lookup is identical to query_blame's own -- a 24h-old `since` lands
+    naturally on the surviving hourly-promoted tier once the fine-
+    grained ring has pruned past it, the same mechanism blame already
+    relies on, not a separate query path for the two rings."""
+    con = _connect_index()
+    try:
+        head = _latest_sample(con)
+        if head is None:
+            return {"error": "no sample yet — wait for the sampler"}
+        head_id, head_ts, _head_below_floor = head
+        window = cfg["standing_window_hours"] * 3600
+        since = head_ts - window
+        base = con.execute(
+            "SELECT id, ts FROM samples WHERE ts <= ?"
+            " ORDER BY ts DESC LIMIT 1", (since,)).fetchone()
+        if base is None or base[0] == head_id:
+            return {"error": f"not enough history yet — need a sample from"
+                              f" at least {cfg['standing_window_hours']:.0f}h"
+                              f" ago to compare against"}
+        base_id, base_ts = base
+        rows = con.execute(
+            "SELECT h.pid, h.comm, h.rss + h.swap AS head_size,"
+            "       b.rss + b.swap AS base_size"
+            " FROM proc_stats h JOIN proc_stats b"
+            "   ON b.sample_id=? AND b.pid=h.pid AND b.starttime=h.starttime"
+            " WHERE h.sample_id=? AND h.rss + h.swap >= ?",
+            (base_id, head_id, cfg["standing_min_bytes"])).fetchall()
+        flat_pct = cfg["standing_flat_pct"]
+        stock = []
+        for pid, comm, head_size, base_size in rows:
+            if abs(head_size - base_size) <= flat_pct * head_size:
+                stock.append({"pid": pid, "comm": comm, "size": head_size,
+                              "delta": head_size - base_size})
+        stock.sort(key=lambda r: -r["size"])
+        return {"base_ts": base_ts, "head_ts": head_ts, "rows": stock[:limit]}
     finally:
         con.close()
 
@@ -2619,6 +2859,7 @@ def query_zram_status(zram_state):
 # a best-effort notification; it writes nothing any other verb reads back.
 
 KILL_NOTIFY_STATE_PATH = os.path.join(STATE_DIR, "kill_notify.json")
+SWAP_WATERMARK_PATH = os.path.join(STATE_DIR, "swap_watermark.json")
 
 
 def _load_kill_notify_high_water():
@@ -2759,6 +3000,8 @@ def _make_dispatch(cfg, get_status, autocalm_state, config_path, swap_size_state
             if not isinstance(since, (int, float)) or since <= 0:
                 raise ValueError("since must be a positive epoch timestamp")
             return query_kills(float(since), _limit(req))
+        if cmd == "standing":
+            return query_standing(cfg)
         if cmd == "resolve":
             target = req.get("target")
             if not isinstance(target, str) or not target:
@@ -2940,6 +3183,7 @@ def main():
     while not stop.is_set():
         now = time.time()
         mem = poll_memory(state, cfg, now)
+        update_swap_watermark(now, mem["swap_total"], mem["swap_free"])
         doc = {
             "v": 1,
             "ts": now,
