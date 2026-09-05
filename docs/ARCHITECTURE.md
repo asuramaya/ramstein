@@ -296,6 +296,38 @@ have quietly duplicated byebyte's own index in a second daemon that would then h
 correct forever. `standing`'s own tmpfs figure names the aggregate byebyte can, in principle,
 itemise, and stops there — never promising coverage on the other side that hasn't been verified.
 
+### `incidents`: fire marshal, not firefighter
+
+Alfred's ruling, msg 7068/7077, 2026-09-05: `standing` and the swap watermark can only ever SAY a
+peak happened; neither could answer "who was resident when it did" after the fact. Live case: a
+20.2G/40G (50.5%) swap peak, real and unexplained — the watermark reported it as a bare number,
+and there was no way to reconstruct what was actually holding memory at that moment.
+
+`incidents` snapshots the top `incident_max_residents` processes by rss+swap the instant a real
+threshold crosses: `incident_swap_pct` (a plateau/stock trigger, deliberately independent of
+`swap_storm`'s own rate+ETA gate above — a slow sustained climb to 50%+ can cross this without
+ever tripping a swap-storm warning, which is exactly the shape the operator's own 20.2G case took),
+the existing `hot_psi_full` threshold (reused, not duplicated), or `swap_storm` itself becoming
+active (a real V2.M1 event marker). Each trigger fires once per rising edge, not repeatedly while
+the condition holds — the same hysteresis discipline `swap_storm` already uses for its own
+clear-side debounce, applied here to the entry side instead, since a repeat record for a condition
+that never cleared would just be noise stacked on the first, honest one. Multiple triggers on the
+same tick collapse into ONE record naming all of them — they're one moment, not several.
+
+The snapshot itself is deliberately cheap: residents come straight off the M2 sampler's own most
+recent sample (no fresh `/proc` scan, no `smaps` walk) — alfred's explicit instruction was that a
+prompt trigger with a cheap sample beats a slow one with attribution, and a human can run
+`standing` by hand for the expensive per-process detail once they know an incident happened.
+Persisted to `STATE_DIR/incidents.jsonl`, append-only, same shape as the existing `ledger.jsonl`
+(calm/kill actions) — one line per incident, trimmed to `incident_max_records` on write (oldest
+dropped first, no time-based expiry, since incidents are rare by construction: a real threshold
+had to cross for one to exist at all). Each rendered line names its own basis in the sentence
+itself ("swap crossed 50% (20.2G of 40G)") — the same "an inference must carry its basis in the
+same sentence" discipline the swap watermark and shmem split already established, so a reader
+never has to take the record's existence on faith. Report-only, same as `standing`: this reads
+`poll_memory`'s own computed values and the sampler's existing index, writes nothing any other
+verb reads back, and touches neither the kill gate nor autocalm's three gates.
+
 ## The sutra backbone
 
 `src/share/ramstein/lib/sutra.py`, `sutra_update.py`, and `sutra_xen.py` (plus

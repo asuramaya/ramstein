@@ -173,6 +173,24 @@ DEFAULTS = {
     "standing_min_bytes": 500 * 1024 * 1024,  # below this, "large and flat"
                                     # is just a normal resident process and
                                     # the report drowns
+    # V3: incident snapshot -- "fire marshal, not firefighter" (alfred's
+    # ruling, msg 7068/7077, 2026-09-05). standing/the swap watermark can
+    # SAY a peak happened; neither could ever answer "who was resident
+    # when it did" after the fact. incident_swap_pct is a plateau/stock
+    # trigger (independent of swap_storm's own rate+ETA gate, which can
+    # miss a slow sustained climb) -- 20.2G/40G (50.5%) on the operator's
+    # own machine was exactly this shape, never fast enough to trip
+    # swap_storm's fast-ETA condition.
+    "incident_swap_pct": 50.0,
+    "incident_max_residents": 15,   # top-N by rss+swap, from the M2
+                                     # sampler's own last sample -- no new
+                                     # /proc scan, no smaps walk (alfred's
+                                     # explicit instruction: a prompt
+                                     # trigger with a cheap sample beats a
+                                     # slow one with attribution)
+    "incident_max_records": 500,    # incidents.jsonl retention -- rare by
+                                     # construction (a real threshold had
+                                     # to cross), no time-based expiry
 }
 
 CLAMPS = {
@@ -208,6 +226,9 @@ CLAMPS = {
     "standing_flat_pct": (0.0, 1.0),
     "standing_window_hours": (1.0, 8760.0),
     "standing_min_bytes": (1 << 20, 1 << 40),
+    "incident_swap_pct": (0.0, 100.0),
+    "incident_max_residents": (1, 100),
+    "incident_max_records": (1, 100000),
 }
 
 
@@ -2860,6 +2881,7 @@ def query_zram_status(zram_state):
 
 KILL_NOTIFY_STATE_PATH = os.path.join(STATE_DIR, "kill_notify.json")
 SWAP_WATERMARK_PATH = os.path.join(STATE_DIR, "swap_watermark.json")
+INCIDENTS_PATH = os.path.join(STATE_DIR, "incidents.jsonl")
 
 
 def _load_kill_notify_high_water():
@@ -2972,6 +2994,137 @@ def check_kill_notifications(cfg, kill_notify_state):
     _save_kill_notify_high_water(new_last_ts)
 
 
+# --- V3: incident snapshot -- "fire marshal, not firefighter" ---------------
+# (alfred's ruling, msg 7068/7077, 2026-09-05). standing/the swap watermark
+# can SAY a peak happened; neither could ever answer "who was resident when
+# it did" after the fact -- the operator's own field case: a 20.2G/40G swap
+# peak, real and unexplained, that ramstein had only ever reported as a bare
+# number. This closes that gap with a cheap, always-on snapshot -- NOT the
+# expensive per-process smaps walk `standing`'s anon tier does on demand
+# (alfred's explicit instruction: a prompt trigger with a cheap sample beats
+# a slow one with attribution; `standing` by hand covers the detail once a
+# human knows an incident happened).
+
+def _top_residents_by_rss_swap(limit):
+    """Same shape as query_top's own latest-sample read, ordered by
+    rss+swap combined rather than either alone -- the snapshot cares about
+    total footprint, not which half of it is which. Reuses the M2
+    sampler's existing last sample; never a fresh /proc scan."""
+    con = _connect_index()
+    try:
+        latest = _latest_sample(con)
+        if latest is None:
+            return None
+        sid, _ts, _below_floor = latest
+        rows = con.execute(
+            "SELECT pid, comm, rss, swap FROM proc_stats"
+            " WHERE sample_id=? ORDER BY rss + swap DESC LIMIT ?",
+            (sid, limit)).fetchall()
+        return [{"pid": r[0], "comm": r[1], "rss": r[2], "swap": r[3]}
+                for r in rows]
+    finally:
+        con.close()
+
+
+def _append_incident(record, max_records):
+    """Append-only STATE_DIR/incidents.jsonl, same shape as the existing
+    ledger.jsonl (calm/kill actions) -- one JSON line per incident.
+    Retention is a simple tail-trim on write, not time-based: incidents
+    are rare by construction (a real threshold had to cross), so a count
+    cap is the honest bound, matching the M2 index's own ring-retention
+    shape rather than inventing a second retention idiom."""
+    with open(INCIDENTS_PATH, "a") as f:
+        f.write(json.dumps(record, separators=(",", ":")) + "\n")
+    try:
+        with open(INCIDENTS_PATH) as f:
+            lines = f.readlines()
+    except OSError:
+        return
+    if len(lines) <= max_records:
+        return
+    tmp = INCIDENTS_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        f.writelines(lines[-max_records:])
+    os.replace(tmp, INCIDENTS_PATH)
+
+
+def check_incident(state, cfg, now, mem, warning_doc):
+    """Called once per poll tick from main(), after poll_swap_storm --
+    warning_doc is that call's own return value (None, or the active
+    swap_storm dict), reused rather than re-derived. Three independent
+    triggers, each edge-debounced in `state` (fire on crossing INTO the
+    condition, not every tick while it holds -- same discipline as
+    swap_storm's own hysteresis, applied to the rising edge instead of
+    the falling one, since a repeat notification for a condition that
+    never cleared would just be noise on top of the first, honest record):
+      - incident_swap_pct: a PLATEAU/stock trigger, independent of
+        swap_storm's own rate+ETA gate -- the operator's own 20.2G/40G
+        case never grew fast enough to trip swap_storm at all.
+      - hot_psi_full: the existing "hot" PSI threshold, reused rather
+        than duplicated.
+      - swap_storm itself becoming active: a real V2.M1 event marker.
+    Multiple triggers on the same tick write ONE record naming all of
+    them, not one record each -- they're one moment, not several."""
+    swap_total, swap_free = mem["swap_total"], mem["swap_free"]
+    swap_pct = (100.0 * (swap_total - swap_free) / swap_total
+                if swap_total > 0 else 0.0)
+    psi_full = (mem.get("psi") or {}).get("full_avg10")
+
+    swap_active = swap_pct >= cfg["incident_swap_pct"]
+    psi_active = psi_full is not None and psi_full >= cfg["hot_psi_full"]
+    storm_active = warning_doc is not None and warning_doc.get("kind") == "swap_storm"
+
+    prev_swap = state.get("incident_swap_active", False)
+    prev_psi = state.get("incident_psi_active", False)
+    prev_storm = state.get("incident_storm_active", False)
+    state["incident_swap_active"] = swap_active
+    state["incident_psi_active"] = psi_active
+    state["incident_storm_active"] = storm_active
+
+    triggers = []
+    if swap_active and not prev_swap:
+        triggers.append({"kind": "swap_pct", "value": round(swap_pct, 1),
+                         "threshold": cfg["incident_swap_pct"]})
+    if psi_active and not prev_psi:
+        triggers.append({"kind": "psi_full", "value": psi_full,
+                         "threshold": cfg["hot_psi_full"]})
+    if storm_active and not prev_storm:
+        triggers.append({"kind": "swap_storm", "value": None, "threshold": None})
+    if not triggers:
+        return
+
+    residents = _top_residents_by_rss_swap(cfg["incident_max_residents"])
+    record = {
+        "ts": now,
+        "triggers": triggers,
+        "available": mem["available"],
+        "swap_total": swap_total,
+        "swap_free": swap_free,
+        "psi": mem.get("psi"),
+        "residents": residents if residents is not None else [],
+    }
+    _append_incident(record, cfg["incident_max_records"])
+
+
+def query_incidents(limit):
+    """Most recent incidents first, straight off the jsonl tail -- no
+    sqlite here, the file itself already IS the bounded, append-ordered
+    store (see _append_incident's own retention trim)."""
+    try:
+        with open(INCIDENTS_PATH) as f:
+            lines = f.readlines()
+    except OSError:
+        return {"rows": []}
+    records = []
+    for line in lines:
+        try:
+            records.append(json.loads(line))
+        except ValueError:
+            continue  # a torn last line from a killed-mid-write daemon
+    records.sort(key=lambda r: r.get("ts", 0), reverse=True)
+    return {"rows": records[:limit]}
+
+
 # --- control socket ---------------------------------------------------------
 # The security seam (SO_PEERCRED-gated, bounded reads, hostile-input framing,
 # the listen(64) backlog M4's attack suite demanded) lives in
@@ -3002,6 +3155,8 @@ def _make_dispatch(cfg, get_status, autocalm_state, config_path, swap_size_state
             return query_kills(float(since), _limit(req))
         if cmd == "standing":
             return query_standing(cfg)
+        if cmd == "incidents":
+            return query_incidents(_limit(req))
         if cmd == "resolve":
             target = req.get("target")
             if not isinstance(target, str) or not target:
@@ -3201,6 +3356,7 @@ def main():
                         "last_action_ts": autocalm_state["last_action_ts"],
                         "last_result": autocalm_state["last_result"]},
         }
+        check_incident(state, cfg, now, mem, doc["warning"])
         latest["doc"] = doc
         # pill summary refreshes on the sampler's own cadence (not every
         # tick — see build_pill_summary), reusing the last one otherwise

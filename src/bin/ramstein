@@ -334,6 +334,53 @@ def cmd_standing(argv):
                   f" ramstein has been watching")
 
 
+def _incident_trigger_text(t, swap_total, swap_free):
+    """The basis sentence (alfred's explicit requirement, msg 7077): a
+    reader must know WHY the record exists, not just that it does.
+    Renders from the raw stored value/threshold rather than a pre-baked
+    string, so --json keeps the numbers and text output can be reworded
+    later without a schema change."""
+    if t["kind"] == "swap_pct":
+        used = swap_total - swap_free
+        return (f"swap crossed {t['threshold']:.0f}% ({human_bytes(used)}"
+                f" of {human_bytes(swap_total)})")
+    if t["kind"] == "psi_full":
+        return (f"PSI full crossed {t['threshold']:.1f}"
+                f" (now {t['value']:.1f})")
+    if t["kind"] == "swap_storm":
+        return "swap-storm warning became active"
+    return t["kind"]
+
+
+def cmd_incidents(argv):
+    """V3's incident snapshot (alfred's ruling, msg 7068/7077): who was
+    resident when swap or PSI crossed a real threshold, so the question
+    is answerable after the fact instead of only ever a bare number."""
+    limit = int(_flag_val(argv, "--limit", "20"))
+    doc = request_or_die({"cmd": "incidents", "limit": limit})
+    if "--json" in argv:
+        print(json.dumps(doc, indent=2))
+        return
+    rows = doc["rows"]
+    if not rows:
+        print("no incidents recorded")
+        return
+    for r in rows:
+        when = time.strftime("%H:%M", time.localtime(r["ts"]))
+        reasons = "; ".join(
+            _incident_trigger_text(t, r["swap_total"], r["swap_free"])
+            for t in r["triggers"])
+        print(f"{when} — {reasons}")
+        print(f"  available {human_bytes(r['available'])}")
+        residents = r.get("residents") or []
+        if residents:
+            print("  top residents:")
+            for res in residents:
+                print(f"    {human_bytes(res['rss'] + res['swap']):>8}"
+                      f"  {res['comm']:<16} pid {res['pid']}")
+        print()
+
+
 def cmd_zombies(argv):
     doc = request_or_die({"cmd": "zombies"})
     if "--json" in argv:
@@ -891,6 +938,7 @@ verbs:
   blame [--since T] [--limit N]   RSS movers since T (30s / 10m / 2h / 1d / YYYY-MM-DD)
   kills [--since T] [--limit N]   kernel OOM-kills since T (default 1d) — top/blame can't see these
   standing                        stock, not flow: what's large and has stopped moving (V3)
+  incidents [--limit N]           who was resident when swap/PSI crossed a real threshold (V3)
   zombies                         unreaped zombie processes, grouped by parent
   oom                             who dies first, by oom_score
   advise                          rule-based notices (pressure/growth/swap/zombies/...)
@@ -930,6 +978,7 @@ def main():
     rest = argv[1:] if argv else []
     verbs = {"status": cmd_status, "top": cmd_top, "blame": cmd_blame,
              "kills": cmd_kills, "standing": cmd_standing,
+             "incidents": cmd_incidents,
              "swap": cmd_swap, "zombies": cmd_zombies, "oom": cmd_oom,
              "advise": cmd_advise, "calm": cmd_calm, "autocalm": cmd_autocalm,
              "oomd": cmd_oomd, "swappiness": cmd_swappiness,

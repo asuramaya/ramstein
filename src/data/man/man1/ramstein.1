@@ -156,6 +156,42 @@ Never kills, never reclaims, never suggests either \(em
 applies doubly here. On-demand only; no periodic timer ships with this
 verb.
 .TP
+.B incidents " [\-\-limit N]"
+Fire marshal, not firefighter (alfred's ruling, 2026-09-05):
+.B standing
+and the swap watermark can only ever SAY a peak happened; neither can
+answer who was resident when it did.
+.B incidents
+lists past crossings of a real threshold \(em
+.IR incident_swap_pct ,
+the existing
+.IR hot_psi_full ,
+or a
+.B swap\-storm
+warning becoming active \(em each paired with a snapshot of the top
+.I incident_max_residents
+processes by rss+swap at that instant, straight off the M2 sampler's own
+last sample (no fresh
+.I /proc
+scan, no
+.I smaps
+walk \(em a prompt trigger with a cheap sample beats a slow one with
+attribution;
+.B standing
+by hand covers that detail once a crossing is known). Each line names
+its own basis (e.g. "swap crossed 50% (20.2G of 40G)") so a reader knows
+why the record exists, not just that it does. Fires once per crossing,
+not repeatedly while the condition holds \(em the same hysteresis shape
+as
+.B swap\-storm's
+own, applied to the rising edge. Persisted to
+.I /var/lib/ramstein/incidents.jsonl ,
+capped at
+.I incident_max_records
+(oldest dropped first); no time-based expiry, since a real threshold had
+to cross for a record to exist at all. Report-only, same as
+.BR standing .
+.TP
 .B swap " [\-\-limit N]"
 Who's parked in swap, VmSwap descending.
 .PP

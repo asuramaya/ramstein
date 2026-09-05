@@ -70,6 +70,9 @@ notify_kill_enabled@true@bool
 standing_flat_pct@0.05@0\(en1
 standing_window_hours@24.0@1\(en8760
 standing_min_bytes@500MiB@1MiB\(en2^40
+incident_swap_pct@50.0@0\(en100
+incident_max_residents@15@1\(en100
+incident_max_records@500@1\(en100000
 .TE
 .PP
 Units are seconds unless named otherwise.
@@ -122,6 +125,21 @@ and how flat
 .RI ( standing_flat_pct " over " standing_window_hours ")"
 a process must be to count as dead weight rather than an ordinary
 resident process.
+The
+.I incident_*
+keys govern
+.BR ramstein (1)'s
+.I incidents
+verb: swap crossing
+.I incident_swap_pct
+(a plateau/stock trigger, independent of
+.BR WARNING 's
+own rate+ETA gate below \(em a slow sustained climb can cross this
+without ever tripping a swap\-storm warning) snapshots the top
+.I incident_max_residents
+processes by rss+swap, retaining the most recent
+.I incident_max_records
+crossings.
 .SH FILES
 .TP
 .I /etc/ramstein/config.json
@@ -156,6 +174,14 @@ swap tier: since-timestamp and peak bytes used, updated once per poll
 tick (an in-memory compare; a disk write only when the peak actually
 rises \(em on a machine that never touches swap, exactly one write,
 ever).
+.TP
+.I /var/lib/ramstein/incidents.jsonl
+.IR incidents "'s own record: one JSON line per threshold crossing"
+(swap%, PSI full, or a swap-storm warning becoming active), each
+carrying the triggering value and a snapshot of the top residents by
+rss+swap at that instant. Append-only; trimmed to
+.I incident_max_records
+on write, oldest dropped first.
 .TP
 .I /run/ramstein/status.json
 0640, owned by
