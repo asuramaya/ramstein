@@ -181,13 +181,15 @@ deb:
 	install -m 0755 packaging/deb/postrm $(DEBROOT)/DEBIAN/postrm
 	echo /etc/ramstein/config.json > $(DEBROOT)/DEBIAN/conffiles
 	{ \
+	  DEB_DEPENDS_GEN="$$(printf '%s\n' "$$_SUTRA_CHECK_PACKAGES_PY" | python3 - $(SUTRA_PACKAGES_TXT) --depends)"; \
+	  DEB_SUGGESTS_GEN="$$(printf '%s\n' "$$_SUTRA_CHECK_PACKAGES_PY" | python3 - $(SUTRA_PACKAGES_TXT) --suggests)"; \
 	  echo "Package: ramstein"; \
 	  echo "Version: $(VERSION)"; \
 	  echo "Section: admin"; \
 	  echo "Priority: optional"; \
 	  echo "Architecture: all"; \
-	  echo "Depends: python3 (>= 3.8), systemd, openssh-client"; \
-	  echo "Suggests: gnome-shell, systemd-zram-generator"; \
+	  echo "Depends: $$DEB_DEPENDS_GEN"; \
+	  echo "Suggests: $$DEB_SUGGESTS_GEN"; \
 	  echo "Maintainer: asuramaya <asuramaya@users.noreply.github.com>"; \
 	  echo "Homepage: https://github.com/asuramaya/ramstein"; \
 	  echo "Description: memory as a deadline, not a percentage"; \

@@ -99,7 +99,15 @@ jobs:
           debfile="build/deb/ramstein_$(tr -d '[:space:]' < packaging/VERSION)_all.deb"
           assets=("$(basename "${debfile}")" ramstein.tar.gz SHA256SUMS)
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            # A release can already exist here with GitHub's own default
+            # body (the compare-stub "Full Changelog: ..." link) -- created
+            # by hand, or by a prior run of this workflow that hit this
+            # branch before this fix existed. --clobber alone only
+            # replaces ASSETS; the body is untouched, so the compare stub
+            # would silently survive every re-run. `edit` makes the
+            # CHANGELOG section win unconditionally, every time.
             gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber
+            gh release edit "${GITHUB_REF_NAME}" --notes-file RELEASE_NOTES.md
           else
             gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
               --title "ramstein ${GITHUB_REF_NAME}" \

@@ -1,5 +1,102 @@
 # Changelog
 
+## 0.13.0 — the memory stance: from gauge to policy
+
+The pitch changed (operator ruling, 2026-09-05): ramstein was a gauge on a system
+that already has one — the kernel and `systemd-oomd` manage pages by pressure,
+blind to intent. This release is ramstein keeping a short, operator-authored
+policy applied as real cgroup memory controls, plus everything found closing
+the honesty and visibility gaps that made the pitch possible in the first
+place.
+
+### The memory stance (V4)
+- `/etc/ramstein/stance.json` — ships with **zero rules**: protects nothing,
+  caps nothing until the operator names one. Never written by the daemon;
+  `src/data/config/stance.example.json` installs alongside it as a reference
+  the operator copies and edits by hand (protect osiris-pg and the agent
+  fleet, expendable Chrome, cap containers at 25%, one sentence per rule).
+- Three tiers, matched against **leaf** cgroup scopes only (`unit_glob`,
+  `comm`, `exe_glob`, `container_glob`, first match wins; no match is
+  `unclassified`, reported, never capped):
+  - **protect** — `memory.low` on the target *and* every shared ancestor up
+    through `user@<uid>.service`/`user-<uid>.slice`, sized to protected usage
+    and capped at `stance_protect_floor_ceiling_pct` (50%) of MemTotal.
+    Measured directly, before writing any of this: a leaf's own `memory.low`
+    protects nothing against reclaim pressure from an ancestor whose own low
+    is unset — real protection needs the whole chain written, not just the
+    leaf.
+  - **expendable** — no standing squeeze. `memory.high` rides `autocalm`'s
+    own three consent gates and squeeze mechanism as one more step, applied
+    only while the system is hot and released — self-releasing, unlike the
+    pre-existing top-RSS squeeze — the instant it calms.
+  - **cap** — a standing `memory.high`, fixed or percent-of-total.
+  - A cgroup inside a delegated `user@<uid>.service` subtree is written via
+    the same `sudo -u '#<uid>' env DBUS_SESSION_BUS_ADDRESS=...
+    systemctl --user set-property` bridge the post-kill notification below
+    already uses — measured directly: a raw write into a delegated subtree
+    races the owning user manager. Everything else (`system.slice`, docker
+    scopes) is root's own cgroup outright, no bridge needed.
+- `ramstein ledger [--json]` — memory **by thing**, not by pid: same-tier
+  scopes collapse into one line (count, resident vs cgroup-charged bytes,
+  which road); `unclassified` groups by `exe` (falling back to `comm`) so an
+  unnamed population still reads as one line. Also surfaces a synthetic
+  `kernel` row naming the single scope carrying the most kernel slab
+  (dentries/inodes) — `memory.current` already counts it toward that scope's
+  charge, but nothing had ever named it; a real, measured multi-gigabyte
+  finding on the operator's own machine.
+- `ramstein stance status|rollback` — `status` shows the applied protect
+  floor (and whether it's pinned at the ceiling) and how many scopes are
+  capped; `rollback` walks every cgroup property ever written and resets
+  each to its off value via the same road it was written with, reading it
+  back to confirm. Runs automatically before the stance (re-)applies on
+  every daemon start, and is the daemon's own response to a stance file that
+  fails to load — a bad or unloadable stance applies nothing, ever.
+- The GNOME pill's **Findings** fold: a new closed-by-default disclosure,
+  its own label carrying the live finding (an incident citing which tier
+  pushed back first, a protecting/expendable summary — naming its own
+  "pinned at ceiling" basis when that's what's actually applied, "no stance
+  — reporting only", or "nothing is holding dead memory"), its body the
+  ledger itself. Existing Advanced controls are untouched.
+- A ceiling **throttles and never kills** — measured directly against a
+  disposable memory hog before any of this shipped: `memory.high` pins usage
+  at its ceiling via continuous reclaim, zero OOM events, contained almost
+  entirely to the capped scope. Kill remains exclusively a human TTY verb.
+
+### Visibility, before the stance needed it
+- `ramstein kills [--since T]` — kernel OOM-kill events (`journalctl -k`),
+  a class of event `top`/`blame` structurally cannot see (a killed process
+  is gone by the time either walks `/proc`).
+- The shmem advise rule now honestly splits tmpfs-backed usage from true
+  anonymous/memfd usage instead of one undifferentiated number, with a
+  disclosed fallback when the split can't be measured; OOM-ETA display
+  coarsens to buckets (a raw-seconds figure was overclaiming precision an
+  EWMA burn-rate estimate can't support).
+- A real desktop notification the instant the kernel OOM-kills something —
+  straight over D-Bus to the owner's own session
+  (`sudo -u '#<uid>' env DBUS_SESSION_BUS_ADDRESS=...  notify-send`), going
+  around the GNOME pill entirely so it reaches the desktop even on a shell
+  that hasn't reloaded in days. A burst collapses to one notification naming
+  the most recent, never one popup per kill.
+- `ramstein standing` — stock, not flow: what's large and has stopped
+  moving (a flat-for-a-day process is furniture, not activity), the
+  anonymous/memfd memory byebyte structurally cannot see, and the swap
+  watermark (since-timestamp, peak-only-increases).
+- `ramstein incidents [--limit N]` — fire marshal, not firefighter: a
+  snapshot of the top residents by rss+swap the instant swap%, PSI, or an
+  active swap-storm crosses a real threshold, so "who was resident when it
+  happened" is answerable after the fact instead of only ever a bare
+  watermark number.
+
+### Release engineering
+- `packaging/packages.txt` is now the single source of truth for the
+  `.deb`'s `Depends`/`Suggests` — the control stanza is generated from it
+  (Tantra's shared `sutra.mk` recipe) instead of being hand-duplicated in
+  the `Makefile`, so the two can no longer silently drift.
+- `release.yml` now corrects a release's body to the CHANGELOG section even
+  when the release already existed before this run (a prior manual creation
+  or partial run could otherwise leave GitHub's default compare-stub body
+  in place forever, since asset re-upload alone never touches it).
+
 ## 0.12.0 — layer 3: configuring the system, and its consent model
 
 FAMILY.md's third layer ("configure the system", not just observe or act on
