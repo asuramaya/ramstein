@@ -73,6 +73,8 @@ standing_min_bytes@500MiB@1MiB\(en2^40
 incident_swap_pct@50.0@0\(en100
 incident_max_residents@15@1\(en100
 incident_max_records@500@1\(en100000
+stance_protect_floor_ceiling_pct@50.0@1\(en100
+stance_expendable_squeeze_pct@70.0@10\(en100
 .TE
 .PP
 Units are seconds unless named otherwise.
@@ -140,6 +142,22 @@ without ever tripping a swap\-storm warning) snapshots the top
 processes by rss+swap, retaining the most recent
 .I incident_max_records
 crossings.
+The
+.I stance_*
+keys govern V4's memory stance (see
+.B MEMORY STANCE (V4)
+below):
+.I stance_protect_floor_ceiling_pct
+bounds the
+.B protect
+tier's floor at this percent of MemTotal regardless of how much protected
+usage grows, and
+.I stance_expendable_squeeze_pct
+sizes the
+.B expendable
+tier's
+.I memory.high
+(while hot) as this percent of a leaf's own current usage.
 .SH FILES
 .TP
 .I /etc/ramstein/config.json
@@ -182,6 +200,20 @@ carrying the triggering value and a snapshot of the top residents by
 rss+swap at that instant. Append-only; trimmed to
 .I incident_max_records
 on write, oldest dropped first.
+.TP
+.I /etc/ramstein/stance.json
+The memory stance (V4): operator-authored, never written by the daemon.
+Missing entirely, or present with an empty rule list, is the shipped
+default \(em protects nothing, caps nothing. See
+.B MEMORY STANCE (V4)
+below.
+.TP
+.I /var/lib/ramstein/stance_touched.json
+Every cgroup property the daemon has ever written under the stance
+(unit, property, which road it was written with) \(em the durable list
+.I stance rollback
+walks to reset everything back to its off value. Survives a restart;
+entries are removed as they're successfully reset.
 .TP
 .I /run/ramstein/status.json
 0640, owned by
@@ -275,6 +307,98 @@ recent, never one popup per kill. This reads
 .I kills
 and writes nothing any other verb reads back \(em it touches neither the
 kill gate nor auto\-calm's three gates above.
+.SH MEMORY STANCE (V4)
+Operator ruling, 2026\-09\-05: the daemon stops being a pure gauge and starts keeping a short,
+operator\-authored policy applied as real cgroup memory controls, read from
+.IR /etc/ramstein/stance.json .
+Ships with zero rules \(em the default protects nothing and caps nothing until the operator names a
+rule; this file is never written by the daemon, only read. A file that fails to load or validate
+applies nothing at all: every previously\-touched cgroup is rolled back and the error is reported,
+the same as a clean daemon stop.
+.PP
+Each rule matches a
+.B leaf
+cgroup scope only, by
+.IR unit_glob ", " comm ", " exe_glob
+(needed for anything whose
+.I comm
+is not a stable name), or
+.IR container_glob .
+First match wins; anything matching nothing is
+.BR unclassified " \(em reported by " ramstein " (1)'s "
+.I ledger
+verb, never capped. Three tiers:
+.TP
+.B protect
+.I memory.low
+on the target leaf
+.B and
+every shared ancestor up through
+.I user@<uid>.service
+and
+.IR user\-<uid>.slice ,
+sized to the sum of every protect\-tier leaf's own usage and capped at
+.I stance_protect_floor_ceiling_pct
+of MemTotal (a leak inside a protected scope must not become an unbounded reservation) \(em a
+leaf's own
+.I memory.low
+alone protects nothing against reclaim pressure from an ancestor with none, measured directly.
+.I ManagedOOMPreference=avoid
+rides along on the leaf. Never touches the top\-level
+.I user.slice
+or
+.IR system.slice ;
+a leaf outside any session (e.g. a docker scope under
+.IR system.slice )
+gets leaf\-level protection only.
+.TP
+.B expendable
+No standing squeeze.
+.I memory.high
+rides
+.BR ramstein (1)'s
+.I autocalm
+verb's own three consent gates and squeeze mechanism as one more step, sized to
+.I stance_expendable_squeeze_pct
+of the leaf's own current usage, applied only while autocalm's trigger is hot and released back to
+.I max
+the instant it calms \(em unlike the pre\-existing top\-RSS squeeze step, this one self\-releases.
+No protection; ManagedOOMPreference stays at its default.
+.TP
+.B cap
+A standing
+.I memory.high ,
+fixed
+.RI ( memory_high_bytes )
+or relative
+.RI ( memory_high_pct_of_total ),
+applied every poll tick regardless of system state \(em containers are capped by design intent, not
+system state.
+.PP
+Two write roads: a cgroup living inside a
+.I user@<uid>.service's
+own delegated subtree is written via
+.I "sudo \-u '#<uid>' env DBUS_SESSION_BUS_ADDRESS=... systemctl \-\-user set\-property"
+\(em the same bridge V3's desktop notification already uses, measured to be the road that sticks
+without racing the owning user manager. Everything else \(em
+.IR system.slice ,
+docker scopes, or the two session\-level units
+.I above
+the delegation boundary \(em is root's own cgroup outright: a plain
+.IR "systemctl set\-property" ,
+no bridge.
+.BR ramstein (1)'s
+.I ledger
+verb shows which road each managed scope took.
+.PP
+.B ramstein stance rollback
+walks every cgroup property ever written (persisted to
+.IR /var/lib/ramstein/stance_touched.json ),
+resets each to its off value via the same road it was written with, and reads it back to confirm; a
+vanished unit counts as a pass. Runs automatically before the stance (re\-)applies on every daemon
+start. A ceiling here throttles and never kills \(em kill remains exclusively a human TTY verb via
+.I calm \-\-kill ,
+untouched by any of this.
 .SH SECURITY
 The relevant attacker is an unprivileged local process abusing the root
 daemon; ramsteind has no network attack surface at all \(em the only

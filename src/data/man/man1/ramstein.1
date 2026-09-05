@@ -191,6 +191,42 @@ capped at
 (oldest dropped first); no time-based expiry, since a real threshold had
 to cross for a record to exist at all. Report-only, same as
 .BR standing .
+When the memory stance (below) names a rule, each resident line also
+names which tier applied to it (e.g. "per your stance, tier: expendable").
+.TP
+.B ledger
+Memory by
+.B thing ,
+not by pid \(em same-tier scopes collapse into one line (count, resident
+bytes, cgroup-charged bytes, which road each took); an
+.B unclassified
+scope groups by its
+.I exe
+(falling back to
+.IR comm )
+rather than fragmenting into one row per pid. Meaningful even against
+the shipped zero-rule stance \(em everything just reads unclassified.
+See
+.B ramsteind (8)
+for the stance file format.
+.TP
+.B stance " status|rollback"
+.B status
+shows the stance's rule count and, when a
+.B protect
+or
+.B cap
+rule matched anything live, the applied protect floor (and whether it is
+"pinned at ceiling" \(em bounded by
+.I stance_protect_floor_ceiling_pct
+of MemTotal rather than tracking real usage) or the number of capped
+scopes.
+.B rollback
+walks every cgroup property the daemon has ever written and resets it
+to its off value via the same road (D\-Bus bridge or plain root) it was
+written with, reading each back to confirm; a vanished unit counts as a
+pass. Runs automatically before the stance (re-)applies on every daemon
+start, and whenever the stance file itself fails to load.
 .TP
 .B swap " [\-\-limit N]"
 Who's parked in swap, VmSwap descending.

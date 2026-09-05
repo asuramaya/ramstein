@@ -376,9 +376,77 @@ def cmd_incidents(argv):
         if residents:
             print("  top residents:")
             for res in residents:
+                tag = (f"  [{res['stance_tier']}, per your stance]"
+                      if res.get("stance_tier") else "")
                 print(f"    {human_bytes(res['rss'] + res['swap']):>8}"
-                      f"  {res['comm']:<16} pid {res['pid']}")
+                      f"  {res['comm']:<16} pid {res['pid']}{tag}")
         print()
+
+
+def cmd_ledger(argv):
+    """`ramstein ledger` (proposal v2/v3, msg 7124/7127): memory by THING,
+    not by PID -- the operator's own ask, one line for 13 Claude sessions
+    rather than 26 rows. Meaningful even with a zero-rule stance:
+    everything just reads unclassified, grouped by exe/comm same as any
+    named tier would be."""
+    doc = request_or_die({"cmd": "ledger"})
+    if "--json" in argv:
+        print(json.dumps(doc, indent=2))
+        return
+    if doc.get("error"):
+        sys.exit(f"ramstein: stance file error: {doc['error']}"
+                 f" -- ledger degraded to nothing until it's fixed")
+    rows = doc["rows"]
+    if not rows:
+        print("nothing resident right now")
+        return
+    print(f"{'TIER':<12} {'CHARGED':>8} {'RESIDENT':>8}  COUNT  ROAD    LABEL")
+    for r in rows:
+        roads = "/".join(r["roads"])
+        print(f"{r['tier']:<12} {human_bytes(r['charged_bytes']):>8}"
+              f" {human_bytes(r['resident_bytes']):>8}  {r['count']:>5}"
+              f"  {roads:<6}  {r['label']}")
+    if doc.get("rule_count", 0) == 0:
+        print("\n(zero-rule stance — protects nothing, caps nothing;"
+              " report only)")
+
+
+def cmd_stance(argv):
+    """`ramstein stance status|rollback` (proposal v2/v3, msg 7124/7127)."""
+    if not argv or argv[0] not in ("status", "rollback"):
+        sys.exit("ramstein: stance needs one of status | rollback")
+    action = argv[0]
+    doc = request_or_die({"cmd": "stance", "action": action})
+    if "--json" in argv:
+        print(json.dumps(doc, indent=2))
+        return
+    if action == "status":
+        if doc.get("error"):
+            print(f"stance file error: {doc['error']}")
+            print("(rolled back to nothing until the file is fixed)")
+            return
+        print(f"stance: {doc.get('rule_count', 0)} rule(s)")
+        last = doc.get("last_apply") or {}
+        protect = last.get("protect")
+        if protect:
+            pin = " (pinned at ceiling)" if protect.get("pinned_at_ceiling") else ""
+            print(f"  protect floor: {human_bytes(protect['floor_bytes'])}{pin}")
+        cap = last.get("cap")
+        if cap:
+            print(f"  cap tier: {len(cap)} scope(s) capped")
+        if not protect and not cap:
+            print("  nothing applied (no protect/cap rules matched anything live)")
+        return
+    ok = doc.get("ok")
+    print(f"rollback {'complete' if ok else 'INCOMPLETE'} —"
+          f" {len(doc.get('results', []))} entries,"
+          f" {doc.get('remaining', 0)} still outstanding")
+    for r in doc.get("results", []):
+        mark = "ok" if r["ok"] else "FAILED"
+        extra = f"  {r['error']}" if not r["ok"] and r.get("error") else ""
+        print(f"  [{mark}] {r['unit']} {r['prop']}{extra}")
+    if not ok:
+        sys.exit(1)
 
 
 def cmd_zombies(argv):
@@ -939,6 +1007,8 @@ verbs:
   kills [--since T] [--limit N]   kernel OOM-kills since T (default 1d) — top/blame can't see these
   standing                        stock, not flow: what's large and has stopped moving (V3)
   incidents [--limit N]           who was resident when swap/PSI crossed a real threshold (V3)
+  ledger                          memory stance: by thing, not by pid — resident vs charged, per tier (V4)
+  stance status|rollback          memory stance: applied floor/caps, or reset every touched cgroup (V4)
   zombies                         unreaped zombie processes, grouped by parent
   oom                             who dies first, by oom_score
   advise                          rule-based notices (pressure/growth/swap/zombies/...)
@@ -978,7 +1048,8 @@ def main():
     rest = argv[1:] if argv else []
     verbs = {"status": cmd_status, "top": cmd_top, "blame": cmd_blame,
              "kills": cmd_kills, "standing": cmd_standing,
-             "incidents": cmd_incidents,
+             "incidents": cmd_incidents, "ledger": cmd_ledger,
+             "stance": cmd_stance,
              "swap": cmd_swap, "zombies": cmd_zombies, "oom": cmd_oom,
              "advise": cmd_advise, "calm": cmd_calm, "autocalm": cmd_autocalm,
              "oomd": cmd_oomd, "swappiness": cmd_swappiness,

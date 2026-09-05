@@ -328,6 +328,118 @@ never has to take the record's existence on faith. Report-only, same as `standin
 `poll_memory`'s own computed values and the sampler's existing index, writes nothing any other
 verb reads back, and touches neither the kill gate nor autocalm's three gates.
 
+## V4: the memory stance
+
+Operator ruling, relayed msg 7110/7117/7119/7123/7127, 2026-09-05: ramstein stops being a pure
+gauge on a system that already has one. The kernel and `systemd-oomd` manage pages by PRESSURE,
+blind to INTENT, and systemd's own per-cgroup `memory.low`/`memory.high`/`swap.max`/OOM-preference
+knobs sit at their defaults on every desktop. The stance is a short policy in the operator's own
+words — PROTECT osiris-pg and the agent fleet, EXPENDABLE Chrome, CAP dev containers — kept applied
+as cgroup memory controls while random-named scopes appear and vanish. A ceiling **throttles and
+never kills** (measured directly: a disposable hog capped at `memory.high` pinned at its ceiling
+with continuous reclaim events and zero OOM kills for the whole run); kill stays a human TTY verb,
+untouched by any of this — see "The hands" above.
+
+### The stance file
+
+`/etc/ramstein/stance.json`. **Ships with zero rules** — the default stance protects nothing and
+caps nothing until the operator names a rule. This file is never written by the daemon itself:
+`ramstein ledger` runs first so the operator sees the machine's real shape, then hand-edits/enables
+a seed rule set.
+
+```json
+{"rules": [
+  {"match": {"comm": "postgres"}, "tier": "protect"},
+  {"match": {"exe_glob": "~/.local/share/claude/versions/*"}, "tier": "protect"},
+  {"match": {"unit_glob": "app-*.google.Chrome-*.scope"}, "tier": "expendable"},
+  {"match": {"container_glob": "docker-*.scope"}, "tier": "cap", "memory_high_pct_of_total": 25}
+]}
+```
+
+Rules match **leaf scopes only** (an earlier draft's `user@*.service` glob matched a *parent* of
+every app scope, Chrome included — corrected before this shipped). Match keys: `unit_glob` (the
+cgroup's own basename), `comm`, `exe_glob` (`/proc/<pid>/exe`, needed for anything whose `comm` is
+not a stable name — the fleet's own `comm` is a version string), `container_glob`. First
+match wins; nothing that matches gets `"tier": "unclassified"` — reported honestly by `ledger`,
+never capped. Inventing a policy for a process nobody named is exactly the "rogue process" case
+the operator wants surfaced, not silently squeezed.
+
+A stance file that fails to load or validate (bad JSON, an unknown tier, a `cap` rule with no
+size) **applies nothing** — `apply_stance` rolls back every previously-touched cgroup and reports
+the error, the same as a daemon stop. Partial application of a broken file was never an option
+considered.
+
+### The three tiers
+
+**protect** — measured directly (a synthetic three-level nested cgroup test, isolated from the
+real machine): a leaf's own `memory.low` does **nothing** against reclaim pressure originating
+above an ancestor whose own `low` is unset. Two leaves racing for a shared parent's budget split
+cleanly along their own `low` values; the same leaves one hop deeper, behind a parent with no `low`
+of its own, converge to *nearly equal* usage regardless — the leaf's reservation buys it nothing.
+Real protection needs `memory.low` written on the target **and** every shared ancestor up through
+`user@<uid>.service` and `user-<uid>.slice`, sized to the sum of every protect-tier leaf's own
+usage and capped at `stance_protect_floor_ceiling_pct` (default 50%) of `MemTotal` — a leak inside
+a protected scope must not become an unbounded reservation; the ledger names it "pinned at ceiling"
+when this bound, not real usage, is what's currently applied. `ManagedOOMPreference=avoid` rides
+along on the leaf itself. Deliberately stops at `user-<uid>.slice` — never touches the top-level
+`user.slice` (shared by every user on the machine) or `system.slice` (every root service): a leaf
+living under `system.slice`/`docker-*.scope` (osiris-pg) gets leaf-level protection only, a
+documented, accepted limit rather than a per-app tool reaching into the whole machine's services.
+
+**expendable** — no standing squeeze. An earlier draft kept `memory.high` permanently close to
+Chrome's own usage regardless of system state, which is a tax paid whether or not anyone needs the
+memory — dropped before shipping. Instead, expendable's `memory.high` rides `do_autocalm_run`'s own
+three consent gates (`auto_calm_enabled`, armed, the `ramstein-autocalm.timer` unit) and its
+existing squeeze mechanism as one more step (`stance_squeeze`), sized to
+`stance_expendable_squeeze_pct` (default 70%) of the leaf's own current usage, applied only while
+`_autocalm_trigger` reports the system hot and released — back to `max` — the instant it calms.
+Unlike the pre-existing top-RSS squeeze (never self-releasing, an operator's own `calm --release`
+job today), this one lifts on its own. No protection is applied; `ManagedOOMPreference` is left at
+its default so `systemd-oomd`'s own selection naturally reaches it first.
+
+**cap** — a standing `memory.high`, fixed (`memory_high_bytes`) or relative
+(`memory_high_pct_of_total`). Containers are capped by design intent, not by system state, so this
+tier needs no hot/calm gating — applied on the daemon's own regular poll cycle, same as protect.
+
+### The road: bridge, or plain root
+
+A cgroup living inside a `user@<uid>.service`'s own delegated subtree is written via the exact
+`sudo -u '#<uid>' env DBUS_SESSION_BUS_ADDRESS=... systemctl --user set-property` bridge V3's
+desktop notification already uses — measured directly: a raw root write straight into cgroupfs
+under a delegated subtree is the wrong road (this session's own sandbox refused even the attempt);
+the D-Bus bridge is the one that sticks, atomically, without racing the owning user manager's own
+bookkeeping. Everything else — `system.slice`, `docker-*.scope`, or the two session-level units
+*above* the delegation boundary (`user@<uid>.service` and `user-<uid>.slice` themselves) — is
+root's own cgroup outright: a plain `systemctl set-property`, no bridge. `ledger` shows which road
+each managed scope took.
+
+### `ramstein ledger`
+
+Memory **by thing, not by pid** — the operator's own ask: one line for thirteen Claude sessions,
+not twenty-six rows. Same-tier instances collapse into one row (count, resident bytes, cgroup-
+charged bytes, which road(s)); `unclassified` groups by `exe` (falling back to `comm`) so an
+unnamed population still reads as one line instead of fragmenting the moment nothing in the stance
+names it. Meaningful even against the shipped zero-rule stance — everything just reads
+unclassified, grouped the same way.
+
+### `ramstein stance rollback`
+
+Walks every cgroup property the daemon has *ever* written (persisted to
+`STATE_DIR/stance_touched.json`, survives a restart), resets each to its off value
+(`memory.low`→0, `memory.high`→`max`, `ManagedOOMPreference`→`none`) via the same road it was
+written with, reads it back to confirm, and reports per-entry pass/fail. A unit that no longer
+exists counts as a pass — nothing left to reset. Runs automatically before the stance is ever
+(re-)applied on daemon start, and is the daemon's own response to a stance file that fails to
+load — a clean slate before either reapplying or refusing.
+
+### incidents cites the stance
+
+`incidents`' own snapshot (above) now names which tier pushed back first when a real threshold
+crossed — "Chrome pushed out first, per your stance" — by cross-referencing the snapshot's top
+residents against the stance classifier at the moment the trigger fired. This classification pass
+is deliberately **not** run on every poll tick (that would defeat incidents' own cheap-trigger
+design) — only on the rare tick a trigger actually fires.
+
 ## The sutra backbone
 
 `src/share/ramstein/lib/sutra.py`, `sutra_update.py`, and `sutra_xen.py` (plus

@@ -21,8 +21,10 @@ stdlib only, by constitution.
 """
 
 import argparse
+import fnmatch
 import json
 import os
+import pwd
 import re
 import signal
 import sqlite3
@@ -191,6 +193,25 @@ DEFAULTS = {
     "incident_max_records": 500,    # incidents.jsonl retention -- rare by
                                      # construction (a real threshold had
                                      # to cross), no time-based expiry
+    # V4: memory stance (operator ruling, msg 7110/7117/7119/7123/7127,
+    # 2026-09-05) -- ramstein stops being a pure gauge and starts keeping a
+    # short, operator-authored policy applied as cgroup memory controls.
+    # Ships with zero rules (docs/ARCHITECTURE.md, "stance": the default
+    # protects nothing and caps nothing until the operator names a rule.
+    "stance_protect_floor_ceiling_pct": 50.0,  # the protect floor (sum of
+                                     # every protect-tier leaf's own usage)
+                                     # never reserves above this % of
+                                     # MemTotal -- a leak inside a
+                                     # protected scope must not become an
+                                     # unbounded reservation (alfred msg
+                                     # 7125, note 1)
+    "stance_expendable_squeeze_pct": 70.0,  # expendable-tier memory.high,
+                                     # while hot, as this % of the leaf's
+                                     # OWN current usage -- tighter than
+                                     # auto_calm_squeeze_pct's 130% (that
+                                     # one keeps a lone top-grower limping
+                                     # along; this one is meant to be felt
+                                     # first, per the stance)
 }
 
 CLAMPS = {
@@ -229,6 +250,8 @@ CLAMPS = {
     "incident_swap_pct": (0.0, 100.0),
     "incident_max_residents": (1, 100),
     "incident_max_records": (1, 100000),
+    "stance_protect_floor_ceiling_pct": (1.0, 100.0),
+    "stance_expendable_squeeze_pct": (10.0, 100.0),
 }
 
 
@@ -1743,6 +1766,69 @@ def do_autocalm_arm(cfg, get_status, autocalm_state, config_path, dry_run=True):
     return resp
 
 
+def _autocalm_stance_squeeze(cfg, do_real, hot):
+    """The stance's 'expendable' tier memory.high, riding autocalm's own
+    three consent gates and squeeze mechanism rather than a new always-on
+    one (alfred msg 7119/7124: "autocalm's existing three gates and
+    squeeze, exactly the one policy line the ruling named"). hot=True,
+    do_real=True: applies memory.high on every expendable leaf, sized to
+    stance_expendable_squeeze_pct of its OWN current usage. hot=False:
+    releases (back to 'max') every leaf THIS mechanism previously
+    squeezed -- unlike the pre-existing top-RSS squeeze step (never
+    self-releasing, an operator's own `calm --release` job today),
+    expendable's cap must lift the instant the trigger clears (alfred msg
+    7119: "released when calm"). do_real=False (dry-run, or a cooldown in
+    effect): reports what it would apply/release without writing
+    anything. Returns None when the stance names no expendable-tier rule
+    at all -- nothing for autocalm's own notify/status surface to say."""
+    rules, err = _load_stance()
+    if err or not rules:
+        return None
+    expendable = [l for l in classify_leaves(rules) if l["tier"] == "expendable"]
+    touched = _load_stance_touched()
+    squeezed_kind = "stance_expendable_squeezed"
+    if hot:
+        entries = []
+        for leaf in expendable:
+            target = max(1, int(leaf["usage"] *
+                                cfg["stance_expendable_squeeze_pct"] / 100.0))
+            entry = {"unit": leaf["unit"], "memory_high": target}
+            if do_real:
+                ok, err2 = _systemctl_set_property(
+                    leaf["path"], "MemoryHigh", str(target), uid=leaf["uid"])
+                entry["ok"] = ok
+                if not ok:
+                    entry["error"] = err2
+                if ok:
+                    _record_touched(touched, leaf["path"], "MemoryHigh",
+                                    leaf["road"], leaf["uid"])
+                    for t in touched:
+                        if t["unit"] == leaf["path"] and t["prop"] == "MemoryHigh":
+                            t["kind"] = squeezed_kind
+            else:
+                entry["dry_run"] = True
+            entries.append(entry)
+        if do_real:
+            _save_stance_touched(touched)
+        return {"hot": True, "leaves": entries,
+                "changed": bool(entries) and do_real}
+    to_release = [t for t in touched if t.get("kind") == squeezed_kind]
+    if not to_release:
+        return None
+    if not do_real:
+        return {"hot": False, "would_release": [t["unit"] for t in to_release]}
+    remaining, released = [], []
+    for t in touched:
+        if t.get("kind") != squeezed_kind:
+            remaining.append(t)
+            continue
+        ok, _err = _systemctl_set_property(t["unit"], "MemoryHigh", "max",
+                                           uid=t["uid"])
+        (released if ok else remaining).append(t["unit"] if ok else t)
+    _save_stance_touched(remaining)
+    return {"hot": False, "released": released, "changed": bool(released)}
+
+
 def do_autocalm_run(cfg, get_status, autocalm_state):
     def _settle(result):
         autocalm_state["last_result"] = result
@@ -1758,10 +1844,6 @@ def do_autocalm_run(cfg, get_status, autocalm_state):
         return _settle({"ok": True, "acted": False, "reason": "no status yet"})
 
     trigger = _autocalm_trigger(cfg, doc)
-    if trigger is None:
-        return _settle({"ok": True, "acted": False,
-                        "reason": "no trigger condition met"})
-
     armed = autocalm_state.get("armed", False)
     now = time.time()
     # cooldown only rate-limits REAL actions, tracked in its OWN field
@@ -1769,24 +1851,53 @@ def do_autocalm_run(cfg, get_status, autocalm_state):
     # ran" marker the pill/CLI display, and a dry-run cycle must keep that
     # fresh every tick (an operator watching "what would it do" shouldn't
     # see stale data) without it ever counting toward the cooldown.
+    cooling_down = False
+    remaining = 0.0
     if armed:
         last_armed_ts = autocalm_state.get("last_armed_action_ts")
         if last_armed_ts is not None \
                 and now - last_armed_ts < cfg["auto_calm_cooldown_seconds"]:
+            cooling_down = True
             remaining = cfg["auto_calm_cooldown_seconds"] - (now - last_armed_ts)
-            return _settle({"ok": True, "acted": False, "trigger": trigger,
-                            "reason": f"cooldown active ({remaining:.0f}s left)"})
+
+    # V4: expendable-tier memory.high rides these same gates -- computed
+    # here, on EVERY call (dry, cooling down, or no top-RSS target at all),
+    # and on a CALM tick too, since release-when-calm must not wait for an
+    # eligible top-RSS target to exist.
+    do_real = armed and not cooling_down
+    stance_step = _autocalm_stance_squeeze(cfg, do_real, trigger is not None)
+
+    if trigger is None:
+        result = {"ok": True, "acted": bool(stance_step and stance_step.get("changed")),
+                  "reason": "no trigger condition met"}
+        if stance_step:
+            result["stance_squeeze"] = stance_step
+        return _settle(result)
+
+    if cooling_down:
+        result = {"ok": True, "acted": bool(stance_step and stance_step.get("changed")),
+                  "trigger": trigger,
+                  "reason": f"cooldown active ({remaining:.0f}s left)"}
+        if stance_step:
+            result["stance_squeeze"] = stance_step
+        return _settle(result)
 
     # target: the current top RSS grower — same figure the pill already
     # surfaces as top_process, no new selection logic
     rows = query_top(False, 1).get("rows") or []
     if not rows:
-        return _settle({"ok": True, "acted": False, "trigger": trigger,
-                        "reason": "no eligible target process"})
+        result = {"ok": True, "acted": bool(stance_step and stance_step.get("changed")),
+                  "trigger": trigger, "reason": "no eligible target process"}
+        if stance_step:
+            result["stance_squeeze"] = stance_step
+        return _settle(result)
     proc = _find_proc(rows[0]["pid"])
     if proc is None:
-        return _settle({"ok": True, "acted": False, "trigger": trigger,
-                        "reason": "target vanished before action"})
+        result = {"ok": True, "acted": bool(stance_step and stance_step.get("changed")),
+                  "trigger": trigger, "reason": "target vanished before action"}
+        if stance_step:
+            result["stance_squeeze"] = stance_step
+        return _settle(result)
 
     steps = []
     if cfg["auto_calm_step_renice"]:
@@ -1804,6 +1915,8 @@ def do_autocalm_run(cfg, get_status, autocalm_state):
         else:
             r = {"dry_run": True, "would": f"memory.high to ~{squeeze_bytes}B"}
         steps.append({"step": "squeeze", "result": r})
+    if stance_step:
+        steps.append({"step": "stance_squeeze", "result": stance_step})
 
     # step 3, notify, is never a daemon-side action: a root systemd service
     # has no clean path into the operator's own desktop session. The daemon
@@ -3094,6 +3207,17 @@ def check_incident(state, cfg, now, mem, warning_doc):
         return
 
     residents = _top_residents_by_rss_swap(cfg["incident_max_residents"])
+    residents = residents if residents is not None else []
+    # V4: citation -- name which stance tier pushed back first (alfred's
+    # proposal spec, msg 7124/7127). classify_leaves() is a fresh /proc
+    # walk, deliberately NOT done on every poll tick (would defeat
+    # incidents' own "cheap trigger" design, alfred msg 7068/7077) --
+    # only reached here, on the rare tick a trigger actually fired.
+    tiers = _stance_pid_tiers() if residents else {}
+    for r in residents:
+        tier = tiers.get(r["pid"])
+        if tier:
+            r["stance_tier"] = tier
     record = {
         "ts": now,
         "triggers": triggers,
@@ -3101,7 +3225,7 @@ def check_incident(state, cfg, now, mem, warning_doc):
         "swap_total": swap_total,
         "swap_free": swap_free,
         "psi": mem.get("psi"),
-        "residents": residents if residents is not None else [],
+        "residents": residents,
     }
     _append_incident(record, cfg["incident_max_records"])
 
@@ -3125,6 +3249,522 @@ def query_incidents(limit):
     return {"rows": records[:limit]}
 
 
+# --- V4: memory stance --------------------------------------------------
+# Operator ruling (relayed msg 7110/7117/7119/7123/7127, 2026-09-05): ramstein
+# stops being a pure gauge on a system that already has one -- the kernel and
+# systemd-oomd manage pages by PRESSURE, blind to INTENT, and systemd's own
+# per-cgroup memory.low/high/swap.max/oom knobs sit at defaults on every
+# desktop. The stance is a short policy in the operator's own words --
+# PROTECT osiris-pg and the agent fleet, EXPENDABLE Chrome, CAP dev
+# containers -- kept applied as cgroup memory controls while random-named
+# scopes appear and vanish. A ceiling throttles and NEVER kills (measurement
+# (b), decision e6ccb5b2); kill stays a human TTY verb, untouched by any of
+# this. Ships with ZERO rules: the default stance protects nothing and caps
+# nothing until the operator names a rule (a stance file this daemon writes
+# itself does not exist -- `ramstein ledger` runs first, then the operator
+# hand-edits/enables the seed).
+#
+# protect: measurement (c) (decision e39cd759) found a leaf's own memory.low
+# does NOTHING against pressure originating above an ancestor whose own low
+# is unset -- real protection needs memory.low on the target AND every
+# shared ancestor up through user@<uid>.service and user-<uid>.slice,
+# root-side, sized to the sum of protected usage and capped at
+# stance_protect_floor_ceiling_pct of MemTotal (a leak must not become an
+# unbounded reservation, alfred msg 7125). Deliberately does NOT touch
+# user.slice or system.slice themselves -- too broad a blast radius for a
+# per-app policy tool; a leaf under system.slice/docker (osiris-pg) gets
+# leaf-level protection only, a documented, accepted limitation.
+#
+# expendable: no standing squeeze (a permanent Chrome tax regardless of
+# system state was v1's own mistake, alfred msg 7119) -- memory.high applies
+# ONLY while autocalm's existing three consent gates are satisfied AND the
+# system is hot, released the moment it calms, per do_autocalm_run's own
+# "stance_squeeze" step below. No protection; ManagedOOMPreference left at
+# its default so oomd's own selection naturally reaches it first.
+#
+# cap: a standing memory.high (containers are capped by design intent, not
+# by system state, so they need no hot/calm gating).
+#
+# Per-cgroup ROAD (alfred msg 7125, note 2): a cgroup inside a
+# user@<uid>.service's own delegated subtree is written via the same
+# sudo/env/DBUS_SESSION_BUS_ADDRESS + `systemctl --user set-property` bridge
+# _send_desktop_notification already uses (measurement (a), decision
+# 93b9b9e1 -- a raw cgroupfs write into a delegated subtree races the owning
+# user manager). Everything else (system.slice, docker-*.scope) is root's
+# own cgroup outright -- a plain `systemctl set-property`, no bridge.
+
+STANCE_TOUCHED_PATH = os.path.join(STATE_DIR, "stance_touched.json")
+_VALID_STANCE_TIERS = ("protect", "expendable", "cap")
+_STANCE_RESET_VALUE = {"MemoryLow": "0", "MemoryHigh": "max",
+                       "ManagedOOMPreference": "none"}
+_DELEGATION_BOUNDARY_RE = re.compile(r"^(.*/user-(\d+)\.slice/user@\2\.service)(/.*)?$")
+
+
+def _stance_path():
+    # Same env-override-only-when-unprivileged pattern as _cgroup_root() --
+    # a root daemon must never let an environment variable redirect where
+    # it reads policy from; tests run unprivileged against a fake file.
+    p = os.environ.get("RAMSTEIN_STANCE_PATH")
+    if p and os.getuid() != 0:
+        return p
+    return "/etc/ramstein/stance.json"
+
+
+def _validate_stance_rule(rule):
+    if not isinstance(rule, dict):
+        return "must be an object"
+    match = rule.get("match")
+    if not isinstance(match, dict) or not match:
+        return "'match' must be a non-empty object"
+    for key in match:
+        if key not in ("unit_glob", "comm", "exe_glob", "container_glob"):
+            return f"unknown match key {key!r}"
+        if not isinstance(match[key], str) or not match[key]:
+            return f"match.{key} must be a non-empty string"
+    tier = rule.get("tier")
+    if tier not in _VALID_STANCE_TIERS:
+        return f"'tier' must be one of {_VALID_STANCE_TIERS}"
+    if tier == "cap":
+        pct = rule.get("memory_high_pct_of_total")
+        byt = rule.get("memory_high_bytes")
+        if pct is None and byt is None:
+            return "cap tier needs memory_high_pct_of_total or memory_high_bytes"
+        if pct is not None and not (isinstance(pct, (int, float)) and 0 < pct <= 100):
+            return "memory_high_pct_of_total must be in (0, 100]"
+        if byt is not None and not (isinstance(byt, (int, float)) and byt > 0):
+            return "memory_high_bytes must be positive"
+    return None
+
+
+def _load_stance():
+    """Loads and validates the stance file. Returns (rules, error) -- rules
+    is a list of validated rule dicts (empty == the shipped zero-rule
+    default, including a missing file), error is None on success or a
+    human-readable string. A file that fails to load must never apply
+    PART of itself -- callers treat a non-None error as "roll back to
+    nothing and report", never "apply what parsed so far" (alfred msg
+    7123's load-failure requirement)."""
+    path = _stance_path()
+    try:
+        with open(path) as f:
+            raw = f.read()
+    except FileNotFoundError:
+        return [], None
+    except OSError as exc:
+        return None, f"can't read {path}: {exc}"
+    try:
+        doc = json.loads(raw)
+    except ValueError as exc:
+        return None, f"{path} is not valid JSON: {exc}"
+    if not isinstance(doc, dict) or not isinstance(doc.get("rules"), list):
+        return None, f"{path} must be a JSON object with a 'rules' list"
+    validated = []
+    for i, rule in enumerate(doc["rules"]):
+        err = _validate_stance_rule(rule)
+        if err:
+            return None, f"{path}: rule {i}: {err}"
+        validated.append(rule)
+    return validated, None
+
+
+def _leaf_scopes():
+    """Groups every live process by its resolved cgroup leaf path, reusing
+    the exact _cgroup_path(pid) resolution do_calm/autocalm already trust
+    -- a distinct cgroup path IS a leaf scope (that's where tasks actually
+    live), so this needs no second, independently-written cgroupfs
+    directory walk that could disagree with what the rest of the daemon
+    already does. Returns {leaf_path: [proc, ...]}."""
+    groups = {}
+    for p in _read_procs():
+        path = _cgroup_path(p["pid"])
+        if not path:
+            continue
+        groups.setdefault(path, []).append(p)
+    return groups
+
+
+def _leaf_usage_bytes(path):
+    try:
+        with open(os.path.join(path, "memory.current")) as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def _proc_uid(pid):
+    try:
+        return os.stat(f"/proc/{pid}").st_uid
+    except OSError:
+        return None
+
+
+def _proc_exe(pid):
+    try:
+        return os.readlink(f"/proc/{pid}/exe")
+    except OSError:
+        return None
+
+
+def _expand_home_glob(pattern, uid):
+    if not pattern.startswith("~/") or uid is None:
+        return pattern
+    try:
+        home = pwd.getpwuid(uid).pw_dir
+    except KeyError:
+        return pattern
+    return os.path.join(home, pattern[2:])
+
+
+def _match_leaf(leaf_path, procs, rules):
+    """First-match-wins over LEAF-only rules (v1's user@*.service seed
+    accidentally matched a PARENT of every app scope including Chrome --
+    corrected in v2/v3 to match leaves exclusively, alfred msg 7119 note
+    3). exe_glob exists because the fleet's own comm is a version string,
+    not a stable name -- /proc/<pid>/exe is the only reliable handle."""
+    unit_name = os.path.basename(leaf_path.rstrip("/"))
+    for i, rule in enumerate(rules):
+        match = rule["match"]
+        hit = False
+        if "unit_glob" in match and fnmatch.fnmatch(unit_name, match["unit_glob"]):
+            hit = True
+        if not hit and "container_glob" in match \
+                and fnmatch.fnmatch(unit_name, match["container_glob"]):
+            hit = True
+        if not hit and "comm" in match:
+            hit = any(p["comm"] == match["comm"] for p in procs)
+        if not hit and "exe_glob" in match:
+            for p in procs:
+                exe = _proc_exe(p["pid"])
+                if exe is None:
+                    continue
+                pattern = _expand_home_glob(match["exe_glob"], _proc_uid(p["pid"]))
+                if fnmatch.fnmatch(exe, pattern):
+                    hit = True
+                    break
+        if hit:
+            return i, rule
+    return None, None
+
+
+def _leaf_road(leaf_path):
+    """Which write path a leaf's own properties need (measurement (a),
+    decision 93b9b9e1): 'bridge' (root reaching into a delegated user
+    subtree via systemctl --user set-property) for anything still inside a
+    user@<uid>.service's own delegated tree, 'root' (root's own cgroup
+    outright, no bridge) for everything else -- system.slice, docker
+    scopes, or the session-level units ABOVE the delegation boundary."""
+    m = _DELEGATION_BOUNDARY_RE.match(leaf_path)
+    if m and leaf_path != m.group(1):
+        return "bridge", int(m.group(2))
+    return "root", None
+
+
+def classify_leaves(rules):
+    """Every live leaf scope, classified against the stance. Each entry:
+    path, tier ('unclassified' when nothing matches -- reported, never
+    capped, an honest bucket rather than an invented policy for a rogue
+    process nobody named), rule_index, road/uid (which write path its OWN
+    properties need), usage (memory.current), procs (for the ledger's
+    exe/comm grouping)."""
+    result = []
+    for path, procs in _leaf_scopes().items():
+        idx, rule = _match_leaf(path, procs, rules)
+        road, uid = _leaf_road(path)
+        result.append({
+            "path": path, "unit": os.path.basename(path.rstrip("/")),
+            "tier": rule["tier"] if rule else "unclassified",
+            "rule_index": idx, "road": road, "uid": uid,
+            "usage": _leaf_usage_bytes(path), "procs": procs,
+        })
+    return result
+
+
+def _stance_pid_tiers():
+    """pid -> tier for every currently-classified leaf. Only ever called
+    when an incident's triggers actually fired (rare by construction) --
+    never on every poll tick, which would defeat incidents' own
+    deliberately-cheap trigger design (alfred msg 7068/7077). Returns {}
+    when the stance has no rules -- nothing to cite."""
+    rules, err = _load_stance()
+    if err or not rules:
+        return {}
+    lookup = {}
+    for leaf in classify_leaves(rules):
+        for p in leaf["procs"]:
+            lookup[p["pid"]] = leaf["tier"]
+    return lookup
+
+
+def _ancestor_chain_for_protect(leaf_path, uid):
+    """Every unit-level cgroup between the leaf and user@<uid>.service
+    INCLUSIVE (delegated -> 'bridge' road), plus user@<uid>.service and
+    user-<uid>.slice themselves (system-owned -> 'root' road) --
+    measurement (c) (decision e39cd759): a leaf's own memory.low protects
+    nothing against pressure from an ancestor with none, so real
+    protection needs every level in this chain written, not just the
+    leaf. Stops at user-<uid>.slice -- never touches the top-level
+    user.slice (shared by every user on the machine) or system.slice
+    (every root service), a deliberate, documented scope limit. Returns
+    [(path, road), ...], leaf first."""
+    if uid is None:
+        return [(leaf_path, "root")]
+    root = _cgroup_root()
+    rel = os.path.relpath(leaf_path, root)
+    parts = rel.split(os.sep)
+    boundary = f"user@{uid}.service"
+    if boundary not in parts:
+        return [(leaf_path, "root")]
+    bidx = parts.index(boundary)
+    chain = [(os.path.join(root, *parts[:i]), "bridge")
+             for i in range(len(parts), bidx + 1, -1)]
+    chain.append((os.path.join(root, *parts[:bidx + 1]), "root"))  # user@<uid>.service
+    if bidx >= 1:
+        chain.append((os.path.join(root, *parts[:bidx]), "root"))  # user-<uid>.slice
+    return chain
+
+
+def _systemctl_set_property(unit, prop, value, uid=None):
+    """Applies prop=value to a live unit via `systemctl set-property
+    --runtime` -- never a drop-in file, these are stance-owned knobs
+    reapplied every relevant poll, not meant to survive a systemd
+    daemon-reload of on-disk config. uid=None: root's own system bus
+    (system.slice, or a session-level unit like user@<uid>.service /
+    user-<uid>.slice that root already owns outright). uid=<n>: bridges
+    into that user's own --user manager via the same
+    sudo -u '#<uid>' env DBUS_SESSION_BUS_ADDRESS=... shape
+    _send_desktop_notification already uses and measurement (a) (decision
+    93b9b9e1) proved is the road that sticks. Returns (ok, error).
+    Never raises."""
+    unit_name = os.path.basename(unit.rstrip("/")) if "/" in unit else unit
+    args = ["systemctl"]
+    if uid is not None:
+        args.append("--user")
+    args += ["set-property", "--runtime", unit_name, f"{prop}={value}"]
+    try:
+        if uid is not None:
+            bus = f"unix:path=/run/user/{uid}/bus"
+            r = subprocess.run(
+                ["sudo", "-u", f"#{uid}", "env",
+                 f"DBUS_SESSION_BUS_ADDRESS={bus}"] + args,
+                capture_output=True, text=True, timeout=10)
+        else:
+            r = subprocess.run(args, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)
+    if r.returncode != 0:
+        return False, r.stderr.strip()[:300]
+    return True, None
+
+
+def _systemctl_show_property(unit, prop, uid=None):
+    unit_name = os.path.basename(unit.rstrip("/")) if "/" in unit else unit
+    args = ["systemctl"]
+    if uid is not None:
+        args.append("--user")
+    args += ["show", unit_name, "-p", prop, "--value"]
+    try:
+        if uid is not None:
+            bus = f"unix:path=/run/user/{uid}/bus"
+            r = subprocess.run(
+                ["sudo", "-u", f"#{uid}", "env",
+                 f"DBUS_SESSION_BUS_ADDRESS={bus}"] + args,
+                capture_output=True, text=True, timeout=10)
+        else:
+            r = subprocess.run(args, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip()
+
+
+def _load_stance_touched():
+    try:
+        with open(STANCE_TOUCHED_PATH) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return []
+
+
+def _save_stance_touched(entries):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    tmp = STANCE_TOUCHED_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(entries, f)
+    os.replace(tmp, STANCE_TOUCHED_PATH)
+
+
+def _record_touched(touched, unit, prop, road, uid):
+    key = (unit, prop)
+    if key not in {(t["unit"], t["prop"]) for t in touched}:
+        touched.append({"unit": unit, "prop": prop, "road": road, "uid": uid})
+
+
+def do_stance_rollback():
+    """`ramstein stance rollback` -- walks every cgroup property this
+    daemon has EVER written (persisted, survives a restart), resets each
+    to its off value via the same road it was written with, reads it back
+    to confirm, and reports per-entry pass/fail. A unit that no longer
+    exists is a PASS (nothing left to reset), not a failure. Also the
+    daemon's own response to a stance file that fails to load, and runs
+    automatically before reapplying the stance on every daemon start."""
+    touched = _load_stance_touched()
+    results = []
+    still_touched = []
+    for entry in touched:
+        unit, prop, road, uid = entry["unit"], entry["prop"], entry["road"], entry["uid"]
+        reset_val = _STANCE_RESET_VALUE.get(prop, "max")
+        ok, err = _systemctl_set_property(unit, prop, reset_val, uid=uid)
+        if not ok:
+            current = _systemctl_show_property(unit, prop, uid=uid)
+            if current is None:
+                results.append({"unit": unit, "prop": prop, "ok": True,
+                                "note": "unit gone -- nothing to reset"})
+                continue
+            results.append({"unit": unit, "prop": prop, "ok": False, "error": err})
+            still_touched.append(entry)
+            continue
+        readback = _systemctl_show_property(unit, prop, uid=uid)
+        passed = readback is None or readback.lower() in (
+            reset_val.lower(), "0", "[not set]", "")
+        results.append({"unit": unit, "prop": prop, "ok": passed,
+                        "readback": readback})
+        if not passed:
+            still_touched.append(entry)
+    _save_stance_touched(still_touched)
+    return {"ok": all(r["ok"] for r in results), "results": results,
+            "remaining": len(still_touched)}
+
+
+def _apply_protect_tier(cfg, protect_leaves, touched):
+    """memory.low on each protect leaf AND its whole ancestor chain
+    (measurement (c)), sized to the sum of protect-tier usage and capped
+    at stance_protect_floor_ceiling_pct of MemTotal, plus
+    ManagedOOMPreference=avoid on each leaf. Idempotent -- re-applies the
+    same values every stance tick; cheap (a handful of systemctl calls,
+    not a hot-path operation)."""
+    total = sum(l["usage"] for l in protect_leaves)
+    ceiling = int(_mem_total_bytes() * cfg["stance_protect_floor_ceiling_pct"] / 100.0)
+    floor_bytes = min(total, ceiling)
+    pinned = total > ceiling
+    written = []
+    seen_ancestors = set()
+    for leaf in protect_leaves:
+        leaf_low = min(leaf["usage"], floor_bytes) or 1
+        ok, err = _systemctl_set_property(leaf["path"], "MemoryLow",
+                                          str(leaf_low), uid=leaf["uid"])
+        _record_touched(touched, leaf["path"], "MemoryLow", leaf["road"], leaf["uid"])
+        ok2, err2 = _systemctl_set_property(leaf["path"], "ManagedOOMPreference",
+                                            "avoid", uid=leaf["uid"])
+        _record_touched(touched, leaf["path"], "ManagedOOMPreference",
+                        leaf["road"], leaf["uid"])
+        written.append({"unit": leaf["unit"], "tier": "protect",
+                        "memory_low": leaf_low, "road": leaf["road"],
+                        "ok": ok and ok2, "error": err or err2})
+        for anc_path, anc_road in _ancestor_chain_for_protect(leaf["path"], leaf["uid"])[1:]:
+            if anc_path in seen_ancestors:
+                continue
+            seen_ancestors.add(anc_path)
+            aok, aerr = _systemctl_set_property(anc_path, "MemoryLow",
+                                                str(floor_bytes) if floor_bytes else "1",
+                                                uid=leaf["uid"] if anc_road == "bridge" else None)
+            _record_touched(touched, anc_path, "MemoryLow", anc_road,
+                            leaf["uid"] if anc_road == "bridge" else None)
+            written.append({"unit": os.path.basename(anc_path), "tier": "protect (ancestor)",
+                            "memory_low": floor_bytes, "road": anc_road,
+                            "ok": aok, "error": aerr})
+    return {"floor_bytes": floor_bytes, "pinned_at_ceiling": pinned,
+            "total_requested_bytes": total, "written": written}
+
+
+def _apply_cap_tier(cap_leaves, mem_total, touched):
+    written = []
+    for leaf, rule in cap_leaves:
+        if rule.get("memory_high_bytes") is not None:
+            target = int(rule["memory_high_bytes"])
+        else:
+            target = int(mem_total * rule["memory_high_pct_of_total"] / 100.0)
+        ok, err = _systemctl_set_property(leaf["path"], "MemoryHigh",
+                                          str(target), uid=leaf["uid"])
+        _record_touched(touched, leaf["path"], "MemoryHigh", leaf["road"], leaf["uid"])
+        written.append({"unit": leaf["unit"], "tier": "cap", "memory_high": target,
+                        "road": leaf["road"], "ok": ok, "error": err})
+    return written
+
+
+def apply_stance(cfg, stance_state):
+    """Called once per poll tick from main(). Loads and validates the
+    stance file; a load failure rolls back everything previously applied
+    and reports the error rather than applying anything partial (alfred
+    msg 7123). protect and cap are standing policies -- applied on the
+    daemon's own regular poll loop, no autocalm-style consent gate (a
+    reservation that never throttles, and a ceiling that only ever
+    throttles, don't carry a squeeze's risk profile). expendable's
+    memory.high is deliberately NOT applied here -- see do_autocalm_run's
+    own 'stance_squeeze' step, gated by autocalm's three consent gates."""
+    rules, err = _load_stance()
+    if err is not None:
+        stance_state["error"] = err
+        rollback = do_stance_rollback()
+        stance_state["last_rollback"] = rollback
+        return {"ok": False, "error": err, "rollback": rollback}
+    stance_state["error"] = None
+    if not rules:
+        stance_state["last_apply"] = {"ok": True, "rules": 0, "note": "zero-rule stance"}
+        return stance_state["last_apply"]
+    leaves = classify_leaves(rules)
+    touched = _load_stance_touched()
+    protect_leaves = [l for l in leaves if l["tier"] == "protect"]
+    cap_leaves = [(l, rules[l["rule_index"]]) for l in leaves if l["tier"] == "cap"]
+    result = {"ok": True, "rules": len(rules)}
+    if protect_leaves:
+        result["protect"] = _apply_protect_tier(cfg, protect_leaves, touched)
+    if cap_leaves:
+        result["cap"] = _apply_cap_tier(cap_leaves, _mem_total_bytes(), touched)
+    _save_stance_touched(touched)
+    stance_state["last_apply"] = result
+    return result
+
+
+def query_ledger(cfg):
+    """`ramstein ledger` -- memory by THING, not by PID (the operator's own
+    ask, msg 7110: "13 sessions, one line," not 26 rows). Same-classification
+    instances collapse into one line; unclassified groups by exe (falling
+    back to comm) so an unnamed population still reads as ONE line rather
+    than fragmenting the moment nothing in the stance names it (alfred msg
+    7119 note 4). Growth trend reuses the M2 sampler's own hourly_ring the
+    same way `standing` already does -- no second history mechanism."""
+    rules, err = _load_stance()
+    if err is not None:
+        return {"error": err, "rows": []}
+    leaves = classify_leaves(rules or [])
+    groups = {}
+    for leaf in leaves:
+        if leaf["tier"] == "unclassified":
+            rep_pid = leaf["procs"][0]["pid"] if leaf["procs"] else None
+            exe = _proc_exe(rep_pid) if rep_pid else None
+            key = ("unclassified", exe or (leaf["procs"][0]["comm"] if leaf["procs"] else "?"))
+        else:
+            key = (leaf["tier"], leaf["rule_index"])
+        g = groups.setdefault(key, {"tier": leaf["tier"], "label": key[1],
+                                    "count": 0, "resident_bytes": 0,
+                                    "charged_bytes": 0, "roads": set()})
+        g["count"] += 1
+        g["resident_bytes"] += sum(p["rss"] for p in leaf["procs"])
+        g["charged_bytes"] += leaf["usage"]
+        g["roads"].add(leaf["road"])
+    rows = []
+    for (tier, label), g in groups.items():
+        rows.append({
+            "tier": tier, "label": str(label), "count": g["count"],
+            "resident_bytes": g["resident_bytes"],
+            "charged_bytes": g["charged_bytes"],
+            "roads": sorted(g["roads"]),
+        })
+    rows.sort(key=lambda r: r["charged_bytes"], reverse=True)
+    return {"rows": rows, "rule_count": len(rules or [])}
+
+
 # --- control socket ---------------------------------------------------------
 # The security seam (SO_PEERCRED-gated, bounded reads, hostile-input framing,
 # the listen(64) backlog M4's attack suite demanded) lives in
@@ -3132,7 +3772,7 @@ def query_incidents(limit):
 # commands; ping/status are sutra's job.
 
 def _make_dispatch(cfg, get_status, autocalm_state, config_path, swap_size_state,
-                   zram_state):
+                   zram_state, stance_state):
     def dispatch(cmd, req):
         if cmd == "top":
             by_swap = req.get("swap", False)
@@ -3157,6 +3797,17 @@ def _make_dispatch(cfg, get_status, autocalm_state, config_path, swap_size_state
             return query_standing(cfg)
         if cmd == "incidents":
             return query_incidents(_limit(req))
+        if cmd == "ledger":
+            return query_ledger(cfg)
+        if cmd == "stance":
+            action = req.get("action")
+            if action == "status":
+                return {"error": stance_state.get("error"),
+                        "last_apply": stance_state.get("last_apply"),
+                        "rule_count": (query_ledger(cfg)).get("rule_count")}
+            if action == "rollback":
+                return do_stance_rollback()
+            raise ValueError("unknown stance action")
         if cmd == "resolve":
             target = req.get("target")
             if not isinstance(target, str) or not target:
@@ -3326,9 +3977,17 @@ def main():
     # (see check_kill_notifications) -- the file under STATE_DIR is the
     # durable copy; this dict just avoids a disk read every tick.
     kill_notify_state = {}
+    # V4: memory stance -- runtime-only cache of the last apply/error (the
+    # touched-cgroups list is the durable copy, under STATE_DIR). A clean
+    # rollback runs BEFORE the first apply on every daemon start (alfred
+    # msg 7123: "same as daemon stop") -- a restart never inherits stale
+    # limits from a stance that changed or was removed while it was down.
+    stance_state = {}
+    do_stance_rollback()
     sampler = Sampler(cfg)
     dispatch = _make_dispatch(cfg, lambda: latest["doc"], autocalm_state,
-                              args.config, swap_size_state, zram_state)
+                              args.config, swap_size_state, zram_state,
+                              stance_state)
     ctl = sutra.ControlServer(SOCKET_PATH,
                               sutra.allow_uids({0, os.getuid(), cfg["owner_uid"]}),
                               VERSION, dispatch, lambda: latest["doc"],
@@ -3356,6 +4015,9 @@ def main():
                         "last_action_ts": autocalm_state["last_action_ts"],
                         "last_result": autocalm_state["last_result"]},
         }
+        apply_stance(cfg, stance_state)
+        doc["stance"] = {"error": stance_state.get("error"),
+                         "last_apply": stance_state.get("last_apply")}
         check_incident(state, cfg, now, mem, doc["warning"])
         latest["doc"] = doc
         # pill summary refreshes on the sampler's own cadence (not every

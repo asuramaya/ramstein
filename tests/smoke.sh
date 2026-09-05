@@ -29,7 +29,7 @@ SH
 chmod +x "$RD/fakebin/systemctl"
 
 PATH="$RD/fakebin:$PATH" RAMSTEIN_RUNTIME_DIR=$RD RAMSTEIN_STATE_DIR=$RD/state \
-    RAMSTEIN_CGROUP_ROOT=$RD/fake_cgroup \
+    RAMSTEIN_CGROUP_ROOT=$RD/fake_cgroup RAMSTEIN_STANCE_PATH=$RD/stance.json \
     python3 src/bin/ramsteind --config "$RD/config.json" &
 DPID=$!
 
