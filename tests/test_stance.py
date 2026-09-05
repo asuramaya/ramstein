@@ -357,6 +357,61 @@ def test_ledger_groups_unclassified_by_exe(fails):
         fails.append(f"grouped row totals wrong: {doc['rows'][0]}")
 
 
+def test_ledger_kernel_row_names_top_slab_holder(fails):
+    # alfred's field finding (msg 7372): kernel slab (dentries/inodes) can
+    # concentrate heavily in ONE scope and memory.current already counts
+    # it toward that scope's charged total, but nothing NAMES it -- the
+    # ledger's synthetic 'kernel' row is that name.
+    tmp = tempfile.mkdtemp(dir=_STATE_FIXTURE)
+    _reset(tmp)
+    os.environ["RAMSTEIN_STANCE_PATH"] = os.path.join(tmp, "missing.json")
+    orig_leaves = ramsteind.classify_leaves
+    orig_slab = ramsteind._leaf_slab_bytes
+    ramsteind.classify_leaves = lambda rules: [
+        {"path": "/big-slab", "unit": "terminal", "tier": "unclassified",
+         "rule_index": None, "road": "root", "uid": None, "usage": 1000,
+         "procs": [_proc(1, "bash", rss=100)]},
+        {"path": "/small-slab", "unit": "other", "tier": "unclassified",
+         "rule_index": None, "road": "root", "uid": None, "usage": 2000,
+         "procs": [_proc(2, "python3", rss=200)]},
+    ]
+    ramsteind._leaf_slab_bytes = lambda path: {
+        "/big-slab": 4_200_000_000, "/small-slab": 100_000_000}.get(path, 0)
+    try:
+        doc = ramsteind.query_ledger(dict(ramsteind.DEFAULTS))
+    finally:
+        ramsteind.classify_leaves = orig_leaves
+        ramsteind._leaf_slab_bytes = orig_slab
+    kernel_rows = [r for r in doc["rows"] if r["tier"] == "kernel"]
+    if len(kernel_rows) != 1:
+        fails.append(f"expected exactly one synthetic kernel row, got {len(kernel_rows)}")
+    elif kernel_rows[0]["charged_bytes"] != 4_200_000_000:
+        fails.append(f"kernel row should name the BIGGEST slab holder"
+                     f" (4.2G), not sum them: {kernel_rows[0]}")
+    elif "bash" not in kernel_rows[0]["label"]:
+        fails.append(f"kernel row should name which scope it came from: {kernel_rows[0]}")
+
+
+def test_ledger_no_kernel_row_when_no_slab(fails):
+    tmp = tempfile.mkdtemp(dir=_STATE_FIXTURE)
+    _reset(tmp)
+    os.environ["RAMSTEIN_STANCE_PATH"] = os.path.join(tmp, "missing.json")
+    orig_leaves = ramsteind.classify_leaves
+    orig_slab = ramsteind._leaf_slab_bytes
+    ramsteind.classify_leaves = lambda rules: [
+        {"path": "/x", "unit": "x", "tier": "unclassified", "rule_index": None,
+         "road": "root", "uid": None, "usage": 100, "procs": [_proc(1, "x")]},
+    ]
+    ramsteind._leaf_slab_bytes = lambda path: 0
+    try:
+        doc = ramsteind.query_ledger(dict(ramsteind.DEFAULTS))
+    finally:
+        ramsteind.classify_leaves = orig_leaves
+        ramsteind._leaf_slab_bytes = orig_slab
+    if any(r["tier"] == "kernel" for r in doc["rows"]):
+        fails.append("no leaf reported any slab -- there should be no kernel row at all")
+
+
 def main():
     fails = []
     test_load_stance_missing_and_malformed(fails)
@@ -369,6 +424,8 @@ def main():
     test_apply_stance_load_failure_rolls_back(fails)
     test_apply_stance_zero_rules_is_noop(fails)
     test_ledger_groups_unclassified_by_exe(fails)
+    test_ledger_kernel_row_names_top_slab_holder(fails)
+    test_ledger_no_kernel_row_when_no_slab(fails)
 
     if fails:
         print("STANCE TEST FAILED:")
@@ -379,8 +436,9 @@ def main():
           "comm/exe_glob, first-match-wins, unclassified fallback), the "
           "delegation-boundary road split, the full protect ancestor "
           "chain, the floor/ceiling pin, rollback bookkeeping, load-"
-          "failure rollback, and ledger grouping (including unclassified "
-          "by exe) all hold")
+          "failure rollback, ledger grouping (including unclassified "
+          "by exe), and the kernel-slab synthetic row (biggest holder "
+          "only, absent when nothing reports slab) all hold")
 
 
 if __name__ == "__main__":

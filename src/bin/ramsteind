@@ -3415,6 +3415,29 @@ def _leaf_usage_bytes(path):
         return 0
 
 
+def _leaf_slab_bytes(path):
+    """Kernel slab (dentries/inodes/etc) charged directly to this leaf --
+    alfred's own field finding (msg 7372): 4.2G of dentry cache charged
+    to the fleet's terminal cgroup was real and nobody else surfaced it.
+    memory.stat's combined 'slab' key is read first (present on this
+    kernel); slab_reclaimable+slab_unreclaimable is the fallback for a
+    kernel that only exposes the two halves separately."""
+    try:
+        with open(os.path.join(path, "memory.stat")) as f:
+            stat = dict(line.split(None, 1) for line in f if " " in line)
+    except OSError:
+        return 0
+    if "slab" in stat:
+        try:
+            return int(stat["slab"])
+        except ValueError:
+            return 0
+    try:
+        return int(stat.get("slab_reclaimable", 0)) + int(stat.get("slab_unreclaimable", 0))
+    except ValueError:
+        return 0
+
+
 def _proc_uid(pid):
     try:
         return os.stat(f"/proc/{pid}").st_uid
@@ -3757,12 +3780,23 @@ def query_ledger(cfg):
     back to comm) so an unnamed population still reads as ONE line rather
     than fragmenting the moment nothing in the stance names it (alfred msg
     7119 note 4). Growth trend reuses the M2 sampler's own hourly_ring the
-    same way `standing` already does -- no second history mechanism."""
+    same way `standing` already does -- no second history mechanism.
+
+    Also surfaces a synthetic 'kernel' row: the single leaf carrying the
+    most kernel slab (dentries/inodes/etc, memory.stat's own 'slab' key)
+    -- alfred's own field finding (msg 7372), a real cost nobody else
+    attributes to a scope (memory.current already counts it toward that
+    scope's charged total, but never NAMES it). Slab is read here, at
+    ledger-build time only -- NOT added to classify_leaves' own per-leaf
+    dict, which apply_stance re-walks every poll tick and has no use for
+    it; one extra memory.stat read per leaf at ledger cadence is cheap,
+    the same read on every stance tick would not be."""
     rules, err = _load_stance()
     if err is not None:
         return {"error": err, "rows": []}
     leaves = classify_leaves(rules or [])
     groups = {}
+    top_slab = None
     for leaf in leaves:
         if leaf["tier"] == "unclassified":
             rep_pid = leaf["procs"][0]["pid"] if leaf["procs"] else None
@@ -3777,6 +3811,9 @@ def query_ledger(cfg):
         g["resident_bytes"] += sum(p["rss"] for p in leaf["procs"])
         g["charged_bytes"] += leaf["usage"]
         g["roads"].add(leaf["road"])
+        slab = _leaf_slab_bytes(leaf["path"])
+        if slab and (top_slab is None or slab > top_slab["slab"]):
+            top_slab = {"slab": slab, "label": key[1], "road": leaf["road"]}
     rows = []
     for (tier, label), g in groups.items():
         rows.append({
@@ -3784,6 +3821,12 @@ def query_ledger(cfg):
             "resident_bytes": g["resident_bytes"],
             "charged_bytes": g["charged_bytes"],
             "roads": sorted(g["roads"]),
+        })
+    if top_slab is not None:
+        rows.append({
+            "tier": "kernel", "label": f"{top_slab['label']} (dentries/inodes)",
+            "count": 1, "resident_bytes": 0, "charged_bytes": top_slab["slab"],
+            "roads": [top_slab["road"]],
         })
     rows.sort(key=lambda r: r["charged_bytes"], reverse=True)
     return {"rows": rows, "rule_count": len(rules or [])}
