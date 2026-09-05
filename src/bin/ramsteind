@@ -3332,6 +3332,42 @@ _STANCE_RESET_VALUE = {"MemoryLow": "0", "MemoryHigh": "infinity",
                        "ManagedOOMPreference": "none"}
 _DELEGATION_BOUNDARY_RE = re.compile(r"^(.*/user-(\d+)\.slice/user@\2\.service)(/.*)?$")
 _VERSION_SEGMENT_RE = re.compile(r"^[0-9]+(\.[0-9]+)+$")
+_DOCKER_SCOPE_RE = re.compile(r"^docker-([0-9a-f]{12,64})\.scope$")
+
+
+def _docker_container_name(container_id):
+    """The container's own --name, resolved the same way `docker ps`
+    itself would, without a docker CLI dependency: dockerd's own
+    config.v2.json (0700 root, exactly what ramsteind runs as) carries
+    "Name": "/osiris-pg" for every container, and that name survives a
+    `docker compose` recreate that rotates the container's own ID
+    (alfred msg 7528) -- a container_glob rule written against the raw
+    docker-<id>.scope name breaks the next time compose recreates it;
+    one written against the NAME does not. Returns None on anything
+    (container gone, dockerd using a different root, permission,
+    corruption) rather than raise -- classification falls back to the
+    raw scope name exactly as before this existed."""
+    path = f"/var/lib/docker/containers/{container_id}/config.v2.json"
+    try:
+        with open(path) as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return None
+    name = doc.get("Name")
+    if not isinstance(name, str) or not name:
+        return None
+    return name.lstrip("/") or None
+
+
+def _docker_name_for_unit(unit_name):
+    """unit_name -> resolved container name, or None when unit_name isn't
+    a docker scope or the name can't be resolved. Isolated from
+    _docker_container_name so every caller (classifier, ledger, plan
+    output) shares one regex and one failure mode."""
+    m = _DOCKER_SCOPE_RE.match(unit_name)
+    if not m:
+        return None
+    return _docker_container_name(m.group(1))
 
 
 def _normalize_exe_label(exe):
@@ -3524,13 +3560,21 @@ def _match_leaf(leaf_path, procs, rules):
     can't be mislabeled by a small, arbitrary co-tenant.
     First-match-wins within each pass, rules in file order. exe_glob
     exists because the fleet's own comm is a version string, not a
-    stable name -- /proc/<pid>/exe is the only reliable handle."""
+    stable name -- /proc/<pid>/exe is the only reliable handle.
+    container_glob checks the resolved docker container NAME first
+    (alfred msg 7528: the raw docker-<id>.scope rotates on every compose
+    recreate, the --name does not) and the raw scope name as a fallback,
+    so a rule written either way still matches."""
     unit_name = os.path.basename(leaf_path.rstrip("/"))
+    docker_name = _docker_name_for_unit(unit_name)
     for i, rule in enumerate(rules):
         match = rule["match"]
         if "unit_glob" in match and fnmatch.fnmatch(unit_name, match["unit_glob"]):
             return i, rule
-        if "container_glob" in match and fnmatch.fnmatch(unit_name, match["container_glob"]):
+        if "container_glob" in match and (
+                fnmatch.fnmatch(unit_name, match["container_glob"]) or
+                (docker_name is not None and
+                 fnmatch.fnmatch(docker_name, match["container_glob"]))):
             return i, rule
     dominant = _dominant_proc(procs)
     if dominant is None:
@@ -3572,14 +3616,24 @@ def classify_leaves(rules):
     cap tier's own worst-case backstop), resident (sum of each process's
     own rss -- the protect tier's floor basis, item 5: a protected
     scope's cache above its resident working set is reclaimable, and
-    that's the correct outcome, not a bug), procs (for the ledger's
-    exe/comm grouping)."""
+    that's the correct outcome, not a bug), container_name (the docker
+    container's own --name, resolved from dockerd's config.v2.json, or
+    None when this leaf isn't a docker scope or the name can't be
+    resolved -- alfred msg 7528: a raw docker-<id>.scope rotates on
+    every compose recreate, this survives it), unit (the display name --
+    "docker <name>" when container_name resolved, the raw scope basename
+    otherwise; display only, never fed to a systemctl call, which always
+    addresses `path`), procs (for the ledger's exe/comm grouping)."""
     result = []
     for path, procs in _leaf_scopes().items():
         idx, rule = _match_leaf(path, procs, rules)
         road, uid = _leaf_road(path)
+        raw_unit = os.path.basename(path.rstrip("/"))
+        container_name = _docker_name_for_unit(raw_unit)
         result.append({
-            "path": path, "unit": os.path.basename(path.rstrip("/")),
+            "path": path,
+            "unit": f"docker {container_name}" if container_name else raw_unit,
+            "container_name": container_name,
             "tier": rule["tier"] if rule else "unclassified",
             "rule_index": idx, "road": road, "uid": uid,
             "usage": _leaf_usage_bytes(path),
@@ -4014,10 +4068,24 @@ def query_ledger(cfg):
             else:
                 label, dom_count = "?", 0
             key = ("unclassified", label)
+        elif leaf.get("container_name"):
+            # A classified docker leaf keeps its OWN row even when other
+            # containers match the same rule (alfred msg 7528: "the
+            # ledger's docker rows label by name") -- collapsing distinct
+            # named containers into one blended row under a bare rule
+            # index would erase exactly the identity this fix exists to
+            # surface. Non-docker classified leaves are unaffected: many
+            # fleet sessions matching one protect rule still collapse
+            # into a single summarized row, which is the aggregation the
+            # operator actually wants there.
+            label = leaf["unit"]
+            key = (leaf["tier"], leaf["rule_index"], label)
+            dom_count = len(procs)
         else:
+            label = leaf["rule_index"]
             key = (leaf["tier"], leaf["rule_index"])
             dom_count = len(procs)
-        g = groups.setdefault(key, {"tier": leaf["tier"], "label": key[1],
+        g = groups.setdefault(key, {"tier": leaf["tier"], "label": label,
                                     "count": 0, "others": 0,
                                     "resident_bytes": 0, "charged_bytes": 0,
                                     "roads": set()})
@@ -4028,10 +4096,10 @@ def query_ledger(cfg):
         g["roads"].add(leaf["road"])
         slab = _leaf_slab_bytes(leaf["path"])
         if slab and (top_slab is None or slab > top_slab["slab"]):
-            top_slab = {"slab": slab, "label": key[1], "road": leaf["road"]}
+            top_slab = {"slab": slab, "label": label, "road": leaf["road"]}
     rows = []
-    for (tier, label), g in groups.items():
-        row = {"tier": tier, "label": str(label), "count": g["count"],
+    for g in groups.values():
+        row = {"tier": g["tier"], "label": str(g["label"]), "count": g["count"],
                "resident_bytes": g["resident_bytes"],
                "charged_bytes": g["charged_bytes"],
                "roads": sorted(g["roads"])}

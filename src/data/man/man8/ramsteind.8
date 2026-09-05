@@ -324,6 +324,16 @@ cgroup scope only, by
 .I comm
 is not a stable name), or
 .IR container_glob .
+.I container_glob
+checks a docker leaf's own resolved
+.B \-\-name
+(read from dockerd's own
+.I config.v2.json ,
+no docker CLI dependency) as well as its raw
+.I docker\-<id>.scope
+cgroup name \(em the ID rotates on every
+.I docker compose
+recreate, the name does not.
 First match wins; anything matching nothing is
 .BR unclassified " \(em reported by " ramstein " (1)'s "
 .I ledger

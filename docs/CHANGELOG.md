@@ -138,13 +138,23 @@ change:
   names processes and scopes, not "sessions": the live find, a single
   20-process scope reading as "resident of 1 session," which read as one
   fleet session protected when the truth was twenty processes in one leaf.
-- The shipped `stance.example.json` now protects `osiris-pg` by its own
-  container identity (`container_glob`), placed *before* the cap-all-docker
-  rule — the two-pass classifier checks scope identity across every rule
-  first, so a `container_glob` naming a container by exe alone can never
-  win against a `container_glob` that matches every container; a
-  `_comment` on the new rule explains why containers are named by their
-  cgroup scope, not by their binary's path.
+- `container_glob` now matches a docker container's own `--name`, not just
+  its raw `docker-<id>.scope` cgroup name — resolved straight from
+  dockerd's own `config.v2.json` (0700 root, exactly what `ramsteind`
+  already runs as), with the raw scope name as a fallback when resolution
+  fails. A container's own ID rotates every time `docker compose`
+  recreates it; its name doesn't, so a rule written against the name
+  survives a recreate that would silently break one written against the
+  ID (alfred msg 7528, from his own read of dockerd's on-disk state). The
+  shipped `stance.example.json` now protects `osiris-pg` by its real
+  `container_glob: "osiris-pg"`, placed *before* the cap-all-docker rule —
+  the two-pass classifier checks scope identity across every rule first,
+  so a `container_glob` naming a container by exe alone can never win
+  against a `container_glob` that matches every container. `ramstein
+  ledger` and `stance plan`/`status` now label a classified docker leaf by
+  its resolved name too (`"docker osiris-pg"` instead of a 64-hex ID), and
+  two differently-named containers matching the same rule stay two
+  distinct rows rather than blending into one under a bare rule number.
 
 ## 0.12.0 — layer 3: configuring the system, and its consent model
 

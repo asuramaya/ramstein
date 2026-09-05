@@ -200,6 +200,93 @@ def test_exe_match_uses_dominant_proc_only(fails):
                      f" dominated by a 10GB process: {rule}")
 
 
+# --- docker container Name resolution (alfred msg 7528) --------------------
+
+_DOCKER_ID = "7274894fdfb69dc773585d761efa99e1ed01746bac7c1378776b311403735e0"
+
+
+def test_container_glob_matches_resolved_docker_name(fails):
+    # alfred msg 7528: a raw docker-<id>.scope rotates on every compose
+    # recreate; the container's own --name does not. container_glob must
+    # match the resolved NAME, not just the raw scope basename, so a rule
+    # written against a human name (as the shipped example now is) works
+    # for real.
+    rules = [{"match": {"container_glob": "osiris-pg"}, "tier": "protect"}]
+    orig = ramsteind._docker_container_name
+    ramsteind._docker_container_name = lambda cid: "osiris-pg" if cid == _DOCKER_ID else None
+    try:
+        idx, rule = ramsteind._match_leaf(
+            f"/sys/fs/cgroup/system.slice/docker-{_DOCKER_ID}.scope", [], rules)
+    finally:
+        ramsteind._docker_container_name = orig
+    if rule is None or rule["tier"] != "protect":
+        fails.append(f"container_glob must match the resolved docker Name: {rule}")
+
+
+def test_container_glob_falls_back_to_raw_scope_when_name_unresolved(fails):
+    # Name resolution can fail (container gone, permission, corruption) --
+    # a rule written against the raw docker-<id>.scope name must keep
+    # working exactly as it did before this existed.
+    rules = [{"match": {"container_glob": f"docker-{_DOCKER_ID}.scope"}, "tier": "cap",
+              "memory_high_pct_of_total": 25}]
+    orig = ramsteind._docker_container_name
+    ramsteind._docker_container_name = lambda cid: None
+    try:
+        idx, rule = ramsteind._match_leaf(
+            f"/sys/fs/cgroup/system.slice/docker-{_DOCKER_ID}.scope", [], rules)
+    finally:
+        ramsteind._docker_container_name = orig
+    if rule is None or rule["tier"] != "cap":
+        fails.append(f"container_glob must still match the raw scope name"
+                     f" when the container's own Name can't be resolved: {rule}")
+
+
+def test_classify_leaves_labels_docker_unit_by_resolved_name(fails):
+    orig_scopes = ramsteind._leaf_scopes
+    orig_name = ramsteind._docker_container_name
+    ramsteind._leaf_scopes = lambda: {
+        f"/sys/fs/cgroup/system.slice/docker-{_DOCKER_ID}.scope": [_proc(1, "postgres")]}
+    ramsteind._docker_container_name = lambda cid: "osiris-pg" if cid == _DOCKER_ID else None
+    try:
+        leaves = ramsteind.classify_leaves([])
+    finally:
+        ramsteind._leaf_scopes = orig_scopes
+        ramsteind._docker_container_name = orig_name
+    if len(leaves) != 1 or leaves[0]["unit"] != "docker osiris-pg" \
+            or leaves[0]["container_name"] != "osiris-pg":
+        fails.append(f"classify_leaves must label a docker leaf's unit by its"
+                     f" resolved Name: {leaves}")
+
+
+def test_ledger_keeps_distinct_docker_containers_separate(fails):
+    # Two different named containers matching the SAME cap rule must
+    # never blend into one row -- alfred msg 7528: collapsing distinct
+    # containers under a bare rule index erases exactly the identity
+    # this fix exists to surface. Non-docker classified leaves keep the
+    # old aggregate-by-rule behavior (test_ledger_groups_unclassified_by_exe
+    # and friends cover that path; this test is docker-specific).
+    tmp = tempfile.mkdtemp(dir=_STATE_FIXTURE)
+    _reset(tmp)
+    os.environ["RAMSTEIN_STANCE_PATH"] = os.path.join(tmp, "missing.json")
+    orig_leaves = ramsteind.classify_leaves
+    ramsteind.classify_leaves = lambda rules: [
+        {"path": "/a", "unit": "docker osiris-pg", "container_name": "osiris-pg",
+         "tier": "cap", "rule_index": 0, "road": "root", "uid": None,
+         "usage": 1 * 1024**3, "procs": [_proc(1, "postgres")]},
+        {"path": "/b", "unit": "docker some-other-service", "container_name": "some-other-service",
+         "tier": "cap", "rule_index": 0, "road": "root", "uid": None,
+         "usage": 2 * 1024**3, "procs": [_proc(2, "nginx")]},
+    ]
+    try:
+        doc = ramsteind.query_ledger(dict(ramsteind.DEFAULTS))
+    finally:
+        ramsteind.classify_leaves = orig_leaves
+    labels = sorted(r["label"] for r in doc["rows"])
+    if labels != ["docker osiris-pg", "docker some-other-service"]:
+        fails.append(f"two distinct docker containers on the same rule must stay"
+                     f" two rows, labeled by name: {doc['rows']}")
+
+
 def test_claude_in_chrome_shared_scope_resolves_expendable(fails):
     # A live, real finding from `ramstein stance plan` against this very
     # box (alfred msg 7402/7409/7427: "keep that case as a test
@@ -753,6 +840,10 @@ def main():
     test_v1_parent_scope_bug_does_not_match_a_leaf(fails)
     test_unit_glob_wins_regardless_of_rule_order(fails)
     test_exe_match_uses_dominant_proc_only(fails)
+    test_container_glob_matches_resolved_docker_name(fails)
+    test_container_glob_falls_back_to_raw_scope_when_name_unresolved(fails)
+    test_classify_leaves_labels_docker_unit_by_resolved_name(fails)
+    test_ledger_keeps_distinct_docker_containers_separate(fails)
     test_claude_in_chrome_shared_scope_resolves_expendable(fails)
     test_leaf_road_delegation_boundary(fails)
     test_ancestor_chain_for_protect(fails)

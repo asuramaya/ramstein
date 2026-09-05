@@ -1,8 +1,8 @@
 {
   "rules": [
     {
-      "_comment": "protect osiris-pg by its own container identity, not by its binary's exe path: the classifier checks a scope's OWN name (container_glob) against every rule BEFORE it ever looks at what's running inside, so an exe_glob rule for postgres can never win against a container_glob rule that matches every docker scope below. A docker scope's own name is its raw container ID, never the --name you gave it or the image's path -- find yours with `docker ps --no-trunc -q` (or `systemd-cgls`) and put its scope name (or a stable ID prefix) here; this placeholder never matches anything on its own, on purpose, so it can't be copied as-is and silently protect nothing. Placed BEFORE the cap-all rule below, since first match wins within container_glob's own pass.",
-      "match": {"container_glob": "docker-<osiris-pg's own container ID>*"},
+      "_comment": "protect osiris-pg by its own container identity, not by its binary's exe path: the classifier checks a scope's OWN name (container_glob) against every rule BEFORE it ever looks at what's running inside, so an exe_glob rule for postgres can never win against a container_glob rule that matches every docker scope below. container_glob checks the container's own --name (ramsteind resolves it straight from dockerd's own records, no docker CLI needed) as well as the raw docker-<id>.scope name, so this matches as long as you ran the container with --name osiris-pg (or gave it that name in compose) -- the name survives a `docker compose` recreate that would otherwise rotate the ID out from under this rule. Placed BEFORE the cap-all rule below, since first match wins within container_glob's own pass.",
+      "match": {"container_glob": "osiris-pg"},
       "tier": "protect"
     },
     {

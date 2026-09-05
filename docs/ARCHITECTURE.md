@@ -364,6 +364,14 @@ match wins; nothing that matches gets `"tier": "unclassified"` — reported hone
 never capped. Inventing a policy for a process nobody named is exactly the "rogue process" case
 the operator wants surfaced, not silently squeezed.
 
+`container_glob` checks a docker leaf's own resolved `--name` (read straight from dockerd's own
+`config.v2.json`, no docker CLI dependency) as well as its raw `docker-<id>.scope` cgroup name — a
+container's ID rotates every time `docker compose` recreates it, but its name doesn't, so a rule
+written against the name survives a recreate that would otherwise break silently (alfred msg 7528).
+`ramstein ledger` and `stance plan`/`status` label a classified docker leaf by that same resolved
+name (`"docker osiris-pg"`, never a bare 64-hex ID), and two differently-named containers matching
+the same rule stay two distinct rows rather than blending into one under a bare rule index.
+
 A stance file that fails to load or validate (bad JSON, an unknown tier, a `cap` rule with no
 size) **applies nothing** — `apply_stance` rolls back every previously-touched cgroup and reports
 the error, the same as a daemon stop. Partial application of a broken file was never an option
