@@ -339,6 +339,37 @@ def test_rollback_resets_and_tracks_failures(fails):
         fails.append(f"exactly one entry (stuck.scope) should remain: {result['remaining']}")
 
 
+def test_rollback_memory_high_uses_systemd_infinity_not_cgroupfs_max(fails):
+    # Found live, the hard way (alfred msg 7402's real container run):
+    # `systemctl set-property ... MemoryHigh=max` fails outright ("Failed
+    # to parse MemoryHigh=max: Invalid argument") -- do_calm's own DIRECT
+    # cgroupfs writes use "max" (the kernel file's own vocabulary), but
+    # systemd's own set-property/unit-property syntax for "unbounded" is
+    # "infinity". Two different roads, two different words for the same
+    # concept -- pins the reset value AND that _autocalm_stance_squeeze's
+    # own release path pulls from the same constant rather than a second,
+    # separately hardcoded literal that could drift back to "max" again.
+    tmp = tempfile.mkdtemp(dir=_STATE_FIXTURE)
+    _reset(tmp)
+    orig_set = ramsteind._systemctl_set_property
+    orig_show = ramsteind._systemctl_show_property
+    ramsteind._save_stance_touched([
+        {"unit": "cap.scope", "prop": "MemoryHigh", "road": "root", "uid": None},
+    ])
+    seen_values = []
+    ramsteind._systemctl_set_property = lambda unit, prop, val, uid=None: (
+        seen_values.append(val) or (True, None))
+    ramsteind._systemctl_show_property = lambda unit, prop, uid=None: "infinity"
+    try:
+        ramsteind.do_stance_rollback()
+    finally:
+        ramsteind._systemctl_set_property = orig_set
+        ramsteind._systemctl_show_property = orig_show
+    if seen_values != ["infinity"]:
+        fails.append(f"MemoryHigh reset must use systemd's 'infinity', not"
+                     f" cgroupfs's 'max': {seen_values}")
+
+
 # --- apply_stance: load failure never applies partial state ----------------
 
 def test_apply_stance_load_failure_rolls_back(fails):
@@ -437,6 +468,28 @@ def test_stance_plan_file_override(fails):
         fails.append("plan --file against a missing file must error, not silently read as zero rules")
 
 
+# --- query_stance_status: the "error" key must never be present-but-None --
+
+def test_stance_status_omits_error_key_when_clean(fails):
+    # Found live, the hard way (alfred msg 7402's real container run):
+    # request_or_die (ramstein CLI) treats KEY PRESENCE as failure
+    # ("error" in doc), not truthiness. An earlier version of this
+    # dispatch always returned {"error": None, ...} on a clean read,
+    # which made `ramstein stance status` refuse unconditionally, on
+    # every machine, forever -- no mocked unit test ever exercised the
+    # actual socket response shape, only the daemon-side functions
+    # directly.
+    doc = ramsteind.query_stance_status(dict(ramsteind.DEFAULTS), {"error": None, "last_apply": None})
+    if "error" in doc:
+        fails.append(f"a clean status must not carry an 'error' key at all"
+                     f" (even None) -- request_or_die treats presence as"
+                     f" failure: {doc}")
+
+    doc2 = ramsteind.query_stance_status(dict(ramsteind.DEFAULTS), {"error": "bad json", "last_apply": None})
+    if doc2.get("error") != "bad json":
+        fails.append(f"a real error must still surface: {doc2}")
+
+
 # --- query_ledger: grouping -------------------------------------------------
 
 def test_ledger_groups_unclassified_by_exe(fails):
@@ -531,10 +584,12 @@ def main():
     test_ancestor_chain_for_protect(fails)
     test_protect_floor_ceiling(fails)
     test_rollback_resets_and_tracks_failures(fails)
+    test_rollback_memory_high_uses_systemd_infinity_not_cgroupfs_max(fails)
     test_apply_stance_load_failure_rolls_back(fails)
     test_apply_stance_zero_rules_is_noop(fails)
     test_stance_plan_never_writes(fails)
     test_stance_plan_file_override(fails)
+    test_stance_status_omits_error_key_when_clean(fails)
     test_ledger_groups_unclassified_by_exe(fails)
     test_ledger_kernel_row_names_top_slab_holder(fails)
     test_ledger_no_kernel_row_when_no_slab(fails)

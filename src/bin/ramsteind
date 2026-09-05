@@ -1846,7 +1846,8 @@ def _autocalm_stance_squeeze(cfg, do_real, hot):
         if t.get("kind") != squeezed_kind:
             remaining.append(t)
             continue
-        ok, _err = _systemctl_set_property(t["unit"], "MemoryHigh", "max",
+        ok, _err = _systemctl_set_property(t["unit"], "MemoryHigh",
+                                           _STANCE_RESET_VALUE["MemoryHigh"],
                                            uid=t["uid"])
         (released if ok else remaining).append(t["unit"] if ok else t)
     _save_stance_touched(remaining)
@@ -3319,7 +3320,14 @@ def query_incidents(limit):
 
 STANCE_TOUCHED_PATH = os.path.join(STATE_DIR, "stance_touched.json")
 _VALID_STANCE_TIERS = ("protect", "expendable", "cap")
-_STANCE_RESET_VALUE = {"MemoryLow": "0", "MemoryHigh": "max",
+# "infinity", not the raw-cgroupfs "max" do_calm's own direct file writes
+# use -- confirmed live, the hard way (alfred msg 7402's real container
+# run): `systemctl set-property ... MemoryHigh=max` fails outright
+# ("Failed to parse MemoryHigh=max: Invalid argument"), while `=infinity`
+# is systemd's own unit-property spelling of unbounded. Two different
+# roads, two different vocabularies for the same concept -- do_calm never
+# goes through systemctl at all, so it never hit this.
+_STANCE_RESET_VALUE = {"MemoryLow": "0", "MemoryHigh": "infinity",
                        "ManagedOOMPreference": "none"}
 _DELEGATION_BOUNDARY_RE = re.compile(r"^(.*/user-(\d+)\.slice/user@\2\.service)(/.*)?$")
 
@@ -3797,6 +3805,26 @@ def apply_stance(cfg, stance_state):
     return result
 
 
+def query_stance_status(cfg, stance_state):
+    """`ramstein stance status`. Found live, in a real container, the hard
+    way (alfred msg 7402's own container run): the dispatch's own reply
+    must NEVER carry a top-level 'error' key unless there genuinely is
+    one -- request_or_die (ramstein CLI) treats KEY PRESENCE as failure
+    (`"error" in doc`), not truthiness, the same convention every sibling
+    query_X_status (oomd/swappiness/swap-size/zram) already follows.
+    The original version here always included "error": None on a clean
+    read, which made `ramstein stance status` refuse unconditionally,
+    on every machine, forever -- caught only because this was actually
+    installed and run for real rather than trusted from a mocked unit
+    test."""
+    result = {"last_apply": stance_state.get("last_apply"),
+              "rule_count": (query_ledger(cfg)).get("rule_count")}
+    err = stance_state.get("error")
+    if err:
+        result["error"] = err
+    return result
+
+
 def do_stance_plan(cfg, file_path=None):
     """`ramstein stance plan [--file PATH]` (alfred msg 7384, item 6): the
     operator must be able to read what a stance WOULD do before the
@@ -3938,9 +3966,7 @@ def _make_dispatch(cfg, get_status, autocalm_state, config_path, swap_size_state
         if cmd == "stance":
             action = req.get("action")
             if action == "status":
-                return {"error": stance_state.get("error"),
-                        "last_apply": stance_state.get("last_apply"),
-                        "rule_count": (query_ledger(cfg)).get("rule_count")}
+                return query_stance_status(cfg, stance_state)
             if action == "rollback":
                 return do_stance_rollback()
             if action == "plan":
