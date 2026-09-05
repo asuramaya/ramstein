@@ -412,11 +412,19 @@ def cmd_ledger(argv):
 
 
 def cmd_stance(argv):
-    """`ramstein stance status|rollback` (proposal v2/v3, msg 7124/7127)."""
-    if not argv or argv[0] not in ("status", "rollback"):
-        sys.exit("ramstein: stance needs one of status | rollback")
+    """`ramstein stance status|rollback|plan` (proposal v2/v3, msg
+    7124/7127; plan added per msg 7384 item 6 -- the operator must be
+    able to read what a stance WOULD do before the first real
+    application)."""
+    if not argv or argv[0] not in ("status", "rollback", "plan"):
+        sys.exit("ramstein: stance needs one of status | rollback | plan")
     action = argv[0]
-    doc = request_or_die({"cmd": "stance", "action": action})
+    req = {"cmd": "stance", "action": action}
+    if action == "plan":
+        file_path = _flag_val(argv, "--file", None)
+        if file_path is not None:
+            req["file"] = file_path
+    doc = request_or_die(req)
     if "--json" in argv:
         print(json.dumps(doc, indent=2))
         return
@@ -436,6 +444,26 @@ def cmd_stance(argv):
             print(f"  cap tier: {len(cap)} scope(s) capped")
         if not protect and not cap:
             print("  nothing applied (no protect/cap rules matched anything live)")
+        return
+    if action == "plan":
+        if doc.get("error"):
+            sys.exit(f"ramstein: stance plan failed: {doc['error']}")
+        print(f"plan: {doc.get('rules', 0)} rule(s), writes nothing")
+        protect = doc.get("protect")
+        if protect:
+            pin = " (pinned at ceiling)" if protect.get("pinned_at_ceiling") else ""
+            print(f"protect floor: {human_bytes(protect['floor_bytes'])}{pin}")
+            for w in protect["written"]:
+                print(f"  would set {w['unit']:<40} MemoryLow="
+                      f"{human_bytes(w['memory_low'])}  (via {w['road']})")
+        for w in (doc.get("cap") or []):
+            print(f"  would set {w['unit']:<40} MemoryHigh="
+                  f"{human_bytes(w['memory_high'])}  (via {w['road']})")
+        for e in (doc.get("expendable") or []):
+            print(f"  {e['unit']:<40} {e['note']}  (via {e['road']})")
+        if not protect and not doc.get("cap") and not doc.get("expendable"):
+            print("  nothing would be written (no protect/cap/expendable"
+                  " rules matched anything live)")
         return
     ok = doc.get("ok")
     print(f"rollback {'complete' if ok else 'INCOMPLETE'} —"
@@ -1010,7 +1038,7 @@ verbs:
   standing                        stock, not flow: what's large and has stopped moving (V3)
   incidents [--limit N]           who was resident when swap/PSI crossed a real threshold (V3)
   ledger                          memory stance: by thing, not by pid — resident vs charged, per tier (V4)
-  stance status|rollback          memory stance: applied floor/caps, or reset every touched cgroup (V4)
+  stance status|rollback|plan [--file F]   memory stance: applied floor/caps, reset every touched cgroup, or preview writes with none made (V4)
   zombies                         unreaped zombie processes, grouped by parent
   oom                             who dies first, by oom_score
   advise                          rule-based notices (pressure/growth/swap/zombies/...)

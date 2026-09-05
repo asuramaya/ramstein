@@ -396,7 +396,20 @@ walks every cgroup property ever written (persisted to
 .IR /var/lib/ramstein/stance_touched.json ),
 resets each to its off value via the same road it was written with, and reads it back to confirm; a
 vanished unit counts as a pass. Runs automatically before the stance (re\-)applies on every daemon
-start. A ceiling here throttles and never kills \(em kill remains exclusively a human TTY verb via
+start.
+.B ramstein stance plan " [\-\-file F]"
+previews the exact same computation \(em per cgroup, per property, per road \(em without ever
+calling the write path: the same \fIdry_run\fR shape
+.I _apply_protect_tier
+/
+.I _apply_cap_tier
+share with the real apply, so a plan cannot drift from what applying would actually do.
+.B \-\-file
+previews an explicit file (e.g. the shipped
+.IR stance.example.json )
+in place of the configured
+.IR stance.json .
+A ceiling here throttles and never kills \(em kill remains exclusively a human TTY verb via
 .I calm \-\-kill ,
 untouched by any of this.
 .SH SECURITY

@@ -432,6 +432,17 @@ exists counts as a pass — nothing left to reset. Runs automatically before the
 (re-)applied on daemon start, and is the daemon's own response to a stance file that fails to
 load — a clean slate before either reapplying or refusing.
 
+### `ramstein stance plan`
+
+The operator must be able to read what a stance would do before the first real application —
+the same road byebyte's Storage Sense took with `dry_run`. `plan` runs the *exact same*
+`_apply_protect_tier`/`_apply_cap_tier` computation the real apply uses, just with `dry_run=True`
+— one code path for both, so a plan can never quietly drift from what applying would actually do
+— and never calls `_systemctl_set_property`, never touches `stance_touched.json`. `--file PATH`
+previews an explicit file (the shipped `stance.example.json`, or a draft in progress) instead of
+the configured `stance.json`; a missing `--file` is reported as an error, not silently read as
+zero rules, since asking to preview a file that isn't there is a mistake worth naming.
+
 ### incidents cites the stance
 
 `incidents`' own snapshot (above) now names which tier pushed back first when a real threshold

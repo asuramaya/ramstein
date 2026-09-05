@@ -328,6 +328,74 @@ def test_apply_stance_zero_rules_is_noop(fails):
         fails.append(f"a missing/zero-rule stance should be a clean no-op: {result}")
 
 
+# --- do_stance_plan: read-only preview --------------------------------------
+
+def test_stance_plan_never_writes(fails):
+    tmp = tempfile.mkdtemp(dir=_STATE_FIXTURE)
+    _reset(tmp)
+    _stance_file(tmp, {"rules": [
+        {"match": {"comm": "postgres"}, "tier": "protect"},
+        {"match": {"comm": "chrome"}, "tier": "expendable"},
+        {"match": {"comm": "sandbox"}, "tier": "cap", "memory_high_pct_of_total": 25},
+    ]})
+    orig_leaves = ramsteind.classify_leaves
+    orig_set = ramsteind._systemctl_set_property
+    orig_memtotal = ramsteind._mem_total_bytes
+    calls = []
+    ramsteind._systemctl_set_property = lambda *a, **k: (calls.append((a, k)) or (True, None))
+    ramsteind._mem_total_bytes = lambda: 10 * 1024**3
+    ramsteind.classify_leaves = lambda rules: [
+        {"path": "/pg", "unit": "pg", "tier": "protect", "rule_index": 0,
+         "road": "root", "uid": None, "usage": 1 * 1024**3, "procs": [_proc(1, "postgres")]},
+        {"path": "/chrome", "unit": "chrome", "tier": "expendable", "rule_index": 1,
+         "road": "bridge", "uid": 1000, "usage": 2 * 1024**3, "procs": [_proc(2, "chrome")]},
+        {"path": "/sandbox", "unit": "sandbox", "tier": "cap", "rule_index": 2,
+         "road": "root", "uid": None, "usage": 500 * 1024**2, "procs": [_proc(3, "sandbox")]},
+    ]
+    try:
+        doc = ramsteind.do_stance_plan(dict(ramsteind.DEFAULTS))
+    finally:
+        ramsteind.classify_leaves = orig_leaves
+        ramsteind._systemctl_set_property = orig_set
+        ramsteind._mem_total_bytes = orig_memtotal
+    if calls:
+        fails.append(f"stance plan must NEVER call _systemctl_set_property, but it did: {calls}")
+    touched_after = ramsteind._load_stance_touched()
+    if touched_after:
+        fails.append(f"stance plan must never touch the persisted touched-cgroups list: {touched_after}")
+    if "protect" not in doc or doc["protect"]["written"][0]["memory_low"] != 1 * 1024**3:
+        fails.append(f"plan should compute the same protect numbers apply would: {doc.get('protect')}")
+    if not doc.get("cap") or doc["cap"][0]["memory_high"] != int(10 * 1024**3 * 0.25):
+        fails.append(f"plan should compute the same cap numbers apply would: {doc.get('cap')}")
+    if not doc.get("expendable") or "no standing write" not in doc["expendable"][0]["note"]:
+        fails.append(f"plan should explain expendable never gets a standing write: {doc.get('expendable')}")
+
+
+def test_stance_plan_file_override(fails):
+    tmp = tempfile.mkdtemp(dir=_STATE_FIXTURE)
+    _reset(tmp)
+    # the configured stance path stays empty -- plan must read the
+    # EXPLICIT --file instead, e.g. previewing stance.example.json
+    # before it's ever renamed into place.
+    os.environ["RAMSTEIN_STANCE_PATH"] = os.path.join(tmp, "configured-empty.json")
+    draft = os.path.join(tmp, "draft.json")
+    with open(draft, "w") as f:
+        json.dump({"rules": [{"match": {"comm": "x"}, "tier": "protect"}]}, f)
+    orig_leaves = ramsteind.classify_leaves
+    ramsteind.classify_leaves = lambda rules: []
+    try:
+        doc = ramsteind.do_stance_plan(dict(ramsteind.DEFAULTS), file_path=draft)
+    finally:
+        ramsteind.classify_leaves = orig_leaves
+    if doc.get("rules") != 1:
+        fails.append(f"plan should read the --file override, not the configured (empty) path: {doc}")
+
+    missing = os.path.join(tmp, "does-not-exist.json")
+    doc2 = ramsteind.do_stance_plan(dict(ramsteind.DEFAULTS), file_path=missing)
+    if not doc2.get("error"):
+        fails.append("plan --file against a missing file must error, not silently read as zero rules")
+
+
 # --- query_ledger: grouping -------------------------------------------------
 
 def test_ledger_groups_unclassified_by_exe(fails):
@@ -423,6 +491,8 @@ def main():
     test_rollback_resets_and_tracks_failures(fails)
     test_apply_stance_load_failure_rolls_back(fails)
     test_apply_stance_zero_rules_is_noop(fails)
+    test_stance_plan_never_writes(fails)
+    test_stance_plan_file_override(fails)
     test_ledger_groups_unclassified_by_exe(fails)
     test_ledger_kernel_row_names_top_slab_holder(fails)
     test_ledger_no_kernel_row_when_no_slab(fails)

@@ -221,7 +221,7 @@ See
 .B ramsteind (8)
 for the stance file format.
 .TP
-.B stance " status|rollback"
+.B stance " status|rollback|plan [\-\-file F]"
 .B status
 shows the stance's rule count and, when a
 .B protect
@@ -238,6 +238,22 @@ to its off value via the same road (D\-Bus bridge or plain root) it was
 written with, reading each back to confirm; a vanished unit counts as a
 pass. Runs automatically before the stance (re-)applies on every daemon
 start, and whenever the stance file itself fails to load.
+.B plan
+previews what
+.B status 's
+next apply WOULD write \(em per cgroup, per property, per road \(em
+without writing anything; the operator must be able to read a stance
+before the first real application, the same road Storage Sense's own
+.I dry_run
+took.
+.B \-\-file F
+previews an explicit file instead of the configured
+.I stance.json
+(e.g.
+.IR stance.example.json ,
+or a draft in progress) \(em a missing
+.B \-\-file
+errors rather than silently reading as zero rules.
 .TP
 .B swap " [\-\-limit N]"
 Who's parked in swap, VmSwap descending.

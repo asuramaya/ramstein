@@ -3360,20 +3360,19 @@ def _validate_stance_rule(rule):
     return None
 
 
-def _load_stance():
-    """Loads and validates the stance file. Returns (rules, error) -- rules
-    is a list of validated rule dicts (empty == the shipped zero-rule
-    default, including a missing file), error is None on success or a
-    human-readable string. A file that fails to load must never apply
-    PART of itself -- callers treat a non-None error as "roll back to
-    nothing and report", never "apply what parsed so far" (alfred msg
-    7123's load-failure requirement)."""
-    path = _stance_path()
+def _load_stance_from(path, missing_ok):
+    """The shared validation core behind _load_stance (the configured
+    stance.json, a missing file is the zero-rule default) and
+    do_stance_plan (an explicit --file, missing_ok=False -- a plan
+    against a file that isn't there is a mistake worth naming, not a
+    silent zero-rule preview)."""
     try:
         with open(path) as f:
             raw = f.read()
     except FileNotFoundError:
-        return [], None
+        if missing_ok:
+            return [], None
+        return None, f"{path} does not exist"
     except OSError as exc:
         return None, f"can't read {path}: {exc}"
     try:
@@ -3389,6 +3388,17 @@ def _load_stance():
             return None, f"{path}: rule {i}: {err}"
         validated.append(rule)
     return validated, None
+
+
+def _load_stance():
+    """Loads and validates the configured stance file. Returns (rules,
+    error) -- rules is a list of validated rule dicts (empty == the
+    shipped zero-rule default, including a missing file), error is None
+    on success or a human-readable string. A file that fails to load
+    must never apply PART of itself -- callers treat a non-None error as
+    "roll back to nothing and report", never "apply what parsed so far"
+    (alfred msg 7123's load-failure requirement)."""
+    return _load_stance_from(_stance_path(), missing_ok=True)
 
 
 def _leaf_scopes():
@@ -3683,13 +3693,17 @@ def do_stance_rollback():
             "remaining": len(still_touched)}
 
 
-def _apply_protect_tier(cfg, protect_leaves, touched):
+def _apply_protect_tier(cfg, protect_leaves, touched, dry_run=False):
     """memory.low on each protect leaf AND its whole ancestor chain
     (measurement (c)), sized to the sum of protect-tier usage and capped
     at stance_protect_floor_ceiling_pct of MemTotal, plus
     ManagedOOMPreference=avoid on each leaf. Idempotent -- re-applies the
     same values every stance tick; cheap (a handful of systemctl calls,
-    not a hot-path operation)."""
+    not a hot-path operation). dry_run=True (`ramstein stance plan`,
+    do_stance_plan below) computes and reports the exact same values
+    WITHOUT ever calling _systemctl_set_property or touching `touched` --
+    the one code path both the real apply and the preview share, so a
+    plan can never drift from what apply would actually do."""
     total = sum(l["usage"] for l in protect_leaves)
     ceiling = int(_mem_total_bytes() * cfg["stance_protect_floor_ceiling_pct"] / 100.0)
     floor_bytes = min(total, ceiling)
@@ -3698,25 +3712,32 @@ def _apply_protect_tier(cfg, protect_leaves, touched):
     seen_ancestors = set()
     for leaf in protect_leaves:
         leaf_low = min(leaf["usage"], floor_bytes) or 1
-        ok, err = _systemctl_set_property(leaf["path"], "MemoryLow",
-                                          str(leaf_low), uid=leaf["uid"])
-        _record_touched(touched, leaf["path"], "MemoryLow", leaf["road"], leaf["uid"])
-        ok2, err2 = _systemctl_set_property(leaf["path"], "ManagedOOMPreference",
-                                            "avoid", uid=leaf["uid"])
-        _record_touched(touched, leaf["path"], "ManagedOOMPreference",
-                        leaf["road"], leaf["uid"])
+        if dry_run:
+            ok = err = ok2 = err2 = None
+        else:
+            ok, err = _systemctl_set_property(leaf["path"], "MemoryLow",
+                                              str(leaf_low), uid=leaf["uid"])
+            _record_touched(touched, leaf["path"], "MemoryLow", leaf["road"], leaf["uid"])
+            ok2, err2 = _systemctl_set_property(leaf["path"], "ManagedOOMPreference",
+                                                "avoid", uid=leaf["uid"])
+            _record_touched(touched, leaf["path"], "ManagedOOMPreference",
+                            leaf["road"], leaf["uid"])
         written.append({"unit": leaf["unit"], "tier": "protect",
                         "memory_low": leaf_low, "road": leaf["road"],
-                        "ok": ok and ok2, "error": err or err2})
+                        "ok": ok and ok2 if not dry_run else None,
+                        "error": (err or err2) if not dry_run else None})
         for anc_path, anc_road in _ancestor_chain_for_protect(leaf["path"], leaf["uid"])[1:]:
             if anc_path in seen_ancestors:
                 continue
             seen_ancestors.add(anc_path)
-            aok, aerr = _systemctl_set_property(anc_path, "MemoryLow",
-                                                str(floor_bytes) if floor_bytes else "1",
-                                                uid=leaf["uid"] if anc_road == "bridge" else None)
-            _record_touched(touched, anc_path, "MemoryLow", anc_road,
-                            leaf["uid"] if anc_road == "bridge" else None)
+            if dry_run:
+                aok = aerr = None
+            else:
+                aok, aerr = _systemctl_set_property(
+                    anc_path, "MemoryLow", str(floor_bytes) if floor_bytes else "1",
+                    uid=leaf["uid"] if anc_road == "bridge" else None)
+                _record_touched(touched, anc_path, "MemoryLow", anc_road,
+                                leaf["uid"] if anc_road == "bridge" else None)
             written.append({"unit": os.path.basename(anc_path), "tier": "protect (ancestor)",
                             "memory_low": floor_bytes, "road": anc_road,
                             "ok": aok, "error": aerr})
@@ -3724,16 +3745,19 @@ def _apply_protect_tier(cfg, protect_leaves, touched):
             "total_requested_bytes": total, "written": written}
 
 
-def _apply_cap_tier(cap_leaves, mem_total, touched):
+def _apply_cap_tier(cap_leaves, mem_total, touched, dry_run=False):
     written = []
     for leaf, rule in cap_leaves:
         if rule.get("memory_high_bytes") is not None:
             target = int(rule["memory_high_bytes"])
         else:
             target = int(mem_total * rule["memory_high_pct_of_total"] / 100.0)
-        ok, err = _systemctl_set_property(leaf["path"], "MemoryHigh",
-                                          str(target), uid=leaf["uid"])
-        _record_touched(touched, leaf["path"], "MemoryHigh", leaf["road"], leaf["uid"])
+        if dry_run:
+            ok, err = None, None
+        else:
+            ok, err = _systemctl_set_property(leaf["path"], "MemoryHigh",
+                                              str(target), uid=leaf["uid"])
+            _record_touched(touched, leaf["path"], "MemoryHigh", leaf["road"], leaf["uid"])
         written.append({"unit": leaf["unit"], "tier": "cap", "memory_high": target,
                         "road": leaf["road"], "ok": ok, "error": err})
     return written
@@ -3770,6 +3794,51 @@ def apply_stance(cfg, stance_state):
         result["cap"] = _apply_cap_tier(cap_leaves, _mem_total_bytes(), touched)
     _save_stance_touched(touched)
     stance_state["last_apply"] = result
+    return result
+
+
+def do_stance_plan(cfg, file_path=None):
+    """`ramstein stance plan [--file PATH]` (alfred msg 7384, item 6): the
+    operator must be able to read what a stance WOULD do before the
+    first real application -- the same road Storage Sense's own
+    dry_run took. Reuses _apply_protect_tier/_apply_cap_tier's exact
+    math with dry_run=True -- one code path for both the real apply and
+    this preview, so a plan can never quietly drift from what apply
+    would actually do. file_path lets the operator preview a draft
+    (e.g. stance.example.json, or a copy in progress) before renaming it
+    into place; a missing --file is reported as an error, not silently
+    treated as zero rules, since asking to preview a specific file that
+    doesn't exist is a mistake worth naming. Never calls
+    _systemctl_set_property, never touches STANCE_TOUCHED_PATH -- reads
+    only."""
+    if file_path is not None:
+        rules, err = _load_stance_from(file_path, missing_ok=False)
+    else:
+        rules, err = _load_stance()
+    if err is not None:
+        return {"error": err}
+    if not rules:
+        return {"rules": 0, "plan": []}
+    leaves = classify_leaves(rules)
+    protect_leaves = [l for l in leaves if l["tier"] == "protect"]
+    cap_leaves = [(l, rules[l["rule_index"]]) for l in leaves if l["tier"] == "cap"]
+    expendable_leaves = [l for l in leaves if l["tier"] == "expendable"]
+    result = {"rules": len(rules)}
+    if protect_leaves:
+        result["protect"] = _apply_protect_tier(cfg, protect_leaves, [], dry_run=True)
+    if cap_leaves:
+        result["cap"] = _apply_cap_tier(cap_leaves, _mem_total_bytes(), [], dry_run=True)
+    if expendable_leaves:
+        # expendable never gets a standing write -- memory.high rides
+        # autocalm's own gates, applied only while hot (do_autocalm_run's
+        # 'stance_squeeze' step). The plan says so rather than reporting
+        # nothing, so the operator isn't left wondering where this tier
+        # went.
+        result["expendable"] = [
+            {"unit": l["unit"], "tier": "expendable", "road": l["road"],
+             "note": "no standing write -- memory.high applied only while"
+                     " autocalm reports hot, released when calm"}
+            for l in expendable_leaves]
     return result
 
 
@@ -3874,6 +3943,11 @@ def _make_dispatch(cfg, get_status, autocalm_state, config_path, swap_size_state
                         "rule_count": (query_ledger(cfg)).get("rule_count")}
             if action == "rollback":
                 return do_stance_rollback()
+            if action == "plan":
+                file_path = req.get("file")
+                if file_path is not None and not isinstance(file_path, str):
+                    raise ValueError("file must be a string")
+                return do_stance_plan(cfg, file_path)
             raise ValueError("unknown stance action")
         if cmd == "resolve":
             target = req.get("target")
