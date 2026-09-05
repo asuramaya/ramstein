@@ -227,7 +227,9 @@ shows the stance's rule count and, when a
 .B protect
 or
 .B cap
-rule matched anything live, the applied protect floor (and whether it is
+rule matched anything live, the applied protect floor with its basis
+(e.g. "MemoryLow=8.3G, resident of 13 sessions" \(em the floor sizes on
+resident bytes, never charged/cache\-inclusive usage) and whether it is
 "pinned at ceiling" \(em bounded by
 .I stance_protect_floor_ceiling_pct
 of MemTotal rather than tracking real usage) or the number of capped

@@ -97,6 +97,45 @@ place.
   or partial run could otherwise leave GitHub's default compare-stub body
   in place forever, since asset re-upload alone never touches it).
 
+### Hardening, found by the first real install
+Alfred's own install of the stance on the operator's box surfaced three real
+bugs no amount of mocked testing had caught, plus one deliberate sizing
+change:
+- **The classifier bug.** A scope classifies by what it *is*, never by an
+  incidental co-resident process. `_match_leaf` rewritten from a single
+  first-match-wins pass to two: pass one checks `unit_glob`/`container_glob`
+  (the scope's own name) against every rule before any per-process match is
+  even considered; pass two checks `comm`/`exe_glob` against the *dominant*
+  process only (by resident bytes), never any process. The live bug: Chrome's
+  own app scope, holding two Chrome processes and one claude-in-chrome-host
+  process, classified as `protect` (the fleet's `exe_glob` rule, listed
+  first) instead of `expendable` (Chrome's own `unit_glob` rule, listed
+  second) — the plan wrote `MemoryLow=1.4G` on the operator's own browser,
+  the opposite of the stance.
+- **The ledger mislabeling bug.** Unclassified scopes now group by their
+  *dominant* process's exe (by resident bytes), with a new `others` count
+  for the rest, instead of an arbitrary first-enumerated pid — the live
+  case: a 21-Chrome-process scope reading as "1 cat", a 44-process fleet
+  terminal reading as one stale version string.
+- **The rollback false-success bug.** `stance rollback` now refuses loudly
+  (rather than reporting "0 entries, complete") when it cannot confirm the
+  touched-cgroups list is genuinely empty versus merely unreadable —
+  distinguishing a missing file (honest, nothing was ever touched) from any
+  other read failure (permission, corruption — report nothing as done).
+- **The protect floor now sizes on resident bytes, not charged.** A
+  protect-tier leaf's `memory.low` floor sums every leaf's own *resident*
+  memory, never `memory.current` (which also charges file cache) — sizing
+  the floor on cache would let a scope's own page-cache churn inflate a
+  reservation meant to hold working state. `memory.low` exists to keep the
+  fleet's own working state warm, not to pin file cache the kernel could
+  re-read in seconds: cache above the resident floor inside a protected
+  scope stays reclaimable under pressure, and that's a performance cost
+  only, the correct one. The **cap** tier's ceiling stays sized against
+  charged usage, deliberately — it's a worst-case backstop, and a backstop
+  must bound everything the kernel is holding. Every applied floor now
+  carries its own basis in `stance status`/`plan` output (e.g. "resident of
+  13 sessions"), so the number is never reported bare.
+
 ## 0.12.0 — layer 3: configuring the system, and its consent model
 
 FAMILY.md's third layer ("configure the system", not just observe or act on

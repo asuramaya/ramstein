@@ -675,8 +675,12 @@ class ramsteinToggle extends QuickMenuToggle {
             const parts = [];
             if (protectRows.length) {
                 const names = protectRows.map(r => r.label).join(', ');
+                // item 5 (alfred msg 7436): the floor is sized on resident
+                // bytes, not charged -- the fallback (no apply tick yet)
+                // must match that basis or it lies about what the floor
+                // will actually be.
                 const total = stance.protect_floor_bytes ??
-                    protectRows.reduce((s, r) => s + r.charged_bytes, 0);
+                    protectRows.reduce((s, r) => s + r.resident_bytes, 0);
                 // shape 2's basis-when-pinned sharpening (alfred msg 7203,
                 // item 1): a floor that stopped tracking real usage must
                 // say so in the same sentence, never a silent number.

@@ -337,12 +337,20 @@ every shared ancestor up through
 .I user@<uid>.service
 and
 .IR user\-<uid>.slice ,
-sized to the sum of every protect\-tier leaf's own usage and capped at
+sized to the sum of every protect\-tier leaf's own
+.B resident
+bytes (not
+.IR memory.current ,
+which also charges file cache) and capped at
 .I stance_protect_floor_ceiling_pct
 of MemTotal (a leak inside a protected scope must not become an unbounded reservation) \(em a
 leaf's own
 .I memory.low
 alone protects nothing against reclaim pressure from an ancestor with none, measured directly.
+.I memory.low
+exists to keep the fleet's own working state warm, not to pin cache the kernel could re\-read in
+seconds \(em cache above the resident floor inside a protected scope stays reclaimable under
+pressure, a performance cost only, and the correct one.
 .I ManagedOOMPreference=avoid
 rides along on the leaf. Never touches the top\-level
 .I user.slice
@@ -373,7 +381,10 @@ fixed
 or relative
 .RI ( memory_high_pct_of_total ),
 applied every poll tick regardless of system state \(em containers are capped by design intent, not
-system state.
+system state. The ceiling itself stays sized against
+.I memory.current
+(charged, cache included) rather than resident, deliberately: it is a worst\-case backstop, and a
+backstop must bound everything the kernel is holding, not only the anonymous working set.
 .PP
 Two write roads: a cgroup living inside a
 .I user@<uid>.service's

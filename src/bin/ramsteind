@@ -1616,6 +1616,7 @@ def build_pill_summary(cfg, get_status, swap_size_state, zram_state, stance_stat
             "rows": ledger.get("rows", []),
             "protect_floor_bytes": protect.get("floor_bytes"),
             "protect_pinned": protect.get("pinned_at_ceiling", False),
+            "protect_basis": protect.get("basis"),
             "latest_incident": latest_incident,
         },
     }
@@ -3567,7 +3568,11 @@ def classify_leaves(rules):
     path, tier ('unclassified' when nothing matches -- reported, never
     capped, an honest bucket rather than an invented policy for a rogue
     process nobody named), rule_index, road/uid (which write path its OWN
-    properties need), usage (memory.current), procs (for the ledger's
+    properties need), usage (memory.current, the charged total -- the
+    cap tier's own worst-case backstop), resident (sum of each process's
+    own rss -- the protect tier's floor basis, item 5: a protected
+    scope's cache above its resident working set is reclaimable, and
+    that's the correct outcome, not a bug), procs (for the ledger's
     exe/comm grouping)."""
     result = []
     for path, procs in _leaf_scopes().items():
@@ -3577,7 +3582,8 @@ def classify_leaves(rules):
             "path": path, "unit": os.path.basename(path.rstrip("/")),
             "tier": rule["tier"] if rule else "unclassified",
             "rule_index": idx, "road": road, "uid": uid,
-            "usage": _leaf_usage_bytes(path), "procs": procs,
+            "usage": _leaf_usage_bytes(path),
+            "resident": sum(p["rss"] for p in procs), "procs": procs,
         })
     return result
 
@@ -3774,23 +3780,31 @@ def do_stance_rollback():
 
 def _apply_protect_tier(cfg, protect_leaves, touched, dry_run=False):
     """memory.low on each protect leaf AND its whole ancestor chain
-    (measurement (c)), sized to the sum of protect-tier usage and capped
-    at stance_protect_floor_ceiling_pct of MemTotal, plus
-    ManagedOOMPreference=avoid on each leaf. Idempotent -- re-applies the
-    same values every stance tick; cheap (a handful of systemctl calls,
-    not a hot-path operation). dry_run=True (`ramstein stance plan`,
-    do_stance_plan below) computes and reports the exact same values
-    WITHOUT ever calling _systemctl_set_property or touching `touched` --
-    the one code path both the real apply and the preview share, so a
-    plan can never drift from what apply would actually do."""
-    total = sum(l["usage"] for l in protect_leaves)
+    (measurement (c)), sized to the sum of protect-tier RESIDENT bytes
+    (item 5, alfred msg 7436: floor on resident, ceiling on charged) and
+    capped at stance_protect_floor_ceiling_pct of MemTotal, plus
+    ManagedOOMPreference=avoid on each leaf. Sizing the floor on resident
+    rather than memory.current is deliberate: memory.low exists to keep
+    the fleet's own working state warm, not to pin file cache the kernel
+    could re-read in seconds -- cache above the resident floor inside a
+    protected scope stays reclaimable, a performance cost only, and the
+    correct one. Idempotent -- re-applies the same values every stance
+    tick; cheap (a handful of systemctl calls, not a hot-path operation).
+    dry_run=True (`ramstein stance plan`, do_stance_plan below) computes
+    and reports the exact same values WITHOUT ever calling
+    _systemctl_set_property or touching `touched` -- the one code path
+    both the real apply and the preview share, so a plan can never drift
+    from what apply would actually do."""
+    total = sum(l["resident"] for l in protect_leaves)
     ceiling = int(_mem_total_bytes() * cfg["stance_protect_floor_ceiling_pct"] / 100.0)
     floor_bytes = min(total, ceiling)
     pinned = total > ceiling
+    n = len(protect_leaves)
+    basis = f"resident of {n} session{'' if n == 1 else 's'}"
     written = []
     seen_ancestors = set()
     for leaf in protect_leaves:
-        leaf_low = min(leaf["usage"], floor_bytes) or 1
+        leaf_low = min(leaf["resident"], floor_bytes) or 1
         if dry_run:
             ok = err = ok2 = err2 = None
         else:
@@ -3821,7 +3835,7 @@ def _apply_protect_tier(cfg, protect_leaves, touched, dry_run=False):
                             "memory_low": floor_bytes, "road": anc_road,
                             "ok": aok, "error": aerr})
     return {"floor_bytes": floor_bytes, "pinned_at_ceiling": pinned,
-            "total_requested_bytes": total, "written": written}
+            "total_requested_bytes": total, "basis": basis, "written": written}
 
 
 def _apply_cap_tier(cap_leaves, mem_total, touched, dry_run=False):

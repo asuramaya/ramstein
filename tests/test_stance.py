@@ -24,10 +24,12 @@ Covers:
     inside user@<uid>.service's own subtree, root for user@<uid>.service
     and user-<uid>.slice themselves and for anything outside a session at
     all (system.slice/docker).
-  - _apply_protect_tier: floor sized to the sum of protect-tier usage,
-    capped at stance_protect_floor_ceiling_pct of MemTotal, and the
-    ledger-visible "pinned" flag when a leak would otherwise ratchet it
-    past that ceiling.
+  - _apply_protect_tier: floor sized to the sum of protect-tier RESIDENT
+    bytes (item 5, alfred msg 7436 -- charged/cache-inclusive usage never
+    inflates the floor), capped at stance_protect_floor_ceiling_pct of
+    MemTotal, the ledger-visible "pinned" flag when a leak would
+    otherwise ratchet it past that ceiling, and the floor's own basis
+    string naming the session count.
   - do_stance_rollback: resets every touched entry via the road it was
     written with, a vanished unit counts as a pass, a failure stays in
     the touched list for the next attempt.
@@ -315,26 +317,42 @@ def test_protect_floor_ceiling(fails):
     ramsteind._mem_total_bytes = lambda: 10 * 1024**3  # 10G total
     ramsteind._ancestor_chain_for_protect = lambda path, uid: [(path, "root")]
     try:
-        # under ceiling: floor tracks real usage.
-        leaves = [{"path": "/a", "unit": "a", "usage": 1 * 1024**3, "road": "root", "uid": None},
-                  {"path": "/b", "unit": "b", "usage": 2 * 1024**3, "road": "root", "uid": None}]
+        # under ceiling: floor tracks real RESIDENT usage.
+        leaves = [{"path": "/a", "unit": "a", "resident": 1 * 1024**3, "road": "root", "uid": None},
+                  {"path": "/b", "unit": "b", "resident": 2 * 1024**3, "road": "root", "uid": None}]
         touched = []
         result = ramsteind._apply_protect_tier(cfg, leaves, touched)
         if result["pinned_at_ceiling"]:
             fails.append("3G of 10G (30%, under the 50% default ceiling) should not be pinned")
         if result["floor_bytes"] != 3 * 1024**3:
             fails.append(f"floor should track real usage under the ceiling: {result['floor_bytes']}")
+        if result["basis"] != "resident of 2 sessions":
+            fails.append(f"floor basis should name the session count: {result['basis']!r}")
 
         # over ceiling (a "leak"): floor pins at 50% of MemTotal, not the
         # unbounded sum -- alfred msg 7125 note 1.
         calls.clear()
-        leaves = [{"path": "/a", "unit": "a", "usage": 8 * 1024**3, "road": "root", "uid": None}]
+        leaves = [{"path": "/a", "unit": "a", "resident": 8 * 1024**3, "road": "root", "uid": None}]
         touched = []
         result = ramsteind._apply_protect_tier(cfg, leaves, touched)
         if not result["pinned_at_ceiling"]:
             fails.append("8G of 10G should exceed the 50% ceiling and pin")
         if result["floor_bytes"] != 5 * 1024**3:
             fails.append(f"pinned floor should be exactly 50% of MemTotal: {result['floor_bytes']}")
+
+        # item 5 (alfred msg 7436): floor sizes on RESIDENT, not CHARGED --
+        # a scope sitting on a pile of reclaimable file cache must not
+        # inflate the floor just because memory.current is high.
+        calls.clear()
+        leaves = [{"path": "/a", "unit": "a", "resident": 1 * 1024**3,
+                   "usage": 9 * 1024**3, "road": "root", "uid": None}]
+        touched = []
+        result = ramsteind._apply_protect_tier(cfg, leaves, touched)
+        if result["floor_bytes"] != 1 * 1024**3:
+            fails.append("floor must size on resident (1G), not charged (9G) of cache: "
+                         f"{result['floor_bytes']}")
+        if result["pinned_at_ceiling"]:
+            fails.append("1G resident of 10G should not pin, even though charged usage is 9G")
     finally:
         ramsteind._systemctl_set_property = orig_set
         ramsteind._mem_total_bytes = orig_memtotal
@@ -496,11 +514,14 @@ def test_stance_plan_never_writes(fails):
     ramsteind._mem_total_bytes = lambda: 10 * 1024**3
     ramsteind.classify_leaves = lambda rules: [
         {"path": "/pg", "unit": "pg", "tier": "protect", "rule_index": 0,
-         "road": "root", "uid": None, "usage": 1 * 1024**3, "procs": [_proc(1, "postgres")]},
+         "road": "root", "uid": None, "usage": 1 * 1024**3, "resident": 1 * 1024**3,
+         "procs": [_proc(1, "postgres")]},
         {"path": "/chrome", "unit": "chrome", "tier": "expendable", "rule_index": 1,
-         "road": "bridge", "uid": 1000, "usage": 2 * 1024**3, "procs": [_proc(2, "chrome")]},
+         "road": "bridge", "uid": 1000, "usage": 2 * 1024**3, "resident": 2 * 1024**3,
+         "procs": [_proc(2, "chrome")]},
         {"path": "/sandbox", "unit": "sandbox", "tier": "cap", "rule_index": 2,
-         "road": "root", "uid": None, "usage": 500 * 1024**2, "procs": [_proc(3, "sandbox")]},
+         "road": "root", "uid": None, "usage": 500 * 1024**2, "resident": 500 * 1024**2,
+         "procs": [_proc(3, "sandbox")]},
     ]
     try:
         doc = ramsteind.do_stance_plan(dict(ramsteind.DEFAULTS))

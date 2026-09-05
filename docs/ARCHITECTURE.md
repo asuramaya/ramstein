@@ -378,9 +378,18 @@ cleanly along their own `low` values; the same leaves one hop deeper, behind a p
 of its own, converge to *nearly equal* usage regardless — the leaf's reservation buys it nothing.
 Real protection needs `memory.low` written on the target **and** every shared ancestor up through
 `user@<uid>.service` and `user-<uid>.slice`, sized to the sum of every protect-tier leaf's own
-usage and capped at `stance_protect_floor_ceiling_pct` (default 50%) of `MemTotal` — a leak inside
-a protected scope must not become an unbounded reservation; the ledger names it "pinned at ceiling"
-when this bound, not real usage, is what's currently applied. `ManagedOOMPreference=avoid` rides
+**resident** bytes — not `memory.current`, which also charges file cache — and capped at
+`stance_protect_floor_ceiling_pct` (default 50%) of `MemTotal` — a leak inside a protected scope
+must not become an unbounded reservation; the ledger names it "pinned at ceiling" when this bound,
+not real usage, is what's currently applied. Floor-on-resident is a deliberate item-5 ruling
+(alfred msg 7436): `memory.low` exists to keep the fleet's own working state warm, not to pin file
+cache the kernel could re-read in seconds — cache above the resident floor inside a protected
+scope stays reclaimable under pressure, and that's a performance cost only, the correct one. Every
+applied floor carries its own basis string (`"resident of 13 sessions"`) in `stance status`/`plan`
+output, so the number is never reported bare. The **cap** tier's ceiling, by contrast, stays sized
+against `memory.current` (charged, cache included): it is the worst-case backstop, and a backstop
+must bound everything the kernel is holding, not only the anonymous working set.
+`ManagedOOMPreference=avoid` rides
 along on the leaf itself. Deliberately stops at `user-<uid>.slice` — never touches the top-level
 `user.slice` (shared by every user on the machine) or `system.slice` (every root service): a leaf
 living under `system.slice`/`docker-*.scope` (osiris-pg) gets leaf-level protection only, a

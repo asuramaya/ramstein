@@ -439,7 +439,8 @@ def cmd_stance(argv):
         protect = last.get("protect")
         if protect:
             pin = " (pinned at ceiling)" if protect.get("pinned_at_ceiling") else ""
-            print(f"  protect floor: {human_bytes(protect['floor_bytes'])}{pin}")
+            basis = f", {protect['basis']}" if protect.get("basis") else ""
+            print(f"  protect floor: {human_bytes(protect['floor_bytes'])}{basis}{pin}")
         cap = last.get("cap")
         if cap:
             print(f"  cap tier: {len(cap)} scope(s) capped")
@@ -453,7 +454,8 @@ def cmd_stance(argv):
         protect = doc.get("protect")
         if protect:
             pin = " (pinned at ceiling)" if protect.get("pinned_at_ceiling") else ""
-            print(f"protect floor: {human_bytes(protect['floor_bytes'])}{pin}")
+            basis = f", {protect['basis']}" if protect.get("basis") else ""
+            print(f"protect floor: {human_bytes(protect['floor_bytes'])}{basis}{pin}")
             for w in protect["written"]:
                 print(f"  would set {w['unit']:<40} MemoryLow="
                       f"{human_bytes(w['memory_low'])}  (via {w['road']})")
