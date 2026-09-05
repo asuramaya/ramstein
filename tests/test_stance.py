@@ -180,14 +180,23 @@ def test_claude_in_chrome_shared_scope_resolves_protect(fails):
         {"match": {"exe_glob": "~/.local/share/claude/versions/*"}, "tier": "protect"},
         {"match": {"unit_glob": "app-*.google.Chrome-*.scope"}, "tier": "expendable"},
     ]
+    # _expand_home_glob is mocked directly (not pwd.getpwuid) so this
+    # test doesn't depend on uid 1000's real home directory, which
+    # differs by machine (this dev box vs a CI runner vs anywhere else)
+    # -- exactly the class of environment-dependent test bug this
+    # rewrite fixes, caught live when this fixture passed here but
+    # failed on CI the first time it shipped.
     orig_exe = ramsteind._proc_exe
     orig_uid = ramsteind._proc_uid
+    orig_expand = ramsteind._expand_home_glob
     ramsteind._proc_exe = lambda pid: {
         1120188: "/opt/google/chrome/chrome",
-        1128577: "/home/asuramaya/.local/share/claude/versions/2.1.260",
+        1128577: "/home/FAKEUSER/.local/share/claude/versions/2.1.260",
         1129420: "/opt/google/chrome/chrome",
     }.get(pid)
     ramsteind._proc_uid = lambda pid: 1000
+    ramsteind._expand_home_glob = lambda pattern, uid: (
+        pattern.replace("~", "/home/FAKEUSER", 1) if pattern.startswith("~/") else pattern)
     try:
         idx, rule = ramsteind._match_leaf(
             "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service"
@@ -198,6 +207,7 @@ def test_claude_in_chrome_shared_scope_resolves_protect(fails):
     finally:
         ramsteind._proc_exe = orig_exe
         ramsteind._proc_uid = orig_uid
+        ramsteind._expand_home_glob = orig_expand
     if rule is None or rule["tier"] != "protect":
         fails.append(f"a scope hosting both a protected and an expendable"
                      f" process must resolve to the safer (protect) tier"
