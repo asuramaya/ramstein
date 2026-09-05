@@ -68,6 +68,10 @@ const SWAP_SIZE_PRESETS = ['2G', '4G', '8G', '16G'];
 // this draws. Matches standing_min_bytes' shipped daemon default (500M);
 // a hardcoded UI constant, not fetched live, same as the presets above.
 const FINDINGS_NOTABLE_BYTES = 500 * 1024 * 1024;
+// Fold body cap (alfred msg 7203, item 2): top N by charged bytes -- 8 is
+// a fine start. unclassified is exempt from the cut (added back in even
+// if it falls outside the top N) -- it's the row the operator asked for.
+const FINDINGS_MAX_ROWS = 8;
 
 // swappiness's SEGMENT: "a small named-stance set" (the CLI's own
 // docstring), not the raw 0-200 kernel value -- that's the CLI's job,
@@ -586,6 +590,36 @@ class ramsteinToggle extends QuickMenuToggle {
     _renderFindings(pill) {
         this._updateFindingsHeader(pill);
         this._findingsSection.menu.removeAll();
+        const rows = pill?.stance?.rows ?? [];
+        if (!rows.length) {
+            this._findingsSection.menu.addMenuItem(Pill.wrapRow(
+                `<span foreground="${DIM}">nothing resident right now</span>`));
+            return;
+        }
+        // Top N by charged bytes -- unclassified is exempt from the cut
+        // (alfred msg 7203, item 2: "it is the row the operator asked
+        // for"), added back in even if it would otherwise fall below it.
+        const sorted = [...rows].sort((a, b) => b.charged_bytes - a.charged_bytes);
+        const shown = sorted.slice(0, FINDINGS_MAX_ROWS);
+        for (const r of sorted.filter(r => r.tier === 'unclassified')) {
+            if (!shown.includes(r))
+                shown.push(r);
+        }
+        for (const r of shown) {
+            const count = r.count > 1 ? `${NB}×${r.count}` : '';
+            this._findingsSection.menu.addMenuItem(Pill.wrapRow(
+                `<span foreground="${ACCENT}">${Pill.esc(r.tier)}</span>` +
+                `<span foreground="${DIM}">${NB}·${NB}${Pill.esc(r.label)}${count}` +
+                `${NB}·${NB}${Pill.fmtBytes(r.charged_bytes)}${NB}charged` +
+                `${NB}(${Pill.fmtBytes(r.resident_bytes)}${NB}resident)</span>`));
+            // unclassified never gets a button -- report-only doctrine
+            // holds even here; naming a rule happens by hand-editing the
+            // stance file, not by clicking anything in this pill.
+            if (r.tier === 'unclassified')
+                this._findingsSection.menu.addMenuItem(this._captionRow(
+                    'name it in /etc/ramstein/stance.json to bring it'
+                    + ' under a stance', DIM));
+        }
     }
 
     // Mirrors ramstein CLI's own _incident_trigger_text (duplicated, not
