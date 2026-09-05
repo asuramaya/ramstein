@@ -318,16 +318,33 @@ def test_protect_floor_ceiling(fails):
     ramsteind._ancestor_chain_for_protect = lambda path, uid: [(path, "root")]
     try:
         # under ceiling: floor tracks real RESIDENT usage.
-        leaves = [{"path": "/a", "unit": "a", "resident": 1 * 1024**3, "road": "root", "uid": None},
-                  {"path": "/b", "unit": "b", "resident": 2 * 1024**3, "road": "root", "uid": None}]
+        leaves = [{"path": "/a", "unit": "a", "resident": 1 * 1024**3, "road": "root",
+                   "uid": None, "procs": [_proc(1, "postgres")]},
+                  {"path": "/b", "unit": "b", "resident": 2 * 1024**3, "road": "root",
+                   "uid": None, "procs": [_proc(2, "claude")]}]
         touched = []
         result = ramsteind._apply_protect_tier(cfg, leaves, touched)
         if result["pinned_at_ceiling"]:
             fails.append("3G of 10G (30%, under the 50% default ceiling) should not be pinned")
         if result["floor_bytes"] != 3 * 1024**3:
             fails.append(f"floor should track real usage under the ceiling: {result['floor_bytes']}")
-        if result["basis"] != "resident of 2 sessions":
-            fails.append(f"floor basis should name the session count: {result['basis']!r}")
+        if result["basis"] != "resident of 2 processes in 2 scopes":
+            fails.append(f"floor basis should name process and scope counts: {result['basis']!r}")
+
+        # item 5/nit 2 (alfred msg 7448): a single protected LEAF holding
+        # many processes must never be reported as "1 session" -- the
+        # live bug shape: "resident of 1 session" over a scope actually
+        # holding 20 claude processes reads as if one fleet session were
+        # protected, when the truth is 20 processes in one scope.
+        calls.clear()
+        many_procs = [_proc(p, "claude") for p in range(100, 120)]
+        leaves = [{"path": "/c", "unit": "c", "resident": 5 * 1024**3, "road": "root",
+                   "uid": None, "procs": many_procs}]
+        touched = []
+        result = ramsteind._apply_protect_tier(cfg, leaves, touched)
+        if result["basis"] != "resident of 20 processes in 1 scope":
+            fails.append(f"basis must count processes, not scopes, as \"sessions\": "
+                         f"{result['basis']!r}")
 
         # over ceiling (a "leak"): floor pins at 50% of MemTotal, not the
         # unbounded sum -- alfred msg 7125 note 1.

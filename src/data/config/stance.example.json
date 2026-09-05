@@ -1,8 +1,8 @@
 {
   "rules": [
     {
-      "_comment": "protect osiris-pg -- the fleet's shared postgres, running in its own docker container -- with memory.low up its whole ancestor chain, so it never gets squeezed to make room for anything else.",
-      "match": {"exe_glob": "/usr/lib/postgresql/*/bin/postgres"},
+      "_comment": "protect osiris-pg by its own container identity, not by its binary's exe path: the classifier checks a scope's OWN name (container_glob) against every rule BEFORE it ever looks at what's running inside, so an exe_glob rule for postgres can never win against a container_glob rule that matches every docker scope below. A docker scope's own name is its raw container ID, never the --name you gave it or the image's path -- find yours with `docker ps --no-trunc -q` (or `systemd-cgls`) and put its scope name (or a stable ID prefix) here; this placeholder never matches anything on its own, on purpose, so it can't be copied as-is and silently protect nothing. Placed BEFORE the cap-all rule below, since first match wins within container_glob's own pass.",
+      "match": {"container_glob": "docker-<osiris-pg's own container ID>*"},
       "tier": "protect"
     },
     {
@@ -16,7 +16,7 @@
       "tier": "expendable"
     },
     {
-      "_comment": "cap every docker container at 25% of total memory -- a standing ceiling regardless of system state, so no single container can quietly consume everything.",
+      "_comment": "cap every OTHER docker container at 25% of total memory -- a standing ceiling regardless of system state, so no single container can quietly consume everything. Comes last: the container_glob rule above must win for osiris-pg specifically, or this catch-all claims it instead.",
       "match": {"container_glob": "docker-*.scope"},
       "tier": "cap",
       "memory_high_pct_of_total": 25

@@ -3799,8 +3799,16 @@ def _apply_protect_tier(cfg, protect_leaves, touched, dry_run=False):
     ceiling = int(_mem_total_bytes() * cfg["stance_protect_floor_ceiling_pct"] / 100.0)
     floor_bytes = min(total, ceiling)
     pinned = total > ceiling
-    n = len(protect_leaves)
-    basis = f"resident of {n} session{'' if n == 1 else 's'}"
+    # "session" over-claimed a fleet-session-sized process when a single
+    # protected LEAF holds many processes (alfred msg 7448 item 2, live
+    # case: "resident of 1 session" over a scope actually holding 20
+    # claude processes) -- count processes and scopes separately, same
+    # units the ledger already reports, never a word that implies a
+    # 1:1 process<->session mapping the classifier never guarantees.
+    n_procs = sum(len(l.get("procs", [])) for l in protect_leaves)
+    n_scopes = len(protect_leaves)
+    basis = (f"resident of {n_procs} process{'' if n_procs == 1 else 'es'}"
+             f" in {n_scopes} scope{'' if n_scopes == 1 else 's'}")
     written = []
     seen_ancestors = set()
     for leaf in protect_leaves:

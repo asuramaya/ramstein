@@ -385,7 +385,7 @@ not real usage, is what's currently applied. Floor-on-resident is a deliberate i
 (alfred msg 7436): `memory.low` exists to keep the fleet's own working state warm, not to pin file
 cache the kernel could re-read in seconds — cache above the resident floor inside a protected
 scope stays reclaimable under pressure, and that's a performance cost only, the correct one. Every
-applied floor carries its own basis string (`"resident of 13 sessions"`) in `stance status`/`plan`
+applied floor carries its own basis string (`"resident of 20 processes in 1 scope"`) in `stance status`/`plan`
 output, so the number is never reported bare. The **cap** tier's ceiling, by contrast, stays sized
 against `memory.current` (charged, cache included): it is the worst-case backstop, and a backstop
 must bound everything the kernel is holding, not only the anonymous working set.

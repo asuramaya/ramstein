@@ -228,8 +228,10 @@ shows the stance's rule count and, when a
 or
 .B cap
 rule matched anything live, the applied protect floor with its basis
-(e.g. "MemoryLow=8.3G, resident of 13 sessions" \(em the floor sizes on
-resident bytes, never charged/cache\-inclusive usage) and whether it is
+(e.g. "MemoryLow=8.3G, resident of 20 processes in 1 scope" \(em the floor sizes
+on resident bytes, never charged/cache\-inclusive usage, and its basis names
+processes and scopes rather than "sessions", since one protected leaf can hold
+many processes) and whether it is
 "pinned at ceiling" \(em bounded by
 .I stance_protect_floor_ceiling_pct
 of MemTotal rather than tracking real usage) or the number of capped

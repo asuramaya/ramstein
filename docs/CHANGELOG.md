@@ -134,7 +134,17 @@ change:
   charged usage, deliberately — it's a worst-case backstop, and a backstop
   must bound everything the kernel is holding. Every applied floor now
   carries its own basis in `stance status`/`plan` output (e.g. "resident of
-  13 sessions"), so the number is never reported bare.
+  20 processes in 1 scope"), so the number is never reported bare — and it
+  names processes and scopes, not "sessions": the live find, a single
+  20-process scope reading as "resident of 1 session," which read as one
+  fleet session protected when the truth was twenty processes in one leaf.
+- The shipped `stance.example.json` now protects `osiris-pg` by its own
+  container identity (`container_glob`), placed *before* the cap-all-docker
+  rule — the two-pass classifier checks scope identity across every rule
+  first, so a `container_glob` naming a container by exe alone can never
+  win against a `container_glob` that matches every container; a
+  `_comment` on the new rule explains why containers are named by their
+  cgroup scope, not by their binary's path.
 
 ## 0.12.0 — layer 3: configuring the system, and its consent model
 
