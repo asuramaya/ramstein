@@ -163,19 +163,62 @@ def test_v1_parent_scope_bug_does_not_match_a_leaf(fails):
         fails.append("a parent-scope unit_glob must not match a leaf's own basename")
 
 
-def test_claude_in_chrome_shared_scope_resolves_protect(fails):
+def test_unit_glob_wins_regardless_of_rule_order(fails):
+    # alfred msg 7409/7427 item 4: a scope's own unit_glob must beat any
+    # per-pid exe_glob match even when the exe_glob rule is listed
+    # FIRST in the file -- classification is about what the scope IS,
+    # not about rule position.
+    rules = [
+        {"match": {"exe_glob": "/usr/bin/protected-thing"}, "tier": "protect"},
+        {"match": {"unit_glob": "expendable-*.scope"}, "tier": "expendable"},
+    ]
+    orig_exe = ramsteind._proc_exe
+    ramsteind._proc_exe = lambda pid: "/usr/bin/protected-thing"
+    try:
+        idx, rule = ramsteind._match_leaf(
+            "/sys/fs/cgroup/expendable-123.scope", [_proc(1, "thing")], rules)
+    finally:
+        ramsteind._proc_exe = orig_exe
+    if rule is None or rule["tier"] != "expendable":
+        fails.append(f"unit_glob must win over an earlier exe_glob rule: {rule}")
+
+
+def test_exe_match_uses_dominant_proc_only(fails):
+    # alfred msg 7409/7427 item 4: a minority co-resident process must
+    # never hijack classification -- only the DOMINANT process (by
+    # resident bytes) is checked against comm/exe_glob rules.
+    rules = [{"match": {"comm": "tiny-outlier"}, "tier": "protect"}]
+    idx, rule = ramsteind._match_leaf(
+        "/sys/fs/cgroup/mixed.scope",
+        [_proc(1, "big-thing", rss=10 * 1024**3),
+         _proc(2, "tiny-outlier", rss=1024)],
+        rules)
+    if rule is not None:
+        fails.append(f"a 1KB outlier process must not classify a scope"
+                     f" dominated by a 10GB process: {rule}")
+
+
+def test_claude_in_chrome_shared_scope_resolves_expendable(fails):
     # A live, real finding from `ramstein stance plan` against this very
-    # box (alfred msg 7402: "keep that case as a test fixture"): a
-    # claude-in-chrome-driven Chrome instance can end up co-resident in
-    # the SAME cgroup scope as a protected fleet session (the browser
-    # was launched as a child of the claude process, inheriting its
-    # cgroup rather than getting its own app-*.scope). A cgroup is the
-    # unit of enforcement -- one scope cannot carry two different
-    # policies for two different processes inside it. First-match-wins
-    # with protect listed before expendable means the WHOLE scope
-    # resolves to protect: erring toward "never squeeze something that
-    # shouldn't be squeezed" when a scope's contents are ambiguous,
-    # exactly the safe default this classifier is meant to have.
+    # box (alfred msg 7402/7409/7427: "keep that case as a test
+    # fixture"): a claude-in-chrome-driven Chrome instance can end up
+    # co-resident in the SAME cgroup scope as a protected fleet session
+    # (the browser was launched as a child of the claude process,
+    # inheriting its cgroup rather than getting its own app-*.scope). A
+    # cgroup is the unit of enforcement -- one scope cannot carry two
+    # different policies for two different processes inside it.
+    #
+    # CORRECTED (msg 7409/7427 item 4): the first cut of this fixture
+    # asserted the OPPOSITE outcome (protect), reasoning that erring
+    # toward "never squeeze" was the safe default -- alfred's live
+    # install caught this as an actual bug: it made the plan write
+    # MemoryLow=1.4G on the operator's own Chrome, the opposite of the
+    # stance. The scope's own systemd identity (its unit name IS a
+    # Chrome app scope, and its resident memory is overwhelmingly
+    # Chrome's own) is what the classifier must honor -- unit_glob
+    # naming the scope itself now wins over any per-pid exe_glob match,
+    # checked across ALL rules before any comm/exe match is even
+    # considered, regardless of which tier is listed first in the file.
     rules = [
         {"match": {"exe_glob": "~/.local/share/claude/versions/*"}, "tier": "protect"},
         {"match": {"unit_glob": "app-*.google.Chrome-*.scope"}, "tier": "expendable"},
@@ -208,10 +251,11 @@ def test_claude_in_chrome_shared_scope_resolves_protect(fails):
         ramsteind._proc_exe = orig_exe
         ramsteind._proc_uid = orig_uid
         ramsteind._expand_home_glob = orig_expand
-    if rule is None or rule["tier"] != "protect":
-        fails.append(f"a scope hosting both a protected and an expendable"
-                     f" process must resolve to the safer (protect) tier"
-                     f" when protect is listed first, got {rule}")
+    if rule is None or rule["tier"] != "expendable":
+        fails.append(f"a scope whose own unit_glob names it (Chrome's app"
+                     f" scope) must classify as what it IS, regardless of"
+                     f" an incidental co-resident process or rule order,"
+                     f" got {rule}")
 
 
 # --- _leaf_road / _ancestor_chain_for_protect ------------------------------
@@ -347,6 +391,30 @@ def test_rollback_resets_and_tracks_failures(fails):
         fails.append("a genuinely failed reset must stay in the touched list for next time")
     if result["remaining"] != 1:
         fails.append(f"exactly one entry (stuck.scope) should remain: {result['remaining']}")
+
+
+def test_rollback_refuses_loudly_when_touched_list_unreadable(fails):
+    # alfred msg 7409/7427 item 2, found live: rollback against an
+    # unreadable (not merely missing) touched-cgroups list reported
+    # "complete -- 0 entries" instead of refusing. A genuinely MISSING
+    # file is honest zero; anything else unreadable must refuse rather
+    # than claim completeness over an unknown number of real entries.
+    tmp = tempfile.mkdtemp(dir=_STATE_FIXTURE)
+    _reset(tmp)
+    # missing file: honest empty, real success.
+    result = ramsteind.do_stance_rollback()
+    if not result["ok"] or result.get("error"):
+        fails.append(f"a genuinely missing touched-list file should be an honest,"
+                     f" real success, not a refusal: {result}")
+
+    # unreadable (simulated via a corrupt file, not a permission trick --
+    # portable across whatever this test runs as): must refuse loudly.
+    with open(ramsteind.STANCE_TOUCHED_PATH, "w") as f:
+        f.write("{not valid json")
+    result2 = ramsteind.do_stance_rollback()
+    if result2["ok"] or not result2.get("error") or result2.get("remaining") is not None:
+        fails.append(f"an unreadable (corrupt) touched-list must refuse loudly,"
+                     f" not report success: {result2}")
 
 
 def test_rollback_memory_high_uses_systemd_infinity_not_cgroupfs_max(fails):
@@ -529,6 +597,62 @@ def test_ledger_groups_unclassified_by_exe(fails):
         fails.append(f"grouped row totals wrong: {doc['rows'][0]}")
 
 
+def test_ledger_labels_by_dominant_exe_with_others(fails):
+    # alfred msg 7409/7427 item 3, live: "the fleet's terminal (29x
+    # versions/2.1.261 + 14x rotten-apple-mcp + bash) is labelled
+    # 'versions/2.1.260' count 1" -- a scope was labelled by whichever
+    # pid happened to be listed first, not by what actually dominates
+    # it. One scope here: 3 claude-version processes (dominant by
+    # resident) + 1 unrelated cat -- must label by claude (normalized,
+    # dropping the version segment), count the 3 claude processes, and
+    # fold the cat into "others", never give the cat its own row or its
+    # own label.
+    tmp = tempfile.mkdtemp(dir=_STATE_FIXTURE)
+    _reset(tmp)
+    os.environ["RAMSTEIN_STANCE_PATH"] = os.path.join(tmp, "missing.json")
+    orig_leaves = ramsteind.classify_leaves
+    ramsteind.classify_leaves = lambda rules: [
+        {"path": "/terminal", "unit": "terminal", "tier": "unclassified",
+         "rule_index": None, "road": "root", "uid": None, "usage": 1000,
+         # cat listed FIRST on purpose -- matches the real reported bug
+         # (msg 7409) exactly: the scope's mislabeling came from picking
+         # whichever pid /proc happened to enumerate first, not the
+         # biggest. A test that put the dominant proc first wouldn't
+         # actually distinguish "dominant by resident" from "first in
+         # the list" -- confirmed by a negative control that left this
+         # bug unfixed and still passed until the ordering was flipped.
+         "procs": [_proc(4, "cat", rss=10), _proc(1, "claude", rss=300),
+                  _proc(2, "claude", rss=300), _proc(3, "claude", rss=300)]},
+    ]
+    orig_exe = ramsteind._proc_exe
+    ramsteind._proc_exe = lambda pid: (
+        None if pid == 4 else "/home/x/.local/share/claude/versions/2.1.260")
+    try:
+        doc = ramsteind.query_ledger(dict(ramsteind.DEFAULTS))
+    finally:
+        ramsteind.classify_leaves = orig_leaves
+        ramsteind._proc_exe = orig_exe
+    if len(doc["rows"]) != 1:
+        fails.append(f"one scope should still be one row, got {len(doc['rows'])}: {doc['rows']}")
+    else:
+        r = doc["rows"][0]
+        if r["label"] != "/home/x/.local/share/claude/versions/*":
+            fails.append(f"label should be the dominant exe, version-normalized: {r['label']}")
+        if r["count"] != 3:
+            fails.append(f"count should be the 3 dominant-exe processes, not all 4: {r}")
+        if r.get("others") != 1:
+            fails.append(f"the lone cat should fold into 'others', not vanish or get its own row: {r}")
+
+
+def test_normalize_exe_label_strips_version_segment(fails):
+    if ramsteind._normalize_exe_label("/home/x/.local/share/claude/versions/2.1.260") \
+            != "/home/x/.local/share/claude/versions/*":
+        fails.append("a trailing bare-version path segment should normalize to '*'")
+    if ramsteind._normalize_exe_label("/opt/google/chrome/chrome") \
+            != "/opt/google/chrome/chrome":
+        fails.append("a normal exe path (no version-shaped final segment) must pass through unchanged")
+
+
 def test_ledger_kernel_row_names_top_slab_holder(fails):
     # alfred's field finding (msg 7372): kernel slab (dentries/inodes) can
     # concentrate heavily in ONE scope and memory.current already counts
@@ -589,11 +713,14 @@ def main():
     test_load_stance_missing_and_malformed(fails)
     test_match_leaf_unit_comm_exe_glob(fails)
     test_v1_parent_scope_bug_does_not_match_a_leaf(fails)
-    test_claude_in_chrome_shared_scope_resolves_protect(fails)
+    test_unit_glob_wins_regardless_of_rule_order(fails)
+    test_exe_match_uses_dominant_proc_only(fails)
+    test_claude_in_chrome_shared_scope_resolves_expendable(fails)
     test_leaf_road_delegation_boundary(fails)
     test_ancestor_chain_for_protect(fails)
     test_protect_floor_ceiling(fails)
     test_rollback_resets_and_tracks_failures(fails)
+    test_rollback_refuses_loudly_when_touched_list_unreadable(fails)
     test_rollback_memory_high_uses_systemd_infinity_not_cgroupfs_max(fails)
     test_apply_stance_load_failure_rolls_back(fails)
     test_apply_stance_zero_rules_is_noop(fails)
@@ -601,6 +728,8 @@ def main():
     test_stance_plan_file_override(fails)
     test_stance_status_omits_error_key_when_clean(fails)
     test_ledger_groups_unclassified_by_exe(fails)
+    test_ledger_labels_by_dominant_exe_with_others(fails)
+    test_normalize_exe_label_strips_version_segment(fails)
     test_ledger_kernel_row_names_top_slab_holder(fails)
     test_ledger_no_kernel_row_when_no_slab(fails)
 

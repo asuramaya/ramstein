@@ -403,9 +403,10 @@ def cmd_ledger(argv):
     print(f"{'TIER':<12} {'CHARGED':>8} {'RESIDENT':>8}  COUNT  ROAD    LABEL")
     for r in rows:
         roads = "/".join(r["roads"])
+        others = f"  (+{r['others']} others)" if r.get("others") else ""
         print(f"{r['tier']:<12} {human_bytes(r['charged_bytes']):>8}"
               f" {human_bytes(r['resident_bytes']):>8}  {r['count']:>5}"
-              f"  {roads:<6}  {r['label']}")
+              f"  {roads:<6}  {r['label']}{others}")
     if doc.get("rule_count", 0) == 0:
         print("\n(zero-rule stance — protects nothing, caps nothing;"
               " report only)")
@@ -465,6 +466,9 @@ def cmd_stance(argv):
             print("  nothing would be written (no protect/cap/expendable"
                   " rules matched anything live)")
         return
+    if doc.get("error") and doc.get("remaining") is None:
+        sys.exit(f"ramstein: stance rollback REFUSED — {doc['error']}"
+                 f" (could not confirm there is nothing left to reset)")
     ok = doc.get("ok")
     print(f"rollback {'complete' if ok else 'INCOMPLETE'} —"
           f" {len(doc.get('results', []))} entries,"

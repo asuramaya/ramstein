@@ -3330,6 +3330,23 @@ _VALID_STANCE_TIERS = ("protect", "expendable", "cap")
 _STANCE_RESET_VALUE = {"MemoryLow": "0", "MemoryHigh": "infinity",
                        "ManagedOOMPreference": "none"}
 _DELEGATION_BOUNDARY_RE = re.compile(r"^(.*/user-(\d+)\.slice/user@\2\.service)(/.*)?$")
+_VERSION_SEGMENT_RE = re.compile(r"^[0-9]+(\.[0-9]+)+$")
+
+
+def _normalize_exe_label(exe):
+    """An unclassified group's own label. The fleet's own exe path ends
+    in a bare version number (.../claude/versions/2.1.260) -- grouping
+    on the literal string fragments one population into one row per
+    patch release, exactly the "13 Claude sessions" the operator asked
+    for becoming "1 cat" instead (alfred msg 7409/7427 item 3, live).
+    A trailing path segment that's purely digits-and-dots is replaced
+    with '*' so every version of the same binary groups as one label --
+    the same glob shape the fleet's own protect rule already writes
+    (exe_glob: '.../versions/*')."""
+    parts = exe.rsplit("/", 1)
+    if len(parts) == 2 and _VERSION_SEGMENT_RE.match(parts[1]):
+        return parts[0] + "/*"
+    return exe
 
 
 def _stance_path():
@@ -3480,34 +3497,55 @@ def _expand_home_glob(pattern, uid):
     return os.path.join(home, pattern[2:])
 
 
+def _dominant_proc(procs):
+    """The process most representative of what a scope actually IS --
+    ranked by resident bytes, ties broken by pid for determinism. A
+    scope's identity is whichever process holds most of its memory, not
+    an arbitrary member: a claude-in-chrome host launching Chrome as its
+    own child must never make the whole scope classify by the host's own
+    exe (alfred msg 7409/7427 item 4 -- the live case: chrome's own app
+    scope holding 2 chrome + 1 claude-host process)."""
+    return max(procs, key=lambda p: (p["rss"], -p["pid"])) if procs else None
+
+
 def _match_leaf(leaf_path, procs, rules):
-    """First-match-wins over LEAF-only rules (v1's user@*.service seed
-    accidentally matched a PARENT of every app scope including Chrome --
-    corrected in v2/v3 to match leaves exclusively, alfred msg 7119 note
-    3). exe_glob exists because the fleet's own comm is a version string,
-    not a stable name -- /proc/<pid>/exe is the only reliable handle."""
+    """A scope classifies by what it IS, not by an incidental co-resident
+    process (alfred msg 7409/7427 item 4, corrected from the original
+    single-pass first-match-wins): unit_glob/container_glob name the
+    SCOPE ITSELF and are checked across every rule FIRST, before any
+    comm/exe_glob match is even considered -- the live bug this fixes
+    let a claude-launcher process co-resident in Chrome's OWN app scope
+    make the whole scope (mostly Chrome's own memory) classify as
+    protect instead of expendable, the opposite of the stance. Only when
+    no unit_glob/container_glob rule names the scope does pass two check
+    comm/exe_glob -- against the DOMINANT process only (by resident
+    bytes), never "any" process in the scope, so a large population
+    can't be mislabeled by a small, arbitrary co-tenant.
+    First-match-wins within each pass, rules in file order. exe_glob
+    exists because the fleet's own comm is a version string, not a
+    stable name -- /proc/<pid>/exe is the only reliable handle."""
     unit_name = os.path.basename(leaf_path.rstrip("/"))
     for i, rule in enumerate(rules):
         match = rule["match"]
-        hit = False
         if "unit_glob" in match and fnmatch.fnmatch(unit_name, match["unit_glob"]):
-            hit = True
-        if not hit and "container_glob" in match \
-                and fnmatch.fnmatch(unit_name, match["container_glob"]):
-            hit = True
-        if not hit and "comm" in match:
-            hit = any(p["comm"] == match["comm"] for p in procs)
-        if not hit and "exe_glob" in match:
-            for p in procs:
-                exe = _proc_exe(p["pid"])
-                if exe is None:
-                    continue
-                pattern = _expand_home_glob(match["exe_glob"], _proc_uid(p["pid"]))
-                if fnmatch.fnmatch(exe, pattern):
-                    hit = True
-                    break
-        if hit:
             return i, rule
+        if "container_glob" in match and fnmatch.fnmatch(unit_name, match["container_glob"]):
+            return i, rule
+    dominant = _dominant_proc(procs)
+    if dominant is None:
+        return None, None
+    dom_exe = _proc_exe(dominant["pid"])
+    dom_uid = _proc_uid(dominant["pid"])
+    for i, rule in enumerate(rules):
+        match = rule["match"]
+        if "unit_glob" in match or "container_glob" in match:
+            continue  # already checked in pass one
+        if "comm" in match and dominant["comm"] == match["comm"]:
+            return i, rule
+        if "exe_glob" in match and dom_exe is not None:
+            pattern = _expand_home_glob(match["exe_glob"], dom_uid)
+            if fnmatch.fnmatch(dom_exe, pattern):
+                return i, rule
     return None, None
 
 
@@ -3651,6 +3689,30 @@ def _load_stance_touched():
         return []
 
 
+def _load_stance_touched_strict():
+    """The read behind `stance rollback` specifically -- unlike
+    _load_stance_touched's own silent-empty-on-any-error shape (fine for
+    apply_stance/the squeeze release path, which always run as the root
+    daemon and treat a rare read hiccup as "start clean" rather than a
+    rollback promise), rollback's OWN job is a claim of completeness:
+    "everything this daemon ever touched is now reset." A file that
+    genuinely doesn't exist is honestly empty -- nothing was ever
+    touched. Anything else unreadable (permission denied, corrupt JSON)
+    must never be reported as "0 entries, complete" when real entries
+    could be sitting behind that failure (alfred msg 7409/7427 item 2,
+    found live: rollback claimed success while unable to actually read
+    what it owed a reset). Returns (entries, error)."""
+    try:
+        with open(STANCE_TOUCHED_PATH) as f:
+            return json.load(f), None
+    except FileNotFoundError:
+        return [], None
+    except OSError as exc:
+        return None, f"can't read {STANCE_TOUCHED_PATH}: {exc}"
+    except ValueError as exc:
+        return None, f"{STANCE_TOUCHED_PATH} is corrupt: {exc}"
+
+
 def _save_stance_touched(entries):
     os.makedirs(STATE_DIR, exist_ok=True)
     tmp = STANCE_TOUCHED_PATH + ".tmp"
@@ -3672,8 +3734,17 @@ def do_stance_rollback():
     to confirm, and reports per-entry pass/fail. A unit that no longer
     exists is a PASS (nothing left to reset), not a failure. Also the
     daemon's own response to a stance file that fails to load, and runs
-    automatically before reapplying the stance on every daemon start."""
-    touched = _load_stance_touched()
+    automatically before reapplying the stance on every daemon start.
+
+    Refuses loudly, reports nothing as done, if the touched-cgroups list
+    itself can't be read for a reason OTHER than genuinely not existing
+    -- claiming "0 entries, complete" when the list is merely unreadable
+    (permission, corruption) would be reporting success over an unknown
+    number of real, still-applied limits (alfred msg 7409/7427 item 2,
+    found live)."""
+    touched, load_err = _load_stance_touched_strict()
+    if load_err is not None:
+        return {"ok": False, "error": load_err, "results": [], "remaining": None}
     results = []
     still_touched = []
     for entry in touched:
@@ -3873,11 +3944,25 @@ def do_stance_plan(cfg, file_path=None):
 def query_ledger(cfg):
     """`ramstein ledger` -- memory by THING, not by PID (the operator's own
     ask, msg 7110: "13 sessions, one line," not 26 rows). Same-classification
-    instances collapse into one line; unclassified groups by exe (falling
-    back to comm) so an unnamed population still reads as ONE line rather
-    than fragmenting the moment nothing in the stance names it (alfred msg
-    7119 note 4). Growth trend reuses the M2 sampler's own hourly_ring the
-    same way `standing` already does -- no second history mechanism.
+    instances collapse into one line. Growth trend reuses the M2 sampler's
+    own hourly_ring the same way `standing` already does -- no second
+    history mechanism.
+
+    unclassified groups by its DOMINANT process's exe (by resident bytes,
+    falling back to comm), never an arbitrary member -- a scope can host
+    many processes (the live case, alfred msg 7409/7427 item 3: one
+    terminal cgroup holding 29 fleet sessions + 14 MCP servers + a bare
+    bash, or a tmux scope whose FIRST-listed pid happened to be an
+    unrelated `cat`) and labelling by "whichever pid came first" produced
+    exactly the fragmentation ("1 cat", "count 1") the grouping exists to
+    prevent. `count` is the number of processes matching the dominant
+    exe (summed across every leaf sharing that label); anything else in
+    those same leaves is folded into that row's own `others` count
+    rather than silently dropped or given its own row. The dominant
+    exe's own version-number path segment (.../versions/2.1.260) is
+    normalized to '*' so different patch releases of the same binary
+    group as one population instead of one row each
+    (_normalize_exe_label).
 
     Also surfaces a synthetic 'kernel' row: the single leaf carrying the
     most kernel slab (dentries/inodes/etc, memory.stat's own 'slab' key)
@@ -3895,17 +3980,28 @@ def query_ledger(cfg):
     groups = {}
     top_slab = None
     for leaf in leaves:
+        procs = leaf["procs"]
         if leaf["tier"] == "unclassified":
-            rep_pid = leaf["procs"][0]["pid"] if leaf["procs"] else None
-            exe = _proc_exe(rep_pid) if rep_pid else None
-            key = ("unclassified", exe or (leaf["procs"][0]["comm"] if leaf["procs"] else "?"))
+            dominant = _dominant_proc(procs)
+            if dominant is not None:
+                dom_exe = _proc_exe(dominant["pid"])
+                dom_key = dom_exe or dominant["comm"]
+                label = _normalize_exe_label(dom_exe) if dom_exe else dom_key
+                dom_count = sum(
+                    1 for p in procs if (_proc_exe(p["pid"]) or p["comm"]) == dom_key)
+            else:
+                label, dom_count = "?", 0
+            key = ("unclassified", label)
         else:
             key = (leaf["tier"], leaf["rule_index"])
+            dom_count = len(procs)
         g = groups.setdefault(key, {"tier": leaf["tier"], "label": key[1],
-                                    "count": 0, "resident_bytes": 0,
-                                    "charged_bytes": 0, "roads": set()})
-        g["count"] += 1
-        g["resident_bytes"] += sum(p["rss"] for p in leaf["procs"])
+                                    "count": 0, "others": 0,
+                                    "resident_bytes": 0, "charged_bytes": 0,
+                                    "roads": set()})
+        g["count"] += dom_count
+        g["others"] += len(procs) - dom_count
+        g["resident_bytes"] += sum(p["rss"] for p in procs)
         g["charged_bytes"] += leaf["usage"]
         g["roads"].add(leaf["road"])
         slab = _leaf_slab_bytes(leaf["path"])
@@ -3913,12 +4009,13 @@ def query_ledger(cfg):
             top_slab = {"slab": slab, "label": key[1], "road": leaf["road"]}
     rows = []
     for (tier, label), g in groups.items():
-        rows.append({
-            "tier": tier, "label": str(label), "count": g["count"],
-            "resident_bytes": g["resident_bytes"],
-            "charged_bytes": g["charged_bytes"],
-            "roads": sorted(g["roads"]),
-        })
+        row = {"tier": tier, "label": str(label), "count": g["count"],
+               "resident_bytes": g["resident_bytes"],
+               "charged_bytes": g["charged_bytes"],
+               "roads": sorted(g["roads"])}
+        if g["others"]:
+            row["others"] = g["others"]
+        rows.append(row)
     if top_slab is not None:
         rows.append({
             "tier": "kernel", "label": f"{top_slab['label']} (dentries/inodes)",
