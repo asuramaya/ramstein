@@ -995,7 +995,9 @@ def cmd_update(argv):
 
 
 USAGE = """\
-ramstein — verb CLI over the ramsteind control socket
+ramstein — memory as a deadline, not a percentage: report on it (status/top/
+standing/incidents/ledger/...), or keep a short written policy applied as
+cgroup controls (stance) — verb CLI over the ramsteind control socket.
 
 usage: ramstein [verb] [args...]
 

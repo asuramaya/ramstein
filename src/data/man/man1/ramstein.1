@@ -1,13 +1,24 @@
-.TH RAMSTEIN 1 "2026-07-28" "ramstein 0.11.0" "ramstein manual"
+.TH RAMSTEIN 1 "2026-09-05" "ramstein 0.13.0" "ramstein manual"
 .SH NAME
-ramstein \- verb CLI for the ramstein memory daemon
+ramstein \- memory as a deadline, not a percentage: verb CLI for the ramstein memory daemon
 .SH SYNOPSIS
 .B ramstein
 .RI [ verb ]
 .RI [ options ]
 .SH DESCRIPTION
+The kernel and
+.B systemd\-oomd
+manage pages by pressure, blind to intent.
 .B ramstein
-talks to
+reports the truth about your memory as a deadline, not a percentage
+(available memory, PSI, burn rate, ETA\-to\-OOM), and keeps a short
+written policy \(em protect what matters, name what's expendable, cap
+what shouldn't grow unbounded \(em applied as real cgroup memory
+controls (see
+.B MEMORY STANCE (V4)
+in
+.BR ramsteind (8)).
+It talks to
 .BR ramsteind (8)
 over its control socket and prints the answer. With no verb, it runs
 .BR status .

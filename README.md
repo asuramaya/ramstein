@@ -1,21 +1,23 @@
 # ramstein
 
-Bytes alive. The memory sibling of
+**Memory as a deadline, not a percentage** — and, now, a short written policy applied as
+real cgroup memory controls, with receipts. The memory sibling of
 [byebyte](https://github.com/asuramaya/byebyte) (storage),
 [coldspot](https://github.com/asuramaya/coldspot) (internet) and
-[phanspeed](https://github.com/asuramaya/phanspeed) (power): a daemon that
-owns the truth about your memory, a verb CLI over it, and a GNOME
-Quick Settings pill on top.
+[phanspeed](https://github.com/asuramaya/phanspeed) (power): a root daemon that owns the
+truth about your memory, a verb CLI over it, and a GNOME Quick Settings pill on top.
 
-Where `free` tells you a number, ramstein tells you a *deadline*. `free -h`
-gives you a snapshot: this many gigabytes available right now. It can't tell
-you whether that number is falling, how fast, or when it hits zero. ramstein
-watches the trend instead: available memory, PSI pressure, a burn-rate EWMA,
-and an ETA-to-OOM under current pressure, so the pill on your screen shows
-how much is left and how long until the kernel starts shooting, not a number
-that might already be stale by the time you read it.
+Where `free` tells you a number, ramstein tells you a *deadline*: available memory, PSI
+pressure, a burn-rate EWMA, and an ETA-to-OOM under current pressure, not a snapshot that
+might already be stale by the time you read it. And where the kernel and `systemd-oomd`
+manage pages by pressure alone, blind to intent, ramstein keeps a short policy in your
+own words (`/etc/ramstein/stance.json`, never written for you) — **protect** what
+matters (a database, the session you're actually using), **name** what's expendable
+(Chrome can be squeezed first), **cap** what shouldn't grow unbounded (a dev container)
+— applied as real `memory.low`/`memory.high` cgroup controls while scopes come and go. A
+ceiling throttles and never kills; kill stays a human decision, always.
 
-## Why not just `top` or earlyoom?
+## The gauge: why not just `top` or earlyoom?
 
 `top`/`htop` show memory right now, sorted by RSS, and nothing else: no
 trend, no pressure signal, no swap-specific view, no notion of how long
@@ -31,6 +33,7 @@ ramstein says so and stands down rather than racing it.
 
 ```
 ramstein status               # available memory, PSI, burn rate, ETA-to-OOM
+ramstein ledger                # memory by thing: who's protected, who's expendable, who's just resident
 ramstein calm firefox --nice 10
 ```
 
