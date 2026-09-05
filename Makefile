@@ -157,6 +157,12 @@ deb:
 	install -m 0644 src/data/man/man1/ramstein.1 $(DEBROOT)/usr/share/man/man1/ramstein.1
 	install -m 0644 src/data/man/man8/ramsteind.8 $(DEBROOT)/usr/share/man/man8/ramsteind.8
 	install -m 0644 src/data/config/config.json $(DEBROOT)/etc/ramstein/config.json
+	# V4's stance example -- a REFERENCE, not a conffile: always refreshed
+	# on upgrade (unlike config.json above), never auto-promoted to
+	# stance.json itself. The daemon never writes a rule file (V4's
+	# zero-rule-by-default doctrine) -- the operator copies this by hand
+	# when ready.
+	install -m 0644 src/data/config/stance.example.json $(DEBROOT)/etc/ramstein/stance.example.json
 	# rewriting /usr/local/bin -> /usr/bin: the source units hardcode
 	# install.sh's source-install prefix, but this target installs binaries
 	# under /usr, not /usr/local (two lines up). Shipped verbatim until now

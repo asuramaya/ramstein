@@ -222,6 +222,16 @@ else
   echo "-- config: keeping existing $CONFDIR/config.json (never overwritten)"
 fi
 
+# 2b. stance example -- a REFERENCE, always refreshed on reinstall (unlike
+# config.json above): $CONFDIR/stance.json itself is never created here and
+# never written by the daemon (V4's own zero-rule-by-default doctrine,
+# docs/ARCHITECTURE.md "The stance file") -- the operator copies this file
+# to stance.json and edits it by hand when they're ready to enable a rule.
+echo "-- stance example -> $CONFDIR/stance.example.json (reference only, never enabled automatically)"
+install -d -m 0755 "$CONFDIR"
+install -m 0644 "$SRC/src/data/config/stance.example.json" "$CONFDIR/stance.example.json"
+chown root:root "$CONFDIR/stance.example.json"
+
 # 3. systemd: daemon (+ updater/autocalm units, installed but NOT enabled)
 echo "-- systemd units + enabling"
 # ramsteind.service's ReadWritePaths carves out user@.service.d for oomd
@@ -272,6 +282,7 @@ verify() { local got; got="$(stat -c '%a' "$1" 2>/dev/null || echo '?')"
   [[ "$got" == "$2" ]] && echo "   OK   $1 ($got)" || echo "   WARN $1 is $got, expected $2"; }
 verify "$BINDIR/ramsteind" 755
 verify "$CONFDIR/config.json" 644
+verify "$CONFDIR/stance.example.json" 644
 
 cat <<EOF
 

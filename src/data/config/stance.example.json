@@ -1,0 +1,25 @@
+{
+  "rules": [
+    {
+      "_comment": "protect osiris-pg -- the fleet's shared postgres, running in its own docker container -- with memory.low up its whole ancestor chain, so it never gets squeezed to make room for anything else.",
+      "match": {"exe_glob": "/usr/lib/postgresql/*/bin/postgres"},
+      "tier": "protect"
+    },
+    {
+      "_comment": "protect the agent fleet -- every Claude Code session -- matched by its own binary path, since its process name is just a version string.",
+      "match": {"exe_glob": "~/.local/share/claude/versions/*"},
+      "tier": "protect"
+    },
+    {
+      "_comment": "Chrome is expendable -- squeezed (never killed) only while the system is genuinely under pressure, released the instant it calms.",
+      "match": {"unit_glob": "app-*.google.Chrome-*.scope"},
+      "tier": "expendable"
+    },
+    {
+      "_comment": "cap every docker container at 25% of total memory -- a standing ceiling regardless of system state, so no single container can quietly consume everything.",
+      "match": {"container_glob": "docker-*.scope"},
+      "tier": "cap",
+      "memory_high_pct_of_total": 25
+    }
+  ]
+}
