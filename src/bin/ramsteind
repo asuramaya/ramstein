@@ -1554,7 +1554,7 @@ def query_advise(cfg, get_status):
     return {"lines": lines}
 
 
-def build_pill_summary(cfg, get_status, swap_size_state, zram_state):
+def build_pill_summary(cfg, get_status, swap_size_state, zram_state, stance_state=None):
     """A compact M2/M3 digest embedded into status.json so the pill stays a
     one-file reader (GFileMonitor on status.json, no socket client in GJS)
     instead of growing its own daemon-protocol client. Computed on the
@@ -1568,7 +1568,17 @@ def build_pill_summary(cfg, get_status, swap_size_state, zram_state):
     or off, which is exactly the "growing its own daemon-protocol client"
     this digest exists to avoid. ACTIONS still go over the control socket
     (via the CLI, same as byebyte's runByebyteJson shape) — this only
-    covers DISPLAY, so a healthy card stays a pure file-watcher."""
+    covers DISPLAY, so a healthy card stays a pure file-watcher.
+
+    V4's `stance` sub-digest rides here too, same reasoning: the Findings
+    fold's own label/body need the ledger (query_ledger, a fresh /proc
+    walk -- exactly the cost this digest already exists to bound to the
+    sampler's cadence rather than every poll tick) and the most recent
+    incident (only if inside the last hour -- an old incident is history,
+    not a live finding). protect_floor_bytes/protect_pinned come from
+    stance_state's own last apply (already computed once per poll tick by
+    apply_stance) rather than recomputed here -- one source of truth for
+    what's actually applied."""
     con = _connect_index()
     try:
         top_process = None
@@ -1585,6 +1595,12 @@ def build_pill_summary(cfg, get_status, swap_size_state, zram_state):
     zombie_count = len(query_zombies()["rows"])
     advise = query_advise(cfg, get_status)
     lines = advise["lines"]
+    stance_state = stance_state or {}
+    ledger = query_ledger(cfg)
+    incidents = query_incidents(1)["rows"]
+    latest_incident = incidents[0] if incidents and (
+        time.time() - incidents[0]["ts"] <= 3600) else None
+    protect = (stance_state.get("last_apply") or {}).get("protect") or {}
     return {
         "top_process": top_process,
         "zombie_count": zombie_count,
@@ -1594,6 +1610,14 @@ def build_pill_summary(cfg, get_status, swap_size_state, zram_state):
         "swappiness": query_swappiness_status(),
         "swap_size": query_swap_size_status(swap_size_state),
         "zram": query_zram_status(zram_state),
+        "stance": {
+            "rule_count": ledger.get("rule_count", 0),
+            "error": ledger.get("error"),
+            "rows": ledger.get("rows", []),
+            "protect_floor_bytes": protect.get("floor_bytes"),
+            "protect_pinned": protect.get("pinned_at_ceiling", False),
+            "latest_incident": latest_incident,
+        },
     }
 
 
@@ -4024,7 +4048,8 @@ def main():
         # tick — see build_pill_summary), reusing the last one otherwise
         if sampler.maybe_sample(now):
             pill_cache["summary"] = build_pill_summary(
-                cfg, lambda: latest["doc"], swap_size_state, zram_state)
+                cfg, lambda: latest["doc"], swap_size_state, zram_state,
+                stance_state)
         doc["pill"] = pill_cache["summary"]
         latest["doc"] = doc
         write_status(doc, cfg)

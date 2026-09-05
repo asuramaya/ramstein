@@ -63,6 +63,12 @@ const EVIDENCE_LABEL = {psi: 'pressure', avail: 'low mem', eta: 'ETA'};
 // rather than percentages, since that's what the verb actually takes.
 const SWAP_SIZE_PRESETS = ['2G', '4G', '8G', '16G'];
 
+// V4 Findings fold: below this, a ledger row isn't worth naming at all --
+// see _updateFindingsHeader's own comment for the shape-3-vs-shape-4 split
+// this draws. Matches standing_min_bytes' shipped daemon default (500M);
+// a hardcoded UI constant, not fetched live, same as the presets above.
+const FINDINGS_NOTABLE_BYTES = 500 * 1024 * 1024;
+
 // swappiness's SEGMENT: "a small named-stance set" (the CLI's own
 // docstring), not the raw 0-200 kernel value -- that's the CLI's job,
 // for agents and experts. Deliberately stays inside the traditional
@@ -249,6 +255,17 @@ class ramsteinToggle extends QuickMenuToggle {
         this._autocalmSection = new PopupMenu.PopupMenuSection();
         this.menu.addMenuItem(this._autocalmSection);
 
+        // V4: the memory stance's own fold (operator ruling 063af91a via
+        // alfred msg 7132/7155/7199/7203) — same construction as Advanced
+        // below (PopupSubMenuMenuItem, built once, defaults CLOSED, its
+        // own LABEL rebuilt every refresh so collapsing it can't hide the
+        // finding). Report-only: no switch, no confirm button, ever — the
+        // ledger by thing IS the fold body (see _renderFindings), and
+        // naming a rule happens by hand-editing /etc/ramstein/stance.json,
+        // never from here.
+        this._findingsSection = new PopupMenu.PopupSubMenuMenuItem('Findings ▸');
+        this.menu.addMenuItem(this._findingsSection);
+
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         // Layer 3 (swappiness/swap-size/oomd/zram/autocalm arm): "set once,
         // don't look at again" knobs, folded behind Advanced so the
@@ -309,6 +326,8 @@ class ramsteinToggle extends QuickMenuToggle {
             this._rowSection.removeAll();
             this._adviseSection.removeAll();
             this._autocalmSection.removeAll();
+            this._findingsSection.menu.removeAll();
+            this._findingsSection.label.text = 'Findings ▸';
             this._controlsSection.menu.removeAll();
             this._controlsSection.label.text = 'Advanced ▸';
             this._rowSection.addMenuItem(Pill.row(
@@ -472,6 +491,7 @@ class ramsteinToggle extends QuickMenuToggle {
                 `${NB}·${NB}${age}${NB}ago</span>`));
         }
         this._maybeNotifyAutocalm(st);
+        this._renderFindings(pill);
         this._renderControls(pill, ac);
 
         this.menu.setHeader(this.iconName, 'ramstein', this.subtitle);
@@ -556,6 +576,93 @@ class ramsteinToggle extends QuickMenuToggle {
     // safely so if a third caveat-bearing control ever joins) — the
     // header is a pointer, the per-control detail already lives one
     // click in, on the caption rows that name each control specifically.
+
+    // V4: memory stance findings (operator ruling 063af91a via alfred msg
+    // 7132/7155/7199/7203). Same "the fold's own LABEL carries the live
+    // finding" doctrine as Advanced above, applied to a report -- never a
+    // caveat -- so it survives being collapsed. Body rendering (the
+    // ledger rows themselves) lands in a second commit; this one is
+    // label-only.
+    _renderFindings(pill) {
+        this._updateFindingsHeader(pill);
+        this._findingsSection.menu.removeAll();
+    }
+
+    // Mirrors ramstein CLI's own _incident_trigger_text (duplicated, not
+    // shared -- same reasoning as fmtEta's independent copy of
+    // human_oom_eta's bucket scheme: the daemon, the CLI, and the pill
+    // each render the same underlying fact in their own surface's idiom).
+    // Kept SHORT on purpose (no byte parenthetical) -- this feeds a fold
+    // LABEL, which is bounded-length by the same measured constraint
+    // _updateAdvancedHeader's own comment names, not the CLI's full line.
+    _incidentBasisShort(t) {
+        if (t.kind === 'swap_pct')
+            return `swap crossed ${t.threshold.toFixed(0)}%`;
+        if (t.kind === 'psi_full')
+            return `PSI full crossed ${t.threshold.toFixed(1)}`;
+        if (t.kind === 'swap_storm')
+            return 'swap-storm warning became active';
+        return t.kind;
+    }
+
+    // Below this size, a resident group isn't worth naming at all -- same
+    // bar `standing`'s own stock tier uses (standing_min_bytes' shipped
+    // default) for "large enough to be dead weight rather than an
+    // ordinary resident process," reused here as the line between shape 3
+    // ("no stance — reporting only": something IS resident, just nothing
+    // named it) and shape 4 ("nothing is holding dead memory": genuinely
+    // nothing on the machine clears the bar). See FINDINGS_NOTABLE_BYTES
+    // below (a hardcoded UI constant, not fetched from the daemon's own
+    // config -- same shape as SWAP_SIZE_PRESETS/SWAPPINESS_PRESETS above).
+    _updateFindingsHeader(pill) {
+        const label = this._findingsSection.label;
+        const stance = pill?.stance;
+        if (!stance) {
+            label.text = 'Findings ▸';
+            return;
+        }
+        const inc = stance.latest_incident;
+        if (inc) {
+            const when = new Date(inc.ts * 1000);
+            const hh = String(when.getHours()).padStart(2, '0');
+            const mm = String(when.getMinutes()).padStart(2, '0');
+            const basis = (inc.triggers ?? [])
+                .map(t => this._incidentBasisShort(t)).join('; ');
+            const pushed = (inc.residents ?? []).find(r => r.stance_tier);
+            const tail = pushed
+                ? ` — ${pushed.comm} pushed out first, per your stance` : '';
+            label.text = `Findings ▸  incident ${hh}:${mm} — ${basis}${tail}`;
+            return;
+        }
+        const rows = stance.rows ?? [];
+        if (stance.rule_count > 0) {
+            const protectRows = rows.filter(r => r.tier === 'protect');
+            const expendRows = rows.filter(r => r.tier === 'expendable');
+            const parts = [];
+            if (protectRows.length) {
+                const names = protectRows.map(r => r.label).join(', ');
+                const total = stance.protect_floor_bytes ??
+                    protectRows.reduce((s, r) => s + r.charged_bytes, 0);
+                // shape 2's basis-when-pinned sharpening (alfred msg 7203,
+                // item 1): a floor that stopped tracking real usage must
+                // say so in the same sentence, never a silent number.
+                const pin = stance.protect_pinned ? ' — pinned at 50%' : '';
+                parts.push(`protecting ${Pill.fmtBytes(total)} (${names}${pin})`);
+            }
+            if (expendRows.length)
+                parts.push(`${expendRows.map(r => r.label).join(', ')} expendable`);
+            if (parts.length) {
+                label.text = `Findings ▸  ${parts.join(' · ')}`;
+                return;
+            }
+        }
+        const anythingNotable = rows.some(
+            r => r.charged_bytes >= FINDINGS_NOTABLE_BYTES);
+        label.text = anythingNotable
+            ? 'Findings ▸  no stance — reporting only'
+            : 'Findings ▸  nothing is holding dead memory';
+    }
+
     _updateAdvancedHeader(pill, ac) {
         let n = 0;
         // oomd.effective === true is fully resolved now (thread 5607ab3c)
