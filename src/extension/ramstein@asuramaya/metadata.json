@@ -1,7 +1,7 @@
 {
   "uuid": "ramstein@asuramaya",
   "name": "ramstein",
-  "description": "Memory as a deadline — a Quick Settings pill showing available RAM, PSI pressure, burn rate, and an ETA-to-OOM under current pressure. Requires the ramsteind daemon (https://github.com/asuramaya/ramstein).",
+  "description": "Memory as a deadline, not a percentage — a Quick Settings pill showing available RAM, PSI pressure, burn rate, and an ETA-to-OOM under current pressure, plus Findings ▸: a written policy applied as cgroup controls (protect what matters, name what's expendable, cap what shouldn't grow unbounded), and who's holding memory right now. Requires the ramsteind daemon (https://github.com/asuramaya/ramstein).",
   "shell-version": ["46", "47", "48", "49", "50"],
   "url": "https://github.com/asuramaya/ramstein",
   "version": 1

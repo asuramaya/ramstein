@@ -163,6 +163,47 @@ def test_v1_parent_scope_bug_does_not_match_a_leaf(fails):
         fails.append("a parent-scope unit_glob must not match a leaf's own basename")
 
 
+def test_claude_in_chrome_shared_scope_resolves_protect(fails):
+    # A live, real finding from `ramstein stance plan` against this very
+    # box (alfred msg 7402: "keep that case as a test fixture"): a
+    # claude-in-chrome-driven Chrome instance can end up co-resident in
+    # the SAME cgroup scope as a protected fleet session (the browser
+    # was launched as a child of the claude process, inheriting its
+    # cgroup rather than getting its own app-*.scope). A cgroup is the
+    # unit of enforcement -- one scope cannot carry two different
+    # policies for two different processes inside it. First-match-wins
+    # with protect listed before expendable means the WHOLE scope
+    # resolves to protect: erring toward "never squeeze something that
+    # shouldn't be squeezed" when a scope's contents are ambiguous,
+    # exactly the safe default this classifier is meant to have.
+    rules = [
+        {"match": {"exe_glob": "~/.local/share/claude/versions/*"}, "tier": "protect"},
+        {"match": {"unit_glob": "app-*.google.Chrome-*.scope"}, "tier": "expendable"},
+    ]
+    orig_exe = ramsteind._proc_exe
+    orig_uid = ramsteind._proc_uid
+    ramsteind._proc_exe = lambda pid: {
+        1120188: "/opt/google/chrome/chrome",
+        1128577: "/home/asuramaya/.local/share/claude/versions/2.1.260",
+        1129420: "/opt/google/chrome/chrome",
+    }.get(pid)
+    ramsteind._proc_uid = lambda pid: 1000
+    try:
+        idx, rule = ramsteind._match_leaf(
+            "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service"
+            "/app.slice/app-com.google.Chrome-1120188.scope",
+            [_proc(1120188, "chrome"), _proc(1128577, "claude"),
+             _proc(1129420, "chrome")],
+            rules)
+    finally:
+        ramsteind._proc_exe = orig_exe
+        ramsteind._proc_uid = orig_uid
+    if rule is None or rule["tier"] != "protect":
+        fails.append(f"a scope hosting both a protected and an expendable"
+                     f" process must resolve to the safer (protect) tier"
+                     f" when protect is listed first, got {rule}")
+
+
 # --- _leaf_road / _ancestor_chain_for_protect ------------------------------
 
 def test_leaf_road_delegation_boundary(fails):
@@ -485,6 +526,7 @@ def main():
     test_load_stance_missing_and_malformed(fails)
     test_match_leaf_unit_comm_exe_glob(fails)
     test_v1_parent_scope_bug_does_not_match_a_leaf(fails)
+    test_claude_in_chrome_shared_scope_resolves_protect(fails)
     test_leaf_road_delegation_boundary(fails)
     test_ancestor_chain_for_protect(fails)
     test_protect_floor_ceiling(fails)

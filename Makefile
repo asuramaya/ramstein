@@ -194,8 +194,9 @@ deb:
 	  echo "Homepage: https://github.com/asuramaya/ramstein"; \
 	  echo "Description: memory as a deadline, not a percentage"; \
 	  echo " ramstein owns the truth about bytes alive: /proc+PSI polling, burn"; \
-	  echo " rate, ETA-to-OOM, a per-process index, calm/oom/advise, and a GNOME"; \
-	  echo " Quick Settings pill."; \
+	  echo " rate, ETA-to-OOM, a per-process index, calm/oom/advise, a written"; \
+	  echo " policy applied as cgroup controls (protect/expendable/cap) with"; \
+	  echo " receipts, and a GNOME Quick Settings pill."; \
 	} > $(DEBROOT)/DEBIAN/control
 	dpkg-deb --build --root-owner-group $(DEBROOT) $(DEBFILE)
 	( cd build/deb && sha256sum "$$(basename $(DEBFILE))" > SHA256SUMS )
